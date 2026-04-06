@@ -153,7 +153,7 @@ async function handleToolCall(call: MCPToolCall): Promise<MCPToolResult> {
           sourceUrl: call.arguments.path_or_url as string,
           config: {
             customDomain: call.arguments.custom_domain as string | undefined,
-            allowUnauthenticated: (call.arguments.allow_unauthenticated as boolean) ?? false,
+            allowUnauthenticated: (call.arguments.allow_unauthenticated as boolean) ?? true,
             gcsDbDumpUri,
             dbDumpFileName,
           },

@@ -103,3 +103,10 @@ SET config = jsonb_set(config, '{groupName}', to_jsonb(name))
 WHERE config->>'groupName' IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_projects_group ON projects((config->>'projectGroup'));
+
+-- Backfill: ensure all projects default to allowUnauthenticated = true (public access)
+-- This fixes projects created before the default was corrected in deploy-worker.ts
+UPDATE projects
+SET config = jsonb_set(config, '{allowUnauthenticated}', 'true')
+WHERE config->>'allowUnauthenticated' = 'false'
+   OR config->>'allowUnauthenticated' IS NULL;

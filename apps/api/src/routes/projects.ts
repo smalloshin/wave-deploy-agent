@@ -165,7 +165,7 @@ export async function projectRoutes(app: FastifyInstance) {
     let name = '';
     let customDomain = '';
     let forceDomain = false;
-    let allowUnauthenticated = false;
+    let allowUnauthenticated = true;
     let sourceType: 'upload' | 'git' = 'upload';
     let gitUrl = '';
     let envVarsRaw = '';
