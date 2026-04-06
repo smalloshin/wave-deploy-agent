@@ -26,6 +26,50 @@ import { stopProjectService, startProjectService } from '../services/service-lif
 
 const execFileAsync = promisify(execFile);
 
+const GCP_PROJECT = process.env.GCP_PROJECT || 'wave-deploy-agent';
+const GCP_REGION = process.env.GCP_REGION || 'asia-east1';
+const CF_ZONE_NAME = process.env.CLOUDFLARE_ZONE_NAME || 'punwave.com';
+
+// Check if a domain is already mapped to a Cloud Run service.
+// Returns null if available, or { fqdn, existingRoute } if conflict found.
+export async function checkDomainConflict(
+  subdomain: string,
+  zone: string = CF_ZONE_NAME,
+): Promise<{ fqdn: string; existingRoute: string } | null> {
+  const fqdn = `${subdomain}.${zone}`;
+  try {
+    const url = `https://${GCP_REGION}-run.googleapis.com/apis/domains.cloudrun.com/v1/namespaces/${GCP_PROJECT}/domainmappings/${fqdn}`;
+    const res = await gcpFetch(url);
+    if (res.status === 404) return null; // available
+    if (!res.ok) return null; // can't determine, don't block
+    const body = await res.json() as { spec?: { routeName?: string } };
+    const existingRoute = body.spec?.routeName ?? 'unknown';
+    return { fqdn, existingRoute };
+  } catch {
+    return null; // network error — don't block submission
+  }
+}
+
+// Check domain conflicts for one or more subdomains. Returns first conflict found.
+// For monorepos, checks both the main domain and api.* variant.
+async function checkDomainConflicts(
+  customDomain: string | undefined,
+  forceDomain: boolean,
+  monorepoRoles?: Array<{ role: string; subdomain: string }>,
+): Promise<{ fqdn: string; existingRoute: string } | null> {
+  if (!customDomain || forceDomain) return null;
+
+  const subdomains = monorepoRoles
+    ? monorepoRoles.map(r => r.subdomain)
+    : [customDomain.replace(`.${CF_ZONE_NAME}`, '')];
+
+  for (const sub of subdomains) {
+    const conflict = await checkDomainConflict(sub);
+    if (conflict) return conflict;
+  }
+  return null;
+}
+
 // Parse "KEY=VALUE\nKEY2=VALUE2" format into a Record
 function parseEnvVarsText(text: string): Record<string, string> {
   const result: Record<string, string> = {};
@@ -135,6 +179,21 @@ export async function projectRoutes(app: FastifyInstance) {
   // Submit new project
   app.post('/api/projects', async (request, reply) => {
     const body = submitSchema.parse(request.body);
+
+    // Domain conflict check (unless forceDomain is set)
+    const customDomain = body.config?.customDomain;
+    if (customDomain && !body.config?.forceDomain) {
+      const sub = customDomain.replace(`.${CF_ZONE_NAME}`, '');
+      const conflict = await checkDomainConflict(sub);
+      if (conflict) {
+        return reply.status(409).send({
+          error: 'domain_conflict',
+          message: `Domain "${conflict.fqdn}" is already mapped to service "${conflict.existingRoute}". Set forceDomain=true to override.`,
+          conflict,
+        });
+      }
+    }
+
     const project = await createProject({
       name: body.name,
       sourceType: body.sourceType,
@@ -195,6 +254,23 @@ export async function projectRoutes(app: FastifyInstance) {
 
     if (!name.trim()) {
       return reply.status(400).send({ error: 'Project name is required' });
+    }
+
+    // Domain conflict check (unless forceDomain is set)
+    if (customDomain.trim() && !forceDomain) {
+      const sub = customDomain.trim().replace(`.${CF_ZONE_NAME}`, '');
+      // Check both main domain and api.* (monorepo convention)
+      const subsToCheck = [sub, `api.${sub}`];
+      for (const s of subsToCheck) {
+        const conflict = await checkDomainConflict(s);
+        if (conflict) {
+          return reply.status(409).send({
+            error: 'domain_conflict',
+            message: `Domain "${conflict.fqdn}" is already mapped to service "${conflict.existingRoute}". Use forceDomain=true to override, or choose a different domain.`,
+            conflict,
+          });
+        }
+      }
     }
 
     // If git source type, handle like before

@@ -60,6 +60,14 @@ curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" 
 
 記下回傳的 `project.id`。
 
+**⚠ Domain 衝突處理：**
+
+如果 API 回傳 HTTP 409 且 `error: "domain_conflict"`，表示該 domain 已被其他服務使用。
+向使用者顯示衝突資訊，並詢問：
+- 「這個 domain 已經被 `{existingRoute}` 使用中。要覆蓋嗎？」
+- 如果使用者同意覆蓋，重新提交時加上 `-F "forceDomain=true"`
+- 如果使用者不同意，請使用者提供其他 domain
+
 ### Step 3: 等待掃描完成
 
 每 10 秒輪詢一次，直到狀態變為 `review_pending`：

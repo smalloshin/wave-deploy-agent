@@ -10,6 +10,7 @@ import {
 } from '../services/orchestrator';
 import { query } from '../db/index';
 import { checkSslStatus } from '../services/ssl-monitor';
+import { checkDomainConflict } from './projects';
 
 // MCP Protocol handler - implements Model Context Protocol for AI tool integration
 // This enables OpenClaw, Claude Code, and other MCP-compatible tools to interact with the deploy agent
@@ -35,6 +36,7 @@ const TOOLS = [
         path_or_url: { type: 'string', description: 'Local path or Git URL' },
         project_name: { type: 'string', description: 'Project name' },
         custom_domain: { type: 'string', description: 'Custom domain (optional)' },
+        force_domain: { type: 'boolean', description: 'Override existing domain mapping if conflict detected (default: false)' },
         allow_unauthenticated: { type: 'boolean', description: 'Allow public access (requires senior review)' },
         db_dump_path: { type: 'string', description: 'Path to a database dump file (.sql, .dump, .sql.gz) to restore during deployment (optional)' },
       },
@@ -147,12 +149,28 @@ async function handleToolCall(call: MCPToolCall): Promise<MCPToolResult> {
           }
         }
 
+        // Domain conflict check
+        const customDomain = call.arguments.custom_domain as string | undefined;
+        const forceDomain = call.arguments.force_domain as boolean | undefined;
+        if (customDomain && !forceDomain) {
+          const cfZone = process.env.CLOUDFLARE_ZONE_NAME || 'punwave.com';
+          const sub = customDomain.replace(`.${cfZone}`, '');
+          const conflict = await checkDomainConflict(sub);
+          if (conflict) {
+            return error(
+              `⚠ Domain conflict: "${conflict.fqdn}" is already mapped to service "${conflict.existingRoute}". ` +
+              `To override, set force_domain=true. To use a different domain, change custom_domain.`
+            );
+          }
+        }
+
         const project = await createProject({
           name: call.arguments.project_name as string,
           sourceType: call.arguments.source === 'git_url' ? 'git' : 'upload',
           sourceUrl: call.arguments.path_or_url as string,
           config: {
-            customDomain: call.arguments.custom_domain as string | undefined,
+            customDomain,
+            forceDomain: forceDomain ?? false,
             allowUnauthenticated: (call.arguments.allow_unauthenticated as boolean) ?? true,
             gcsDbDumpUri,
             dbDumpFileName,
