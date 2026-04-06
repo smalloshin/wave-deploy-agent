@@ -35,12 +35,12 @@ const TOOLS = [
         source: { type: 'string', enum: ['local_path', 'git_url', 'upload'], description: 'Source type' },
         path_or_url: { type: 'string', description: 'Local path or Git URL' },
         project_name: { type: 'string', description: 'Project name' },
-        custom_domain: { type: 'string', description: 'Custom domain (optional)' },
+        custom_domain: { type: 'string', description: 'Custom domain (required, e.g. "my-app" → my-app.punwave.com)' },
         force_domain: { type: 'boolean', description: 'Override existing domain mapping if conflict detected (default: false)' },
         allow_unauthenticated: { type: 'boolean', description: 'Allow public access (requires senior review)' },
         db_dump_path: { type: 'string', description: 'Path to a database dump file (.sql, .dump, .sql.gz) to restore during deployment (optional)' },
       },
-      required: ['source', 'path_or_url', 'project_name'],
+      required: ['source', 'path_or_url', 'project_name', 'custom_domain'],
     },
   },
   {
@@ -149,8 +149,13 @@ async function handleToolCall(call: MCPToolCall): Promise<MCPToolResult> {
           }
         }
 
-        // Domain conflict check
+        // Validate required custom_domain
         const customDomain = call.arguments.custom_domain as string | undefined;
+        if (!customDomain?.trim()) {
+          return error('custom_domain is required. Provide a subdomain, e.g. "my-app" → my-app.punwave.com');
+        }
+
+        // Domain conflict check
         const forceDomain = call.arguments.force_domain as boolean | undefined;
         if (customDomain && !forceDomain) {
           const cfZone = process.env.CLOUDFLARE_ZONE_NAME || 'punwave.com';

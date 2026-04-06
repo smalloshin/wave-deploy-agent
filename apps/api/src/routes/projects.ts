@@ -154,7 +154,7 @@ const submitSchema = z.object({
   sourceUrl: z.string().optional(),
   config: z.object({
     deployTarget: z.enum(['cloud_run']).default('cloud_run'),
-    customDomain: z.string().optional(),
+    customDomain: z.string().min(1, 'Custom domain is required'),
     forceDomain: z.boolean().default(false),  // Override existing mapping if conflict detected
     allowUnauthenticated: z.boolean().default(true),  // Public by default
     gcpProject: z.string().optional(),
@@ -254,6 +254,10 @@ export async function projectRoutes(app: FastifyInstance) {
 
     if (!name.trim()) {
       return reply.status(400).send({ error: 'Project name is required' });
+    }
+
+    if (!customDomain.trim()) {
+      return reply.status(400).send({ error: 'Custom domain is required' });
     }
 
     // Domain conflict check (unless forceDomain is set)

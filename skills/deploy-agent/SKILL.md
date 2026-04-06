@@ -26,7 +26,7 @@ Dashboard：https://wave-deploy-agent.punwave.com
 向使用者確認以下資訊（如果尚未提供）：
 - **專案名稱**（必填）— 例如 `my-awesome-app`
 - **來源方式**（必填）— `upload`（上傳壓縮檔）或 `git`（Git 倉庫 URL）
-- **自訂網域**（選填）— 例如 `my-app`（會變成 `my-app.punwave.com`）
+- **自訂網域**（必填）— 例如 `my-app`（會變成 `my-app.punwave.com`）
 - **是否公開**（選填）— 預設 `true`，允許未驗證存取
 - **資料庫 Dump**（選填）— `.sql`、`.dump` 或 `.sql.gz` 檔案路徑，部署時自動匯入
 
