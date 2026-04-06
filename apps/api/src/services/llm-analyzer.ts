@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import type { ScanFinding, AutoFixResult } from '@deploy-agent/shared';
+import crypto from 'node:crypto';
+import type { ScanFinding, AutoFixResult, EnvVarVerdict, EnvClassificationResult } from '@deploy-agent/shared';
 
 // Primary: Claude | Fallback: GPT-5.4
 const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
@@ -279,6 +280,278 @@ ${Object.entries(masked).map(([k, v]) => `${k}=${v}`).join('\n')}`;
     console.warn(`[LLM-Env] Analysis failed: ${(err as Error).message}`);
     return { placeholders: [], missingCritical: [], recommendations: [], provider: 'fallback' };
   }
+}
+
+// ─── LLM Env Intelligence: classify every env var with an action verdict ───
+
+export interface EnvClassificationContext {
+  framework: string | null;
+  language: string;
+  cloudSqlInstance?: string;    // e.g. "wave-deploy-agent:asia-east1:deploy-agent-db"
+  dbName?: string;              // e.g. "proj_luca_backend"
+  dbUser?: string;              // e.g. "user_luca_backend"
+  dbConnectionString?: string;  // Full Cloud SQL socket URL
+  redisUrl?: string;            // Provisioned Redis internal URL
+  userProvidedKeys: string[];   // Keys the user explicitly provided (never override)
+}
+
+/**
+ * LLM-powered env var classifier. For each env var, returns an action verdict:
+ * keep, replace_with_cloudsql, replace_with_redis, generate_secret, delete, or needs_user_input.
+ *
+ * Falls back to rule-based classification if LLM is unavailable.
+ */
+export async function classifyEnvWithLLM(
+  envVars: Record<string, string>,
+  ctx: EnvClassificationContext,
+): Promise<EnvClassificationResult> {
+  // Build masked env var list (never send real secrets to LLM)
+  const masked: Record<string, string> = {};
+  for (const [key, val] of Object.entries(envVars)) {
+    if (!val || val.length === 0) {
+      masked[key] = '(empty)';
+    } else if (val.length <= 20) {
+      masked[key] = val;
+    } else {
+      masked[key] = `${val.slice(0, 12)}... (${val.length} chars)`;
+    }
+  }
+
+  const system = `你是一位 DevOps 工程師，正在審查要部署到 GCP Cloud Run 的應用程式環境變數。
+
+GCP Cloud Run 環境特性（非常重要）：
+- localhost 和 127.0.0.1 完全不通，container 裡沒有其他服務
+- host.docker.internal 也不通
+- 資料庫透過 Cloud SQL Auth Proxy，用 Unix socket 路徑 /cloudsql/...
+- Redis 透過 VPC 內網 IP，不是 localhost:6379
+- 每個 container instance 是 stateless、ephemeral
+- 檔案系統是 ephemeral，重啟就消失
+
+可用的基礎設施：
+${ctx.cloudSqlInstance ? `- Cloud SQL instance: ${ctx.cloudSqlInstance}` : '- Cloud SQL: 未設定'}
+${ctx.dbName ? `- Project database: ${ctx.dbName} (user: ${ctx.dbUser})` : '- Database: 未 provision'}
+${ctx.redisUrl ? `- Redis: ${ctx.redisUrl}` : '- Redis: 未 provision'}
+
+使用者明確提供的 key（不可覆蓋）：${ctx.userProvidedKeys.join(', ') || '無'}
+
+對每個環境變數判斷 action：
+- "keep": 值可以直接用在 production Cloud Run（真實的外部 API key、正確的 URL、合理的 config）
+- "replace_with_cloudsql": 這是資料庫連線（DATABASE_URL 等），值指向 localhost/docker/placeholder，需要替換成 Cloud SQL socket URL
+- "replace_with_redis": 這是 Redis 連線（REDIS_URL 等），值指向 localhost/127.0.0.1，需要替換成內網 Redis URL
+- "generate_secret": 這是 secret/token/key，值太弱或是 placeholder（如 "your-secret-here"、"changeme"、"secret"、不夠長的亂碼），需要自動生成 32 bytes 強密碼
+- "delete": 這個值是完全假的 placeholder（如 "your-email@gmail.com"、"your-meta-app-id"），帶上去反而會讓 app crash 或行為異常，不如不設
+- "needs_user_input": 這是外部服務的真實 API key 或使用者特定設定，但值看起來不對（placeholder/test），使用者必須自己提供正確的值
+
+判斷 confidence（0-1）：
+- 1.0: 非常確定（如 DATABASE_URL=postgresql://localhost:5432/db 一定要替換）
+- 0.8: 很有把握（如 JWT_SECRET=changeme 應該生成新的）
+- 0.5: 不太確定，建議標記為 needs_user_input
+
+回應格式（僅 JSON，不要 markdown）：
+{"verdicts":[{"variable":"VAR_NAME","action":"keep|replace_with_cloudsql|replace_with_redis|generate_secret|delete|needs_user_input","reason":"中文說明","confidence":0.9,"category":"database|cache|secret|api_key|url|config|unknown"}],"summary":"整體環境變數狀態的中文摘要（1-2 句）"}`;
+
+  const userMessage = `Framework: ${ctx.framework ?? 'unknown'}
+Language: ${ctx.language}
+
+環境變數（${Object.keys(masked).length} 個）：
+${Object.entries(masked).map(([k, v]) => `${k}=${v}`).join('\n')}`;
+
+  if (!anthropic && !openai) {
+    console.warn('[LLM-Env] No LLM provider available, using rule-based fallback');
+    return classifyEnvWithRules(envVars, ctx);
+  }
+
+  try {
+    const result = await callLLM(system, userMessage, 4000);
+    const jsonMatch = result.text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      console.warn('[LLM-Env] No JSON in response, falling back to rules');
+      return classifyEnvWithRules(envVars, ctx);
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      verdicts: Array<{
+        variable: string;
+        action: string;
+        reason: string;
+        confidence: number;
+        category: string;
+      }>;
+      summary: string;
+    };
+
+    // Post-process verdicts
+    const verdicts: EnvVarVerdict[] = [];
+    for (const v of (parsed.verdicts ?? [])) {
+      // Skip vars the user explicitly provided
+      if (ctx.userProvidedKeys.includes(v.variable)) continue;
+
+      // Downgrade low-confidence verdicts to needs_user_input
+      let action = v.action as EnvVarVerdict['action'];
+      if (v.confidence < 0.7 && action !== 'keep') {
+        action = 'needs_user_input';
+      }
+
+      // Validate action is a known value
+      const validActions = ['keep', 'replace_with_cloudsql', 'replace_with_redis', 'generate_secret', 'delete', 'needs_user_input'];
+      if (!validActions.includes(action)) {
+        action = 'needs_user_input';
+      }
+
+      // Generate actual secret value for generate_secret actions
+      let suggestedValue: string | undefined;
+      if (action === 'generate_secret') {
+        suggestedValue = crypto.randomBytes(32).toString('base64url');
+      }
+
+      verdicts.push({
+        variable: v.variable,
+        action,
+        reason: v.reason ?? '',
+        currentValue: masked[v.variable] ?? '(unknown)',
+        suggestedValue,
+        confidence: v.confidence ?? 0.5,
+        category: (v.category as EnvVarVerdict['category']) ?? 'unknown',
+      });
+    }
+
+    // Ensure all env vars have a verdict (LLM might skip some)
+    for (const key of Object.keys(envVars)) {
+      if (ctx.userProvidedKeys.includes(key)) continue;
+      if (!verdicts.find(v => v.variable === key)) {
+        verdicts.push({
+          variable: key,
+          action: 'keep',
+          reason: 'LLM 未評估，預設保留',
+          currentValue: masked[key] ?? '(unknown)',
+          confidence: 0.5,
+          category: 'unknown',
+        });
+      }
+    }
+
+    const autoActionCount = verdicts.filter(v => v.action !== 'keep' && v.action !== 'needs_user_input').length;
+    const needsUserCount = verdicts.filter(v => v.action === 'needs_user_input').length;
+
+    console.log(`[LLM-Env] Classification complete: ${verdicts.length} vars, ${autoActionCount} auto-actions, ${needsUserCount} needs user input`);
+
+    return {
+      verdicts,
+      summary: parsed.summary ?? '',
+      provider: result.provider,
+      autoActionCount,
+      needsUserCount,
+    };
+  } catch (err) {
+    console.warn(`[LLM-Env] Classification failed: ${(err as Error).message}, falling back to rules`);
+    return classifyEnvWithRules(envVars, ctx);
+  }
+}
+
+/**
+ * Rule-based fallback when LLM is unavailable.
+ * Implements the same actions using deterministic pattern matching.
+ */
+export function classifyEnvWithRules(
+  envVars: Record<string, string>,
+  ctx: EnvClassificationContext,
+): EnvClassificationResult {
+  const verdicts: EnvVarVerdict[] = [];
+
+  for (const [key, val] of Object.entries(envVars)) {
+    if (ctx.userProvidedKeys.includes(key)) continue;
+
+    const upper = key.toUpperCase();
+    let action: EnvVarVerdict['action'] = 'keep';
+    let reason = '值看起來適合 production';
+    let category: EnvVarVerdict['category'] = 'unknown';
+    let confidence = 0.8;
+
+    // Database URLs
+    if (upper === 'DATABASE_URL' || upper.endsWith('_DATABASE_URL') || upper === 'DB_URL') {
+      category = 'database';
+      if (/localhost|127\.0\.0\.1|host\.docker\.internal/.test(val)) {
+        action = 'replace_with_cloudsql';
+        reason = `資料庫連線指向 ${val.includes('localhost') ? 'localhost' : '127.0.0.1'}，Cloud Run 上無法連線`;
+        confidence = 1.0;
+      } else if (!val || val === 'postgresql://placeholder' || val.includes('password@')) {
+        action = 'replace_with_cloudsql';
+        reason = '資料庫連線是 placeholder 值';
+        confidence = 0.95;
+      }
+    }
+    // Redis URLs
+    else if (upper === 'REDIS_URL' || upper === 'REDIS_URI' || upper.includes('REDIS')) {
+      category = 'cache';
+      if (/localhost|127\.0\.0\.1|host\.docker\.internal/.test(val)) {
+        action = ctx.redisUrl ? 'replace_with_redis' : 'needs_user_input';
+        reason = `Redis 連線指向 localhost，Cloud Run 上無法連線`;
+        confidence = 1.0;
+      }
+    }
+    // Secret/token vars with weak values
+    else if (/SECRET|PASSWORD|TOKEN|ENCRYPTION_KEY|JWT/.test(upper) && !/META_ACCESS_TOKEN|OPENAI_API_KEY|STRIPE_SECRET/.test(upper)) {
+      category = 'secret';
+      const isWeak = val.length < 16 || /changeme|change.in.production|your.*secret|default|secret|password|test|placeholder/i.test(val);
+      if (isWeak) {
+        action = 'generate_secret';
+        reason = `Secret 值太弱或是 placeholder（"${val.slice(0, 20)}..."），需要生成強密碼`;
+        confidence = 0.9;
+      }
+    }
+    // Obvious placeholders
+    else if (/^your[_-]|^put[_-]|^change[_-]|^TODO|^xxx|^example/i.test(val) ||
+             /your.*@gmail\.com|your-.*-id|your-.*-secret/i.test(val)) {
+      category = 'config';
+      action = 'delete';
+      reason = `值是明顯的 placeholder（"${val.slice(0, 30)}"），帶上去反而會出錯`;
+      confidence = 0.95;
+    }
+    // APP_URL / FRONTEND_URL pointing to localhost
+    else if (/URL|HOST|ORIGIN|ENDPOINT/.test(upper)) {
+      category = 'url';
+      if (/localhost|127\.0\.0\.1/.test(val)) {
+        action = 'needs_user_input';
+        reason = `URL 指向 localhost，需要替換成 production URL`;
+        confidence = 0.85;
+      }
+    }
+    // NODE_ENV
+    else if (upper === 'NODE_ENV' && val !== 'production') {
+      category = 'config';
+      action = 'keep'; // env-detector already handles this
+      reason = 'NODE_ENV 應該已被設為 production';
+    }
+
+    // Generate secret for generate_secret actions
+    let suggestedValue: string | undefined;
+    if (action === 'generate_secret') {
+      suggestedValue = crypto.randomBytes(32).toString('base64url');
+    }
+
+    const masked = val.length > 20 ? `${val.slice(0, 12)}... (${val.length} chars)` : val;
+
+    verdicts.push({
+      variable: key,
+      action,
+      reason,
+      currentValue: masked,
+      suggestedValue,
+      confidence,
+      category,
+    });
+  }
+
+  const autoActionCount = verdicts.filter(v => v.action !== 'keep' && v.action !== 'needs_user_input').length;
+  const needsUserCount = verdicts.filter(v => v.action === 'needs_user_input').length;
+
+  return {
+    verdicts,
+    summary: `規則引擎分析 ${verdicts.length} 個環境變數：${autoActionCount} 個自動處理，${needsUserCount} 個需要使用者介入`,
+    provider: 'fallback',
+    autoActionCount,
+    needsUserCount,
+  };
 }
 
 // ─── Review Report Generation ───

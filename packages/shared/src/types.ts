@@ -1,3 +1,33 @@
+// ─── LLM Env Intelligence Types ───
+
+export type EnvVarAction =
+  | 'keep'                    // Value is production-ready, use as-is
+  | 'replace_with_cloudsql'   // DB connection → replace with Cloud SQL socket URL
+  | 'replace_with_redis'      // Redis connection → replace with provisioned Redis URL
+  | 'generate_secret'         // Weak/placeholder secret → generate strong random value
+  | 'delete'                  // Fake placeholder → remove entirely (better than deploying garbage)
+  | 'needs_user_input';       // External API key or user-specific → user must provide
+
+export interface EnvVarVerdict {
+  variable: string;
+  action: EnvVarAction;
+  reason: string;             // Human-readable explanation (繁體中文)
+  currentValue: string;       // Masked for security
+  suggestedValue?: string;    // Only for generate_secret (the actual generated value)
+  confidence: number;         // 0-1, below 0.7 auto-downgrades to needs_user_input
+  category: 'database' | 'cache' | 'secret' | 'api_key' | 'url' | 'config' | 'unknown';
+}
+
+export interface EnvClassificationResult {
+  verdicts: EnvVarVerdict[];
+  summary: string;            // 中文摘要
+  provider: 'claude' | 'gpt' | 'fallback';
+  autoActionCount: number;    // How many vars LLM will auto-handle
+  needsUserCount: number;     // How many vars need user input
+}
+
+// ─── Project Types ───
+
 export type ProjectStatus =
   | 'submitted'
   | 'scanning'
@@ -72,11 +102,19 @@ export interface ProjectConfig {
   };
   // LLM env var analysis results (for dashboard visibility)
   envAnalysis?: {
-    placeholders: Array<{ variable: string; value: string; reason: string }>;
-    missingCritical: Array<{ variable: string; reason: string }>;
-    recommendations: string[];
+    verdicts: EnvVarVerdict[];
+    summary: string;
     provider: string;
+    autoActionCount: number;
+    needsUserCount: number;
+    // Legacy fields (kept for backward compat)
+    placeholders?: Array<{ variable: string; value: string; reason: string }>;
+    missingCritical?: Array<{ variable: string; reason: string }>;
+    recommendations?: string[];
   };
+  // Domain error tracking
+  domainError?: string;
+  domainErrorAt?: string;
 }
 
 // ─── Project Group (aggregated view of related services + resources) ───

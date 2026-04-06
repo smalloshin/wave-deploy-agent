@@ -17,7 +17,7 @@ import { monitorSsl } from './ssl-monitor';
 import { runCanaryChecks } from './canary-monitor';
 import { detectProject } from './project-detector';
 import { detectEnvVars, mergeEnvVars } from './env-detector';
-import { analyzeEnvVarsWithLLM } from './llm-analyzer';
+import { classifyEnvWithLLM, type EnvClassificationContext } from './llm-analyzer';
 import { provisionProjectDatabase } from './db-provisioner';
 import { provisionProjectRedis } from './redis-provisioner';
 import { restoreDbDump } from './db-restore';
@@ -174,54 +174,146 @@ export async function runDeployPipeline(
     const finalEnvVars = mergeEnvVars(envDetection.detected, userEnvVars);
     console.log(`[Deploy]   ENV total: ${Object.keys(finalEnvVars).length} vars (${Object.keys(envDetection.detected).length} auto + ${Object.keys(userEnvVars).length} user)`);
 
-    // ── LLM-powered env var analysis: detect placeholders & missing critical vars ──
-    try {
-      const llmEnvResult = await analyzeEnvVarsWithLLM(
-        finalEnvVars,
-        envDetection.missing,
-        detectedFramework,
-        detectedLanguage,
-      );
-      if (llmEnvResult.placeholders.length > 0) {
-        console.warn(`[Deploy]   ⚠ LLM detected ${llmEnvResult.placeholders.length} placeholder env var(s):`);
-        for (const ph of llmEnvResult.placeholders) {
-          console.warn(`[Deploy]     ${ph.variable} = "${String(finalEnvVars[ph.variable] ?? '').slice(0, 30)}..." — ${ph.reason}`);
-          // Remove placeholder from env vars so app doesn't run with fake secrets
-          delete finalEnvVars[ph.variable];
-          if (!envDetection.missing.includes(ph.variable)) {
-            envDetection.missing.push(ph.variable);
-          }
-        }
-      }
-      if (llmEnvResult.missingCritical.length > 0) {
-        console.warn(`[Deploy]   ⚠ LLM detected ${llmEnvResult.missingCritical.length} missing critical var(s):`);
-        for (const mc of llmEnvResult.missingCritical) {
-          console.warn(`[Deploy]     ${mc.variable} — ${mc.reason}`);
-          if (!envDetection.missing.includes(mc.variable)) {
-            envDetection.missing.push(mc.variable);
-          }
-        }
-      }
-      if (llmEnvResult.recommendations.length > 0) {
-        for (const rec of llmEnvResult.recommendations) {
-          console.log(`[Deploy]   LLM recommendation: ${rec}`);
-        }
-      }
-      // Store analysis in project config for dashboard visibility
+    // ── Step 2b-2: Provision infrastructure BEFORE LLM classification ──
+    // DB and Redis provisioning runs first so we can pass connection strings to LLM as context.
+    const dbVarKeys = Object.keys(finalEnvVars).filter(k =>
+      k === 'DATABASE_URL' || k.endsWith('_DATABASE_URL') || k === 'DB_URL'
+    );
+    const needsCloudSql = dbVarKeys.length > 0;
+    const cloudSqlInstance = needsCloudSql
+      ? `${gcpProject}:${gcpRegion}:deploy-agent-db`
+      : undefined;
+
+    let dbResult: { dbName: string; dbUser: string; connectionString: string; created: boolean } | undefined;
+    if (needsCloudSql && gcpProject && gcpRegion) {
+      currentStep = 'Step 2c: Provision project database';
+      console.log(`[Deploy] ${currentStep}...`);
       try {
-        const configUpdate = {
+        dbResult = await provisionProjectDatabase(project.slug, gcpProject, gcpRegion);
+        console.log(`[Deploy]   DB: ${dbResult.dbName} (user: ${dbResult.dbUser}, created: ${dbResult.created})`);
+      } catch (err) {
+        console.error(`[Deploy]   DB provisioning failed: ${(err as Error).message}`);
+        console.warn(`[Deploy]   Continuing without project DB — LLM may flag DATABASE_URL as needs_user_input`);
+      }
+    }
+
+    // Check if Redis is needed and provisioned
+    const redisVarKeys = Object.keys(finalEnvVars).filter(k =>
+      k === 'REDIS_URL' || k === 'REDIS_URI' || k.toUpperCase().includes('REDIS')
+    );
+    let provisionedRedisUrl: string | undefined;
+    if (redisVarKeys.length > 0) {
+      try {
+        const redisResult = await provisionProjectRedis(project.id, project.slug);
+        if (redisResult?.redisUrl) {
+          provisionedRedisUrl = redisResult.redisUrl;
+          console.log(`[Deploy]   Redis provisioned: ${provisionedRedisUrl.slice(0, 30)}...`);
+        }
+      } catch {
+        console.warn(`[Deploy]   Redis provisioning not available, LLM will handle`);
+      }
+    }
+
+    // ── Step 2b-3: LLM-powered env var classification ──
+    // LLM judges every env var and returns an action verdict (keep/replace/generate/delete/needs_user_input)
+    currentStep = 'Step 2b-3: LLM env intelligence';
+    console.log(`[Deploy] ${currentStep}...`);
+    try {
+      const classificationCtx: EnvClassificationContext = {
+        framework: detectedFramework,
+        language: detectedLanguage,
+        cloudSqlInstance,
+        dbName: dbResult?.dbName,
+        dbUser: dbResult?.dbUser,
+        dbConnectionString: dbResult?.connectionString,
+        redisUrl: provisionedRedisUrl,
+        userProvidedKeys: Object.keys(userEnvVars),
+      };
+
+      const classification = await classifyEnvWithLLM(finalEnvVars, classificationCtx);
+      console.log(`[Deploy]   LLM env summary: ${classification.summary}`);
+      console.log(`[Deploy]   Provider: ${classification.provider} | Auto: ${classification.autoActionCount} | Needs user: ${classification.needsUserCount}`);
+
+      // Execute LLM verdicts
+      for (const verdict of classification.verdicts) {
+        if (verdict.action === 'keep') continue;
+
+        console.log(`[Deploy]   ${verdict.variable}: ${verdict.action} (${verdict.confidence.toFixed(1)}) — ${verdict.reason}`);
+
+        switch (verdict.action) {
+          case 'replace_with_cloudsql':
+            if (dbResult?.connectionString) {
+              finalEnvVars[verdict.variable] = dbResult.connectionString;
+              console.log(`[Deploy]     → Cloud SQL: ${dbResult.dbName}`);
+            } else {
+              envDetection.missing.push(verdict.variable);
+              console.warn(`[Deploy]     → No Cloud SQL available, marked as missing`);
+            }
+            break;
+
+          case 'replace_with_redis':
+            if (provisionedRedisUrl) {
+              finalEnvVars[verdict.variable] = provisionedRedisUrl;
+              console.log(`[Deploy]     → Redis: ${provisionedRedisUrl.slice(0, 30)}...`);
+            } else {
+              // Keep existing value if it's a real internal IP, otherwise mark missing
+              const val = finalEnvVars[verdict.variable] ?? '';
+              if (/^redis:\/\/:?\w+@10\./.test(val) || /^redis:\/\/:?\w+@172\./.test(val)) {
+                console.log(`[Deploy]     → Keeping existing internal Redis URL`);
+              } else {
+                envDetection.missing.push(verdict.variable);
+                console.warn(`[Deploy]     → No Redis available, marked as missing`);
+              }
+            }
+            break;
+
+          case 'generate_secret':
+            if (verdict.suggestedValue) {
+              finalEnvVars[verdict.variable] = verdict.suggestedValue;
+              console.log(`[Deploy]     → Generated strong secret (${verdict.suggestedValue.length} chars)`);
+            }
+            break;
+
+          case 'delete':
+            delete finalEnvVars[verdict.variable];
+            console.log(`[Deploy]     → Deleted (placeholder value)`);
+            break;
+
+          case 'needs_user_input':
+            if (!envDetection.missing.includes(verdict.variable)) {
+              envDetection.missing.push(verdict.variable);
+            }
+            console.warn(`[Deploy]     → Needs user input`);
+            break;
+        }
+      }
+
+      // Store classification in project config for dashboard visibility
+      try {
+        await updateProjectConfig(project.id, {
           ...(project.config ?? {}),
           envAnalysis: {
-            placeholders: llmEnvResult.placeholders,
-            missingCritical: llmEnvResult.missingCritical,
-            recommendations: llmEnvResult.recommendations,
-            provider: llmEnvResult.provider,
+            verdicts: classification.verdicts,
+            summary: classification.summary,
+            provider: classification.provider,
+            autoActionCount: classification.autoActionCount,
+            needsUserCount: classification.needsUserCount,
           },
-        };
-        await updateProjectConfig(project.id, configUpdate);
+        });
       } catch { /* non-critical */ }
     } catch (err) {
-      console.warn(`[Deploy]   LLM env analysis skipped: ${(err as Error).message}`);
+      console.warn(`[Deploy]   LLM env classification failed: ${(err as Error).message}`);
+      console.warn(`[Deploy]   Falling back to legacy rule-based replacement...`);
+      // Legacy fallback: replace localhost DATABASE_URLs directly
+      if (dbResult) {
+        for (const key of dbVarKeys) {
+          const val = finalEnvVars[key] ?? '';
+          if (/localhost|127\.0\.0\.1|host\.docker\.internal|password@/.test(val) && !userEnvVars[key]) {
+            finalEnvVars[key] = dbResult.connectionString;
+            console.log(`[Deploy]   Fallback: replaced ${key} with Cloud SQL credentials`);
+          }
+        }
+      }
     }
 
     // ── Monorepo: inject sibling backend URLs for frontend services ──
@@ -309,44 +401,6 @@ export async function runDeployPipeline(
         }
       } else {
         console.warn(`[Deploy]   ⚠ No backend sibling URL found after waiting — frontend API calls may fail`);
-      }
-    }
-
-    // Determine if CloudSQL connection is needed
-    const dbVarKeys = Object.keys(finalEnvVars).filter(k =>
-      k === 'DATABASE_URL' || k.endsWith('_DATABASE_URL') || k === 'DB_URL'
-    );
-    const needsCloudSql = dbVarKeys.length > 0;
-    const cloudSqlInstance = needsCloudSql
-      ? `${gcpProject}:${gcpRegion}:deploy-agent-db`
-      : undefined;
-
-    // Provision per-project database if CloudSQL is needed
-    if (needsCloudSql && gcpProject && gcpRegion) {
-      currentStep = 'Step 2c: Provision project database';
-      console.log(`[Deploy] ${currentStep}...`);
-      try {
-        const dbResult = await provisionProjectDatabase(project.slug, gcpProject, gcpRegion);
-        console.log(`[Deploy]   DB: ${dbResult.dbName} (user: ${dbResult.dbUser}, created: ${dbResult.created})`);
-
-        // Replace DATABASE_URL with the project-specific Cloud SQL connection.
-        // Replace if: auto-generated, localhost/docker (unusable in Cloud Run), or placeholder.
-        // Only keep the original if the user explicitly provided an external DB URL.
-        for (const key of dbVarKeys) {
-          const val = finalEnvVars[key] ?? '';
-          const isAutoGenerated = val.includes('deploy_agent:') && val.includes('deploy-agent-db');
-          const isLocalhost = /localhost|127\.0\.0\.1|host\.docker\.internal/.test(val);
-          const isPlaceholder = val === '' || val === 'postgresql://placeholder' || val.includes('password@');
-          const isUserProvided = !!userEnvVars[key];
-          if ((isAutoGenerated || isLocalhost || isPlaceholder) && !isUserProvided) {
-            console.log(`[Deploy]   Replacing ${key}: was "${val.slice(0, 40)}..." (${isAutoGenerated ? 'auto-generated' : isLocalhost ? 'localhost' : 'placeholder'})`);
-            finalEnvVars[key] = dbResult.connectionString;
-            console.log(`[Deploy]   ${key} → project-specific Cloud SQL credentials`);
-          }
-        }
-      } catch (err) {
-        console.error(`[Deploy]   DB provisioning failed: ${(err as Error).message}`);
-        console.warn(`[Deploy]   Continuing with existing DATABASE_URL (may fail at runtime)`);
       }
     }
 
