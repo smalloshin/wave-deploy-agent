@@ -16,11 +16,30 @@ export async function createProject(input: {
   sourceUrl?: string;
   config?: Record<string, unknown>;
 }): Promise<Project> {
-  const slug = input.name
+  const baseSlug = input.name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 60);
+    .slice(0, 55); // Leave room for suffix like "-2", "-99"
+
+  // Find a unique slug by checking for collisions and appending a numeric suffix
+  let slug = baseSlug;
+  const existing = await query(
+    `SELECT slug FROM projects WHERE slug = $1 OR slug LIKE $2 ORDER BY slug`,
+    [baseSlug, `${baseSlug}-%`]
+  );
+  if (existing.rows.length > 0) {
+    const takenSlugs = new Set(existing.rows.map((r: Record<string, unknown>) => r.slug as string));
+    if (takenSlugs.has(baseSlug)) {
+      // Find the next available suffix
+      let suffix = 2;
+      while (takenSlugs.has(`${baseSlug}-${suffix}`)) {
+        suffix++;
+      }
+      slug = `${baseSlug}-${suffix}`.slice(0, 60);
+      console.log(`[Orchestrator] Slug collision: "${baseSlug}" taken, using "${slug}"`);
+    }
+  }
 
   const result = await query(
     `INSERT INTO projects (name, slug, source_type, source_url, config)

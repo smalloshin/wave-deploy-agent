@@ -389,61 +389,70 @@ export async function projectRoutes(app: FastifyInstance) {
       // Sort: backends deploy first so frontend can resolve the backend URL
       siblings.sort((a, b) => (a.role === 'backend' ? -1 : 1) - (b.role === 'backend' ? -1 : 1));
 
+      const failedServices: Array<{ name: string; error: string }> = [];
+
       for (const svc of siblings) {
-        const serviceDir = join(projectDir, svc.dirName);
-        const svcSlug = svc.projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
-
-        let gcsSourceUri = '';
         try {
-          gcsSourceUri = await uploadSourceToGcs(svcSlug, serviceDir);
+          const serviceDir = join(projectDir, svc.dirName);
+          const svcSlug = svc.projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+
+          let gcsSourceUri = '';
+          try {
+            gcsSourceUri = await uploadSourceToGcs(svcSlug, serviceDir);
+          } catch (err) {
+            console.error(`[Upload] GCS upload failed for ${svc.projectName}:`, (err as Error).message);
+          }
+
+          const project = await createProject({
+            name: svc.projectName,
+            sourceType: 'upload',
+            sourceUrl: serviceDir,
+            config: {
+              deployTarget: 'cloud_run',
+              // Subdomain convention: frontend = {domain}, backend = api.{domain}
+              customDomain: customDomain.trim()
+                ? (svc.role === 'frontend' ? customDomain.trim() : `api.${customDomain.trim()}`)
+                : undefined,
+              forceDomain,
+              allowUnauthenticated,
+              gcsSourceUri,
+              envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
+              // DB dump (only backend services will restore it)
+              gcsDbDumpUri: svc.role === 'backend' ? gcsDbDumpUri : undefined,
+              dbDumpFileName: svc.role === 'backend' ? (dbDumpFileName || undefined) : undefined,
+              // Monorepo metadata
+              projectGroup: groupId,
+              groupName: name.trim(),
+              serviceRole: svc.role, // 'backend' | 'frontend'
+              serviceDirName: svc.dirName,
+              siblings: siblings.map(s => ({ name: s.projectName, role: s.role, dirName: s.dirName })),
+            },
+          });
+
+          await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
+          const scanReport = await createScanReport(project.id);
+
+          runPipeline(project.id, serviceDir).catch((err) => {
+            console.error(`[Pipeline] Async dispatch failed for ${project.id}:`, (err as Error).message);
+          });
+
+          createdProjects.push({
+            project: { ...project, status: 'scanning' },
+            scanReport,
+          });
         } catch (err) {
-          console.error(`[Upload] GCS upload failed for ${svc.projectName}:`, (err as Error).message);
+          const msg = (err as Error).message;
+          console.error(`[Upload] Failed to create monorepo service "${svc.projectName}": ${msg}`);
+          failedServices.push({ name: svc.projectName, error: msg });
         }
-
-        const project = await createProject({
-          name: svc.projectName,
-          sourceType: 'upload',
-          sourceUrl: serviceDir,
-          config: {
-            deployTarget: 'cloud_run',
-            // Subdomain convention: frontend = {domain}, backend = api.{domain}
-            customDomain: customDomain.trim()
-              ? (svc.role === 'frontend' ? customDomain.trim() : `api.${customDomain.trim()}`)
-              : undefined,
-            forceDomain,
-            allowUnauthenticated,
-            gcsSourceUri,
-            envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
-            // DB dump (only backend services will restore it)
-            gcsDbDumpUri: svc.role === 'backend' ? gcsDbDumpUri : undefined,
-            dbDumpFileName: svc.role === 'backend' ? (dbDumpFileName || undefined) : undefined,
-            // Monorepo metadata
-            projectGroup: groupId,
-            groupName: name.trim(),
-            serviceRole: svc.role, // 'backend' | 'frontend'
-            serviceDirName: svc.dirName,
-            siblings: siblings.map(s => ({ name: s.projectName, role: s.role, dirName: s.dirName })),
-          },
-        });
-
-        await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
-        const scanReport = await createScanReport(project.id);
-
-        runPipeline(project.id, serviceDir).catch((err) => {
-          console.error(`[Pipeline] Async dispatch failed for ${project.id}:`, (err as Error).message);
-        });
-
-        createdProjects.push({
-          project: { ...project, status: 'scanning' },
-          scanReport,
-        });
       }
 
-      console.log(`[Upload] Monorepo group ${groupId}: created ${createdProjects.length} projects`);
+      console.log(`[Upload] Monorepo group ${groupId}: created ${createdProjects.length} projects, ${failedServices.length} failed`);
       return reply.status(201).send({
         monorepo: true,
         groupId,
         services: createdProjects,
+        failedServices: failedServices.length > 0 ? failedServices : undefined,
         uploadedFile: fileName,
       });
     }
