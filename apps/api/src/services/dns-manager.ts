@@ -1,0 +1,271 @@
+// Cloudflare DNS + Cloud Run domain mapping
+// Flow: Deploy to Cloud Run → domain mapping (ghs.googlehosted.com) → CNAME in Cloudflare
+
+import { gcpFetch } from './gcp-auth';
+
+const CF_API = 'https://api.cloudflare.com/client/v4';
+
+export interface DnsConfig {
+  cloudflareToken: string;
+  zoneId: string;
+  subdomain: string;    // e.g. "kol-studio"
+  zoneName: string;     // e.g. "punwave.com"
+}
+
+export interface DnsResult {
+  success: boolean;
+  fqdn: string;         // e.g. "kol-studio.punwave.com"
+  recordId: string | null;
+  error: string | null;
+}
+
+interface CfResponse<T = unknown> {
+  success: boolean;
+  errors: { code: number; message: string }[];
+  result: T;
+}
+
+async function cfFetch<T = unknown>(
+  path: string,
+  token: string,
+  options: RequestInit = {}
+): Promise<CfResponse<T>> {
+  const res = await fetch(`${CF_API}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+  return res.json() as Promise<CfResponse<T>>;
+}
+
+// ─── List zones accessible by token ───
+
+export async function listZones(token: string): Promise<{ id: string; name: string }[]> {
+  const data = await cfFetch<{ id: string; name: string }[]>('/zones', token);
+  if (!data.success) throw new Error(`Cloudflare zones error: ${data.errors[0]?.message}`);
+  return data.result;
+}
+
+// ─── Find existing DNS record ───
+
+async function findRecord(
+  config: DnsConfig,
+  fqdn: string
+): Promise<{ id: string; content: string } | null> {
+  const data = await cfFetch<{ id: string; content: string }[]>(
+    `/zones/${config.zoneId}/dns_records?type=CNAME&name=${fqdn}`,
+    config.cloudflareToken
+  );
+  if (!data.success || data.result.length === 0) return null;
+  return data.result[0];
+}
+
+// ─── Create or update CNAME record (DNS-only, no proxy) ───
+
+export async function upsertCname(
+  config: DnsConfig,
+  target: string,
+  proxied = false
+): Promise<DnsResult> {
+  const fqdn = `${config.subdomain}.${config.zoneName}`;
+
+  try {
+    const existing = await findRecord(config, fqdn);
+
+    if (existing) {
+      if (existing.content === target) {
+        console.log(`  DNS: ${fqdn} already points to ${target}`);
+        return { success: true, fqdn, recordId: existing.id, error: null };
+      }
+
+      const data = await cfFetch<{ id: string }>(
+        `/zones/${config.zoneId}/dns_records/${existing.id}`,
+        config.cloudflareToken,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            type: 'CNAME',
+            name: config.subdomain,
+            content: target,
+            proxied,
+            ttl: 1,
+          }),
+        }
+      );
+      if (!data.success) {
+        return { success: false, fqdn, recordId: null, error: data.errors[0]?.message ?? 'Update failed' };
+      }
+      console.log(`  DNS: Updated ${fqdn} → ${target}`);
+      return { success: true, fqdn, recordId: data.result.id, error: null };
+    }
+
+    const data = await cfFetch<{ id: string }>(
+      `/zones/${config.zoneId}/dns_records`,
+      config.cloudflareToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          type: 'CNAME',
+          name: config.subdomain,
+          content: target,
+          proxied,
+          ttl: 1,
+        }),
+      }
+    );
+    if (!data.success) {
+      return { success: false, fqdn, recordId: null, error: data.errors[0]?.message ?? 'Create failed' };
+    }
+    console.log(`  DNS: Created ${fqdn} → ${target}`);
+    return { success: true, fqdn, recordId: data.result.id, error: null };
+  } catch (err) {
+    return { success: false, fqdn, recordId: null, error: (err as Error).message };
+  }
+}
+
+// ─── Delete DNS record ───
+
+export async function deleteCname(config: DnsConfig): Promise<{ success: boolean; error: string | null }> {
+  const fqdn = `${config.subdomain}.${config.zoneName}`;
+  try {
+    const existing = await findRecord(config, fqdn);
+    if (!existing) {
+      return { success: true, error: null };
+    }
+
+    const data = await cfFetch(
+      `/zones/${config.zoneId}/dns_records/${existing.id}`,
+      config.cloudflareToken,
+      { method: 'DELETE' }
+    );
+    if (!data.success) {
+      return { success: false, error: data.errors[0]?.message ?? 'Delete failed' };
+    }
+    console.log(`  DNS: Deleted ${fqdn}`);
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+// ─── Cloud Run domain mapping ───
+
+/**
+ * Look up an existing domain mapping. Returns the routeName it points to,
+ * or null if no mapping exists for this domain.
+ */
+async function getDomainMapping(
+  gcpProject: string,
+  gcpRegion: string,
+  domain: string
+): Promise<{ routeName: string | null; exists: boolean }> {
+  const url = `https://${gcpRegion}-run.googleapis.com/apis/domains.cloudrun.com/v1/namespaces/${gcpProject}/domainmappings/${domain}`;
+  const res = await gcpFetch(url);
+  if (res.status === 404) return { routeName: null, exists: false };
+  if (!res.ok) return { routeName: null, exists: false };
+  const body = await res.json() as { spec?: { routeName?: string } };
+  return { routeName: body.spec?.routeName ?? null, exists: true };
+}
+
+async function createDomainMapping(
+  gcpProject: string,
+  gcpRegion: string,
+  serviceName: string,
+  domain: string,
+  opts: { force?: boolean } = {}
+): Promise<{ success: boolean; error: string | null; conflict?: { existingRoute: string } }> {
+  try {
+    // Pre-check: is this domain already mapped to a different service?
+    const existing = await getDomainMapping(gcpProject, gcpRegion, domain);
+    if (existing.exists && existing.routeName && existing.routeName !== serviceName) {
+      if (!opts.force) {
+        return {
+          success: false,
+          error: `Domain ${domain} is already mapped to service "${existing.routeName}". ` +
+                 `Pass force=true to replace with "${serviceName}".`,
+          conflict: { existingRoute: existing.routeName },
+        };
+      }
+      // Force: delete the old mapping first
+      console.log(`  [domain] Force-replacing ${domain}: ${existing.routeName} → ${serviceName}`);
+      const deleteUrl = `https://${gcpRegion}-run.googleapis.com/apis/domains.cloudrun.com/v1/namespaces/${gcpProject}/domainmappings/${domain}`;
+      const delRes = await gcpFetch(deleteUrl, { method: 'DELETE' });
+      if (!delRes.ok && delRes.status !== 404) {
+        const body = await delRes.text();
+        return { success: false, error: `Failed to delete existing mapping: HTTP ${delRes.status}: ${body}` };
+      }
+    } else if (existing.exists && existing.routeName === serviceName) {
+      // Already mapped to the same service — nothing to do
+      return { success: true, error: null };
+    }
+
+    const url = `https://${gcpRegion}-run.googleapis.com/apis/domains.cloudrun.com/v1/namespaces/${gcpProject}/domainmappings`;
+    const res = await gcpFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({
+        apiVersion: 'domains.cloudrun.com/v1',
+        kind: 'DomainMapping',
+        metadata: { name: domain, namespace: gcpProject },
+        spec: { routeName: serviceName },
+      }),
+    });
+
+    if (res.ok) return { success: true, error: null };
+
+    const body = await res.text();
+    if (body.includes('already mapped') || body.includes('already exists') || res.status === 409) {
+      return { success: true, error: null };
+    }
+    return { success: false, error: `HTTP ${res.status}: ${body}` };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+// ─── Full custom domain setup ───
+// 1. Cloud Run domain mapping → tells GCP to accept traffic for this hostname
+// 2. Cloudflare CNAME → ghs.googlehosted.com (Google's domain mapping endpoint)
+// 3. Google provisions SSL cert automatically
+
+export async function setupCustomDomainWithDns(
+  config: DnsConfig,
+  _cloudRunUrl: string,
+  gcpProject: string,
+  gcpRegion: string,
+  serviceName: string,
+  opts: { force?: boolean } = {}
+): Promise<{ success: boolean; customUrl: string; error: string | null; conflict?: { existingRoute: string } }> {
+  const fqdn = `${config.subdomain}.${config.zoneName}`;
+
+  console.log(`\n  Setting up custom domain: ${fqdn}`);
+
+  // Step 1: Cloud Run domain mapping (with conflict detection)
+  console.log('  Step 1: Cloud Run domain mapping...');
+  const mappingResult = await createDomainMapping(gcpProject, gcpRegion, serviceName, fqdn, opts);
+  if (!mappingResult.success) {
+    return {
+      success: false,
+      customUrl: '',
+      error: `Domain mapping failed: ${mappingResult.error}`,
+      conflict: mappingResult.conflict,
+    };
+  }
+  console.log('  Domain mapping: OK');
+
+  // Step 2: Cloudflare CNAME → ghs.googlehosted.com (DNS-only, no proxy)
+  // Cloud Run handles SSL via managed Google certs.
+  // Cloudflare proxy must be OFF so Google can verify domain ownership and provision the cert.
+  console.log('  Step 2: Cloudflare CNAME → ghs.googlehosted.com...');
+  const dnsResult = await upsertCname(config, 'ghs.googlehosted.com', false);
+  if (!dnsResult.success) {
+    return { success: false, customUrl: '', error: `DNS failed: ${dnsResult.error}` };
+  }
+
+  console.log(`  ${fqdn} → ghs.googlehosted.com (DNS-only, SSL by Google managed cert)`);
+  console.log('  Note: SSL cert provisioning takes 5-15 minutes on first setup');
+
+  return { success: true, customUrl: `https://${fqdn}`, error: null };
+}
