@@ -691,16 +691,18 @@ export async function runDeployPipeline(
             console.warn(`[Deploy]   SSL monitoring error: ${(sslErr as Error).message}, continuing`);
           }
         } else {
-          if (domainResult.conflict) {
-            console.warn(
-              `[Deploy]   ⚠ DOMAIN CONFLICT: ${customDomainSubdomain}.${cfZoneName} is already mapped to ` +
-              `"${domainResult.conflict.existingRoute}" (not this service "${deployResult.serviceName}"). ` +
-              `Skipping custom domain to avoid breaking the other service. ` +
-              `Re-deploy with force_domain=true to override.`
-            );
-          } else {
-            console.warn(`[Deploy]   Domain setup failed: ${domainResult.error}`);
-          }
+          const domainError = domainResult.conflict
+            ? `DOMAIN CONFLICT: ${customDomainSubdomain}.${cfZoneName} is already mapped to "${domainResult.conflict.existingRoute}". Re-deploy with force_domain=true to override.`
+            : `Domain setup failed: ${domainResult.error}`;
+          console.warn(`[Deploy]   ⚠ ${domainError}`);
+          // Record domain error in project config so it's visible in dashboard
+          try {
+            await updateProjectConfig(project.id, {
+              ...project.config,
+              domainError,
+              domainErrorAt: new Date().toISOString(),
+            });
+          } catch { /* non-fatal */ }
           // Continue without custom domain
         }
       } else {

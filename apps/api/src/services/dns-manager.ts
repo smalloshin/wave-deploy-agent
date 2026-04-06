@@ -213,13 +213,43 @@ async function createDomainMapping(
       }),
     });
 
-    if (res.ok) return { success: true, error: null };
-
-    const body = await res.text();
-    if (body.includes('already mapped') || body.includes('already exists') || res.status === 409) {
-      return { success: true, error: null };
+    if (!res.ok) {
+      const body = await res.text();
+      if (body.includes('already mapped') || body.includes('already exists') || res.status === 409) {
+        return { success: true, error: null };
+      }
+      return { success: false, error: `HTTP ${res.status}: ${body}` };
     }
-    return { success: false, error: `HTTP ${res.status}: ${body}` };
+
+    // Mapping created — but check conditions for async errors like PermissionDenied.
+    // GCP returns 200 even when domain ownership isn't verified; the failure shows
+    // up as a condition on the mapping object.
+    try {
+      // Brief delay to let GCP populate conditions
+      await new Promise(r => setTimeout(r, 3000));
+      const checkUrl = `https://${gcpRegion}-run.googleapis.com/apis/domains.cloudrun.com/v1/namespaces/${gcpProject}/domainmappings/${domain}`;
+      const checkRes = await gcpFetch(checkUrl);
+      if (checkRes.ok) {
+        const mapping = await checkRes.json() as {
+          status?: { conditions?: Array<{ type: string; status: string; reason?: string; message?: string }> }
+        };
+        const conditions = mapping.status?.conditions ?? [];
+        const denied = conditions.find(c => c.reason === 'PermissionDenied');
+        if (denied) {
+          // Clean up the broken mapping
+          const deleteUrl = `https://${gcpRegion}-run.googleapis.com/apis/domains.cloudrun.com/v1/namespaces/${gcpProject}/domainmappings/${domain}`;
+          await gcpFetch(deleteUrl, { method: 'DELETE' }).catch(() => {});
+          return {
+            success: false,
+            error: `Domain ownership not verified: ${domain}. Verify ownership of "${domain.split('.').slice(-2).join('.')}" in Google Search Console (https://search.google.com/search-console), then re-deploy.`,
+          };
+        }
+      }
+    } catch {
+      // Non-fatal: if we can't check conditions, proceed optimistically
+    }
+
+    return { success: true, error: null };
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }
