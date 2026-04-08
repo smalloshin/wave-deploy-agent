@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "deploy-agent-api",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["tsx", "watch", "apps/api/src/index.ts"],
+      "port": 4000
+    }
+  ]
+}
