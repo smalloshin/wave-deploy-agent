@@ -293,16 +293,20 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
           const data = await initRes.json();
           throw new Error(data.error ?? `Init failed: HTTP ${initRes.status}`);
         }
-        const { uploadUrl, gcsUri } = await initRes.json();
+        const { uploadUrl, accessToken, gcsUri, contentType } = await initRes.json();
 
-        // Step 2: Upload file directly to GCS (bypasses Cloud Run 32MB limit)
+        // Step 2: Upload file directly to GCS with access token (bypasses Cloud Run 32MB limit)
         const uploadRes = await fetch(uploadUrl, {
-          method: 'PUT',
-          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          method: 'POST',
+          headers: {
+            'Content-Type': contentType || file.type || 'application/octet-stream',
+            'Authorization': `Bearer ${accessToken}`,
+          },
           body: file,
         });
         if (!uploadRes.ok) {
-          throw new Error(`GCS 上傳失敗: HTTP ${uploadRes.status}`);
+          const errText = await uploadRes.text().catch(() => '');
+          throw new Error(`GCS 上傳失敗: HTTP ${uploadRes.status} ${errText.slice(0, 200)}`);
         }
 
         // Step 3: Submit project with GCS URI
