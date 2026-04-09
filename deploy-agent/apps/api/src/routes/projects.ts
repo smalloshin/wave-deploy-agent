@@ -30,6 +30,7 @@ const execFileAsync = promisify(execFile);
 const GCP_PROJECT = process.env.GCP_PROJECT || 'wave-deploy-agent';
 const GCP_REGION = process.env.GCP_REGION || 'asia-east1';
 const CF_ZONE_NAME = process.env.CLOUDFLARE_ZONE_NAME || 'punwave.com';
+const GCS_BUCKET = `${GCP_PROJECT}_cloudbuild`;
 
 // Check if a domain is already mapped to a Cloud Run service.
 // Returns null if available, or { fqdn, existingRoute } if conflict found.
@@ -216,6 +217,162 @@ export async function projectRoutes(app: FastifyInstance) {
     }
 
     return reply.status(201).send({ project: { ...project, status: 'scanning' }, scanReport });
+  });
+
+  // ── Get a GCS resumable upload URL (for large files that exceed Cloud Run's 32MB limit) ──
+  app.post('/api/upload/init', async (request, reply) => {
+    const { fileName, contentType } = request.body as { fileName: string; contentType?: string };
+    if (!fileName) return reply.status(400).send({ error: 'fileName is required' });
+
+    const objectName = `uploads/${Date.now()}-${fileName}`;
+    const mimeType = contentType || 'application/octet-stream';
+
+    // Initiate a resumable upload session — returns a URI the browser can PUT to directly
+    const initUrl = `https://storage.googleapis.com/upload/storage/v1/b/${GCS_BUCKET}/o?uploadType=resumable&name=${encodeURIComponent(objectName)}`;
+    const res = await gcpFetch(initUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Upload-Content-Type': mimeType,
+      },
+      body: JSON.stringify({ name: objectName, contentType: mimeType }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      return reply.status(500).send({ error: `GCS init failed: ${err}` });
+    }
+
+    const uploadUrl = res.headers.get('location');
+    if (!uploadUrl) {
+      return reply.status(500).send({ error: 'GCS did not return upload URL' });
+    }
+
+    return { uploadUrl, gcsUri: `gs://${GCS_BUCKET}/${objectName}`, objectName };
+  });
+
+  // ── Submit project from a GCS-uploaded file (no multipart, JSON body only) ──
+  app.post('/api/projects/submit-gcs', async (request, reply) => {
+    const body = request.body as {
+      name: string;
+      gcsUri: string;       // gs://bucket/uploads/...
+      fileName: string;
+      customDomain?: string;
+      forceDomain?: boolean;
+      allowUnauthenticated?: boolean;
+      envVars?: string;
+      dbDumpGcsUri?: string;
+      dbDumpFileName?: string;
+    };
+
+    if (!body.name?.trim()) return reply.status(400).send({ error: 'name is required' });
+    if (!body.gcsUri?.trim()) return reply.status(400).send({ error: 'gcsUri is required' });
+    if (!body.customDomain?.trim()) return reply.status(400).send({ error: 'customDomain is required' });
+
+    // Domain conflict check
+    if (body.customDomain && !body.forceDomain) {
+      const sub = body.customDomain.replace(`.${CF_ZONE_NAME}`, '');
+      const subsToCheck = [sub, `api.${sub}`];
+      for (const s of subsToCheck) {
+        const conflict = await checkDomainConflict(s);
+        if (conflict) {
+          return reply.status(409).send({ error: 'domain_conflict', message: `Domain "${conflict.fqdn}" already mapped to "${conflict.existingRoute}".`, conflict });
+        }
+      }
+    }
+
+    // Download from GCS, extract, detect, then proceed same as upload flow
+    const projectSlug = body.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+    const uploadDir = join(tmpdir(), 'deploy-agent-uploads', `${projectSlug}-${Date.now()}`);
+    const extractDir = join(uploadDir, 'source');
+    await mkdir(extractDir, { recursive: true });
+
+    // Download from GCS
+    const objectName = body.gcsUri.replace(`gs://${GCS_BUCKET}/`, '');
+    const downloadUrl = `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o/${encodeURIComponent(objectName)}?alt=media`;
+    const dlRes = await gcpFetch(downloadUrl);
+    if (!dlRes.ok) {
+      return reply.status(500).send({ error: `Failed to download from GCS: HTTP ${dlRes.status}` });
+    }
+    const fileBuffer = Buffer.from(await dlRes.arrayBuffer());
+    const archivePath = join(uploadDir, body.fileName);
+    await writeFile(archivePath, fileBuffer);
+
+    // Extract
+    const lowerName = body.fileName.toLowerCase();
+    try {
+      if (lowerName.endsWith('.zip')) {
+        await execFileAsync('unzip', ['-o', archivePath, '-d', extractDir], { timeout: 60000 });
+      } else if (lowerName.endsWith('.tar.gz') || lowerName.endsWith('.tgz')) {
+        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: 60000 });
+      } else if (lowerName.endsWith('.tar')) {
+        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: 60000 });
+      } else {
+        return reply.status(400).send({ error: 'Unsupported file type' });
+      }
+    } catch (err) {
+      return reply.status(400).send({ error: `Extract failed: ${(err as Error).message}` });
+    }
+
+    // Cleanup junk
+    const { rmSync, existsSync, statSync, readdirSync } = await import('node:fs');
+    const junkDirs = ['__MACOSX', '.DS_Store', '__pycache__'];
+    for (const junk of junkDirs) {
+      try { rmSync(join(extractDir, junk), { recursive: true, force: true }); } catch {}
+    }
+
+    // Determine projectDir
+    const { stdout } = await execFileAsync('ls', [extractDir]);
+    const entries = stdout.trim().split('\n').filter(e => e && !junkDirs.includes(e));
+    let projectDir: string;
+    if (entries.length === 1 && existsSync(join(extractDir, entries[0])) &&
+        statSync(join(extractDir, entries[0])).isDirectory()) {
+      projectDir = join(extractDir, entries[0]);
+    } else {
+      projectDir = extractDir;
+    }
+
+    const userEnvVars = parseEnvVarsText(body.envVars || '');
+
+    const project = await createProject({
+      name: body.name.trim(),
+      sourceType: 'upload',
+      sourceUrl: projectDir,
+      config: {
+        deployTarget: 'cloud_run' as const,
+        customDomain: body.customDomain?.trim(),
+        forceDomain: body.forceDomain ?? false,
+        allowUnauthenticated: body.allowUnauthenticated ?? true,
+        gcsSourceUri: body.gcsUri,
+        envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
+        gcsDbDumpUri: body.dbDumpGcsUri,
+        dbDumpFileName: body.dbDumpFileName,
+      },
+    });
+
+    await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
+    const scanReport = await createScanReport(project.id);
+
+    // Return immediately, pipeline runs in background
+    reply.status(201).send({
+      project: { ...project, status: 'scanning' },
+      scanReport,
+      uploadedFile: body.fileName,
+    });
+
+    // Background: re-upload as proper source tarball + start pipeline
+    (async () => {
+      try {
+        const gcsSourceUri = await uploadSourceToGcs(projectSlug, projectDir);
+        const current = await getProject(project.id);
+        await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
+      } catch (err) {
+        console.error(`[GCS Submit] Background GCS repack failed:`, (err as Error).message);
+      }
+      runPipeline(project.id, projectDir).catch((err) => {
+        console.error(`[Pipeline] Async dispatch failed for ${project.id}:`, (err as Error).message);
+      });
+    })();
   });
 
   // Submit new project via file upload (multipart form)

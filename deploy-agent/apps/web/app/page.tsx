@@ -271,12 +271,69 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
     }
   };
 
+  const GCS_UPLOAD_THRESHOLD = 30 * 1024 * 1024; // 30MB — Cloud Run limit is 32MB
+
   const doSubmit = async (forceDomain: boolean) => {
     setSubmitting(true);
     setError(null);
     setDomainConflict(null);
 
     try {
+      // For large files: upload to GCS first, then submit via JSON
+      if (sourceType === 'upload' && file && file.size > GCS_UPLOAD_THRESHOLD) {
+        setError(null);
+
+        // Step 1: Get GCS upload URL from API
+        const initRes = await fetch(`${API}/api/upload/init`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileName: file.name, contentType: file.type || 'application/octet-stream' }),
+        });
+        if (!initRes.ok) {
+          const data = await initRes.json();
+          throw new Error(data.error ?? `Init failed: HTTP ${initRes.status}`);
+        }
+        const { uploadUrl, gcsUri } = await initRes.json();
+
+        // Step 2: Upload file directly to GCS (bypasses Cloud Run 32MB limit)
+        const uploadRes = await fetch(uploadUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          body: file,
+        });
+        if (!uploadRes.ok) {
+          throw new Error(`GCS 上傳失敗: HTTP ${uploadRes.status}`);
+        }
+
+        // Step 3: Submit project with GCS URI
+        const submitRes = await fetch(`${API}/api/projects/submit-gcs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name.trim(),
+            gcsUri,
+            fileName: file.name,
+            customDomain: customDomain.trim(),
+            forceDomain,
+            allowUnauthenticated: allowUnauth,
+            envVars: envVarsText.trim() || undefined,
+          }),
+        });
+        if (!submitRes.ok) {
+          const data = await submitRes.json();
+          if (data.error === 'domain_conflict') {
+            setDomainConflict(data);
+            setSubmitting(false);
+            return;
+          }
+          throw new Error(data.error ?? data.message ?? `HTTP ${submitRes.status}`);
+        }
+
+        onSubmitted();
+        return;
+      }
+
+      // For small files or git: use original multipart upload
       const formData = new FormData();
       formData.append('name', name.trim());
       formData.append('sourceType', sourceType);
@@ -302,6 +359,11 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
 
       if (!res.ok) {
         const data = await res.json();
+        if (data.error === 'domain_conflict') {
+          setDomainConflict(data);
+          setSubmitting(false);
+          return;
+        }
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
 
