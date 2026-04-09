@@ -472,17 +472,10 @@ export async function projectRoutes(app: FastifyInstance) {
 
       const failedServices: Array<{ name: string; error: string }> = [];
 
+      // Create all project records first (fast), then do GCS uploads in background
       for (const svc of siblings) {
         try {
           const serviceDir = join(projectDir, svc.dirName);
-          const svcSlug = svc.projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
-
-          let gcsSourceUri = '';
-          try {
-            gcsSourceUri = await uploadSourceToGcs(svcSlug, serviceDir);
-          } catch (err) {
-            console.error(`[Upload] GCS upload failed for ${svc.projectName}:`, (err as Error).message);
-          }
 
           const project = await createProject({
             name: svc.projectName,
@@ -490,21 +483,17 @@ export async function projectRoutes(app: FastifyInstance) {
             sourceUrl: serviceDir,
             config: {
               deployTarget: 'cloud_run',
-              // Subdomain convention: frontend = {domain}, backend = api.{domain}
               customDomain: customDomain.trim()
                 ? (svc.role === 'frontend' ? customDomain.trim() : `api.${customDomain.trim()}`)
                 : undefined,
               forceDomain,
               allowUnauthenticated,
-              gcsSourceUri,
               envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
-              // DB dump (only backend services will restore it)
               gcsDbDumpUri: svc.role === 'backend' ? gcsDbDumpUri : undefined,
               dbDumpFileName: svc.role === 'backend' ? (dbDumpFileName || undefined) : undefined,
-              // Monorepo metadata
               projectGroup: groupId,
               groupName: name.trim(),
-              serviceRole: svc.role, // 'backend' | 'frontend'
+              serviceRole: svc.role,
               serviceDirName: svc.dirName,
               siblings: siblings.map(s => ({ name: s.projectName, role: s.role, dirName: s.dirName })),
             },
@@ -512,10 +501,6 @@ export async function projectRoutes(app: FastifyInstance) {
 
           await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
           const scanReport = await createScanReport(project.id);
-
-          runPipeline(project.id, serviceDir).catch((err) => {
-            console.error(`[Pipeline] Async dispatch failed for ${project.id}:`, (err as Error).message);
-          });
 
           createdProjects.push({
             project: { ...project, status: 'scanning' },
@@ -529,35 +514,44 @@ export async function projectRoutes(app: FastifyInstance) {
       }
 
       console.log(`[Upload] Monorepo group ${groupId}: created ${createdProjects.length} projects, ${failedServices.length} failed`);
-      return reply.status(201).send({
+
+      // ── Return response immediately — GCS upload + pipeline run in background ──
+      reply.status(201).send({
         monorepo: true,
         groupId,
         services: createdProjects,
         failedServices: failedServices.length > 0 ? failedServices : undefined,
         uploadedFile: fileName,
       });
+
+      // Background: upload source to GCS + start pipeline for each service
+      for (const svc of siblings) {
+        const serviceDir = join(projectDir, svc.dirName);
+        const svcSlug = svc.projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+        const created = createdProjects.find(
+          (c) => (c.project as { name: string }).name === svc.projectName,
+        );
+        if (!created) continue;
+        const projectId = (created.project as { id: string }).id;
+
+        (async () => {
+          try {
+            const gcsSourceUri = await uploadSourceToGcs(svcSlug, serviceDir);
+            const current = await getProject(projectId);
+            await updateProjectConfig(projectId, { ...current.config, gcsSourceUri });
+          } catch (err) {
+            console.error(`[Upload] Background GCS upload failed for ${svc.projectName}:`, (err as Error).message);
+          }
+          runPipeline(projectId, serviceDir).catch((err) => {
+            console.error(`[Pipeline] Async dispatch failed for ${projectId}:`, (err as Error).message);
+          });
+        })();
+      }
     }
 
     // ── Single-service project (original flow) ──
-    // Upload source to GCS for durable storage (Cloud Run /tmp is ephemeral)
-    let gcsSourceUri = '';
-    try {
-      gcsSourceUri = await uploadSourceToGcs(projectSlug, projectDir);
-    } catch (err) {
-      console.error(`[Upload] GCS upload failed, continuing with local path:`, (err as Error).message);
-    }
-
+    // Create project record FIRST, then do heavy I/O in background
     const userEnvVars = parseEnvVarsText(envVarsRaw);
-
-    // Upload DB dump to GCS if provided
-    let gcsDbDumpUri: string | undefined;
-    if (dbDumpBuffer && dbDumpFileName) {
-      try {
-        gcsDbDumpUri = await uploadDbDumpToGcs(projectSlug, dbDumpBuffer, dbDumpFileName);
-      } catch (err) {
-        console.error(`[Upload] DB dump upload failed:`, (err as Error).message);
-      }
-    }
 
     const project = await createProject({
       name: name.trim(),
@@ -568,9 +562,6 @@ export async function projectRoutes(app: FastifyInstance) {
         customDomain: customDomain.trim() || undefined,
         forceDomain,
         allowUnauthenticated,
-        gcsSourceUri,  // persisted source for deploy step
-        gcsDbDumpUri,  // DB dump for restore during deploy
-        dbDumpFileName: dbDumpFileName || undefined,
         envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
       },
     });
@@ -578,16 +569,39 @@ export async function projectRoutes(app: FastifyInstance) {
     await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
     const scanReport = await createScanReport(project.id);
 
-    runPipeline(project.id, projectDir).catch((err) => {
-      console.error(`[Pipeline] Async dispatch failed for ${project.id}:`, (err as Error).message);
-    });
-
-    return reply.status(201).send({
+    // ── Return response immediately — GCS upload + pipeline run in background ──
+    reply.status(201).send({
       project: { ...project, status: 'scanning' },
       scanReport,
       uploadedFile: fileName,
       extractedTo: projectDir,
     });
+
+    // Background: upload source + DB dump to GCS, then start pipeline
+    (async () => {
+      try {
+        const gcsSourceUri = await uploadSourceToGcs(projectSlug, projectDir);
+        // Persist GCS URI back to project config
+        const current = await getProject(project.id);
+        await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
+      } catch (err) {
+        console.error(`[Upload] Background GCS upload failed for ${project.id}:`, (err as Error).message);
+      }
+
+      if (dbDumpBuffer && dbDumpFileName) {
+        try {
+          const gcsDbDumpUri = await uploadDbDumpToGcs(projectSlug, dbDumpBuffer, dbDumpFileName);
+          const currentForDump = await getProject(project.id);
+          await updateProjectConfig(project.id, { ...currentForDump.config, gcsDbDumpUri, dbDumpFileName });
+        } catch (err) {
+          console.error(`[Upload] Background DB dump upload failed:`, (err as Error).message);
+        }
+      }
+
+      runPipeline(project.id, projectDir).catch((err) => {
+        console.error(`[Pipeline] Async dispatch failed for ${project.id}:`, (err as Error).message);
+      });
+    })();
   });
 
   // Get latest scan report for project
