@@ -1,0 +1,10 @@
+.next
+node_modules
+.turbo
+dist
+coverage
+.env
+.env.local
+*.log
+terraform/.terraform/
+terraform/*.tfstate*
