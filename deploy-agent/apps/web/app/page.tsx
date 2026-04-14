@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -56,8 +57,11 @@ export default function ProjectsPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteLog, setDeleteLog] = useState<{ step: string; status: string; error?: string }[] | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [selected, setSelected] = useState<Record<string, Set<string>>>({}); // groupId -> set of serviceIds
-  const [actionBusy, setActionBusy] = useState<string | null>(null); // "groupId:action" lock
+  const [selected, setSelected] = useState<Record<string, Set<string>>>({});
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+
+  const t = useTranslations('projects');
+  const tc = useTranslations('common');
 
   const loadGroups = (silent = false) => {
     if (!silent) setLoading(true);
@@ -67,7 +71,7 @@ export default function ProjectsPage() {
       .catch((err) => { setError(err.message); setLoading(false); });
   };
 
-  const loadProjects = loadGroups; // back-compat for existing callers (modals)
+  const loadProjects = loadGroups;
 
   const toggleExpand = (gid: string) =>
     setExpanded((p) => ({ ...p, [gid]: !p[gid] }));
@@ -97,7 +101,7 @@ export default function ProjectsPage() {
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       const failed = (data.results ?? []).filter((r: { success: boolean }) => !r.success);
       if (failed.length > 0) {
-        alert(`${failed.length} / ${(data.results ?? []).length} 失敗：\n` +
+        alert(t('failedCount', { failed: String(failed.length), total: String((data.results ?? []).length) }) + '\n' +
           failed.map((r: { name: string; message: string }) => `- ${r.name}: ${r.message}`).join('\n'));
       }
       loadGroups(true);
@@ -132,7 +136,7 @@ export default function ProjectsPage() {
   if (loading) {
     return (
       <div>
-        <Header onSubmit={() => setShowModal(true)} />
+        <Header t={t} onSubmit={() => setShowModal(true)} />
         <div style={{ marginTop: 24 }}>
           {[1, 2, 3].map((i) => (
             <div key={i} style={{
@@ -148,9 +152,9 @@ export default function ProjectsPage() {
   if (error) {
     return (
       <div>
-        <Header onSubmit={() => setShowModal(true)} />
+        <Header t={t} onSubmit={() => setShowModal(true)} />
         <div style={{ marginTop: 24, padding: 16, background: 'rgba(248,81,73,0.1)', borderRadius: 6, border: '1px solid var(--status-critical)' }}>
-          <p>載入專案失敗。 <button className="btn" onClick={() => window.location.reload()}>重試</button></p>
+          <p>{t('loadFailed')} <button className="btn" onClick={() => window.location.reload()}>{tc('retry')}</button></p>
         </div>
         {showModal && (
           <SubmitModal
@@ -164,13 +168,13 @@ export default function ProjectsPage() {
 
   return (
     <div>
-      <Header onSubmit={() => setShowModal(true)} />
+      <Header t={t} onSubmit={() => setShowModal(true)} />
       {groups.length === 0 ? (
         <div style={{ marginTop: 48, textAlign: 'center', color: 'var(--text-secondary)' }}>
-          <p style={{ fontSize: 18, marginBottom: 8 }}>尚無專案</p>
-          <p>提交你的第一個專案以開始使用。</p>
+          <p style={{ fontSize: 18, marginBottom: 8 }}>{t('noProjects')}</p>
+          <p>{t('noProjectsDesc')}</p>
           <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={() => setShowModal(true)}>
-            + 提交專案
+            {t('submitProject')}
           </button>
         </div>
       ) : (
@@ -211,7 +215,6 @@ export default function ProjectsPage() {
               const data = await res.json();
               if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
               setDeleteLog(data.teardownLog ?? []);
-              // Reload after short delay so user can see the log
               setTimeout(() => {
                 setDeleteTarget(null);
                 setDeleteLog(null);
@@ -229,12 +232,12 @@ export default function ProjectsPage() {
   );
 }
 
-function Header({ onSubmit }: { onSubmit: () => void }) {
+function Header({ t, onSubmit }: { t: (key: string) => string; onSubmit: () => void }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <h2 style={{ fontSize: 20, fontWeight: 600 }}>專案</h2>
+      <h2 style={{ fontSize: 20, fontWeight: 600 }}>{t('title')}</h2>
       <button className="btn btn-primary" onClick={onSubmit}>
-        + 提交專案
+        {t('submitProject')}
       </button>
     </div>
   );
@@ -246,7 +249,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
   const [gitUrl, setGitUrl] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [customDomain, setCustomDomain] = useState('');
-  const [allowUnauth] = useState(true); // Always public — deploy agent projects are meant for public access
+  const [allowUnauth] = useState(true);
   const [envVarsText, setEnvVarsText] = useState('');
   const [dbDumpFile, setDbDumpFile] = useState<File | null>(null);
   const [showEnvVars, setShowEnvVars] = useState(false);
@@ -255,23 +258,26 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
   const [dragOver, setDragOver] = useState(false);
   const [domainConflict, setDomainConflict] = useState<{ fqdn: string; existingRoute: string } | null>(null);
 
+  const t = useTranslations('projects.submitModal');
+  const td = useTranslations('projects.domainConflict');
+  const tc = useTranslations('common');
+
   const handleFile = (f: File) => {
     const validTypes = ['.zip', '.tar.gz', '.tgz', '.tar'];
     const isValid = validTypes.some((ext) => f.name.toLowerCase().endsWith(ext));
     if (!isValid) {
-      setError('請上傳 .zip、.tar.gz 或 .tar 檔案');
+      setError(t('invalidFileType'));
       return;
     }
     setFile(f);
     setError(null);
-    // Auto-fill project name from filename if empty
     if (!name.trim()) {
       const baseName = f.name.replace(/\.(zip|tar\.gz|tgz|tar)$/i, '');
       setName(baseName);
     }
   };
 
-  const GCS_UPLOAD_THRESHOLD = 30 * 1024 * 1024; // 30MB — Cloud Run limit is 32MB
+  const GCS_UPLOAD_THRESHOLD = 30 * 1024 * 1024;
 
   const doSubmit = async (forceDomain: boolean) => {
     setSubmitting(true);
@@ -279,11 +285,9 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
     setDomainConflict(null);
 
     try {
-      // For large files: upload to GCS first, then submit via JSON
       if (sourceType === 'upload' && file && file.size > GCS_UPLOAD_THRESHOLD) {
         setError(null);
 
-        // Step 1: Get GCS upload URL from API
         const initRes = await fetch(`${API}/api/upload/init`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -295,7 +299,6 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         }
         const { uploadUrl, accessToken, gcsUri, contentType } = await initRes.json();
 
-        // Step 2: Upload file directly to GCS with access token (bypasses Cloud Run 32MB limit)
         const uploadRes = await fetch(uploadUrl, {
           method: 'POST',
           headers: {
@@ -306,10 +309,9 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         });
         if (!uploadRes.ok) {
           const errText = await uploadRes.text().catch(() => '');
-          throw new Error(`GCS 上傳失敗: HTTP ${uploadRes.status} ${errText.slice(0, 200)}`);
+          throw new Error(t('gcsUploadFailed', { status: String(uploadRes.status), detail: errText.slice(0, 200) }));
         }
 
-        // Step 3: Submit project with GCS URI
         const submitRes = await fetch(`${API}/api/projects/submit-gcs`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -337,7 +339,6 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         return;
       }
 
-      // For small files or git: use original multipart upload
       const formData = new FormData();
       formData.append('name', name.trim());
       formData.append('sourceType', sourceType);
@@ -379,17 +380,15 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
   };
 
   const handleSubmit = async () => {
-    if (!name.trim()) { setError('請輸入專案名稱'); return; }
-    if (sourceType === 'upload' && !file) { setError('請上傳專案壓縮檔'); return; }
-    if (sourceType === 'git' && !gitUrl.trim()) { setError('請輸入 Git URL'); return; }
-    if (!customDomain.trim()) { setError('請輸入自訂網域'); return; }
+    if (!name.trim()) { setError(t('errorProjectName')); return; }
+    if (sourceType === 'upload' && !file) { setError(t('errorUploadFile')); return; }
+    if (sourceType === 'git' && !gitUrl.trim()) { setError(t('errorGitUrl')); return; }
+    if (!customDomain.trim()) { setError(t('errorCustomDomain')); return; }
 
-    // Pre-flight: check custom domain for conflicts
     if (customDomain.trim()) {
       setSubmitting(true);
       setError(null);
       try {
-        // Check both the main domain and the api.* variant (for monorepos)
         const subs = [customDomain.trim(), `api.${customDomain.trim()}`];
         for (const sub of subs) {
           const res = await fetch(`${API}/api/infra/check-domain?subdomain=${encodeURIComponent(sub)}&zone=punwave.com`);
@@ -402,7 +401,6 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         }
       } catch (err) {
         console.warn('Domain pre-check failed:', err);
-        // Don't block submission if pre-check fails — backend will enforce
       }
     }
 
@@ -418,13 +416,13 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         background: 'var(--bg-secondary)', borderRadius: 12, padding: 24,
         width: 520, maxWidth: '90vw', border: '1px solid var(--border)',
       }} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>提交專案</h3>
+        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>{t('title')}</h3>
 
-        <ModalField label="專案名稱" value={name} onChange={setName} placeholder="my-awesome-app" />
+        <ModalField label={t('projectName')} value={name} onChange={setName} placeholder="my-awesome-app" />
 
         <div style={{ marginBottom: 12 }}>
           <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
-            來源類型
+            {t('sourceType')}
           </label>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
@@ -433,7 +431,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
               onClick={() => setSourceType('upload')}
               style={{ flex: 1, fontSize: 13, padding: '8px 12px' }}
             >
-              上傳壓縮檔
+              {t('uploadArchive')}
             </button>
             <button
               type="button"
@@ -441,7 +439,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
               onClick={() => setSourceType('git')}
               style={{ flex: 1, fontSize: 13, padding: '8px 12px' }}
             >
-              Git 儲存庫
+              {t('gitRepo')}
             </button>
           </div>
         </div>
@@ -449,7 +447,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         {sourceType === 'upload' ? (
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
-              專案檔案
+              {t('projectFiles')}
             </label>
             <div
               onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -486,7 +484,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
                   <div style={{ textAlign: 'left' }}>
                     <div style={{ fontWeight: 500, fontSize: 14, color: 'var(--text-primary)' }}>{file.name}</div>
                     <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                      {(file.size / 1024 / 1024).toFixed(1)} MB — 點擊或拖曳以替換
+                      {t('replaceHint', { size: (file.size / 1024 / 1024).toFixed(1) })}
                     </div>
                   </div>
                 </div>
@@ -494,10 +492,10 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
                 <>
                   <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.5 }}>{'\uD83D\uDCC1'}</div>
                   <div style={{ color: 'var(--text-secondary)', fontSize: 14, marginBottom: 4 }}>
-                    拖曳專案壓縮檔到此處
+                    {t('dragHint')}
                   </div>
                   <div style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                    或點擊瀏覽 — 支援 .zip、.tar.gz、.tar（最大 100MB）
+                    {t('browseHint')}
                   </div>
                 </>
               )}
@@ -513,18 +511,16 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         )}
 
         <ModalField
-          label="自訂網域"
+          label={t('customDomain')}
           value={customDomain}
           onChange={setCustomDomain}
-          placeholder="my-app（將會變成 my-app.punwave.com）"
+          placeholder={t('customDomainPlaceholder')}
         />
-
-        {/* allowUnauthenticated is always true — deploy agent projects are public by default */}
 
         {/* DB Dump upload (optional) */}
         <div style={{ marginBottom: 12 }}>
           <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
-            資料庫 Dump（選填）
+            {t('dbDump')}
           </label>
           <div
             onClick={() => {
@@ -571,7 +567,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
               </>
             ) : (
               <span style={{ color: 'var(--text-secondary)' }}>
-                點擊上傳 .sql、.dump 或 .sql.gz（部署時自動匯入資料庫）
+                {t('dbDumpHint')}
               </span>
             )}
           </div>
@@ -584,12 +580,12 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
             onClick={() => setShowEnvVars(!showEnvVars)}
             style={{ fontSize: 12, padding: '4px 10px', color: 'var(--text-secondary)' }}
           >
-            {showEnvVars ? '- 隱藏環境變數' : '+ 環境變數（選填）'}
+            {showEnvVars ? t('hideEnvVars') : t('showEnvVars')}
           </button>
           {showEnvVars && (
             <div style={{ marginTop: 8 }}>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
-                每行一個，格式: KEY=VALUE（常見的如 NEXTAUTH_URL 會自動偵測設定）
+                {t('envVarsHint')}
               </div>
               <textarea
                 value={envVarsText}
@@ -614,9 +610,9 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         )}
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button className="btn" onClick={onClose} disabled={submitting}>取消</button>
+          <button className="btn" onClick={onClose} disabled={submitting}>{tc('cancel')}</button>
           <button className="btn btn-primary" onClick={handleSubmit} disabled={submitting}>
-            {submitting ? '上傳掃描中...' : '提交掃描'}
+            {submitting ? t('submitting') : t('submitScan')}
           </button>
         </div>
       </div>
@@ -644,6 +640,9 @@ function DomainConflictModal({
   onConfirm: () => void | Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const t = useTranslations('projects.domainConflict');
+  const tc = useTranslations('common');
+
   return (
     <div
       style={{
@@ -660,13 +659,13 @@ function DomainConflictModal({
         onClick={(e) => e.stopPropagation()}
       >
         <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12, color: 'var(--status-warning, #d29922)' }}>
-          ⚠ 網域已被佔用
+          {t('title')}
         </h3>
         <p style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 8, lineHeight: 1.6 }}>
           <code style={{ background: 'var(--bg-primary)', padding: '2px 6px', borderRadius: 4, fontSize: 13 }}>
             {conflict.fqdn}
           </code>
-          {' '}目前被指向服務：
+          {' '}{t('currentlyPointsTo')}
         </p>
         <p style={{ fontSize: 14, marginBottom: 12 }}>
           <code style={{ background: 'var(--bg-primary)', padding: '2px 6px', borderRadius: 4, fontSize: 13, color: 'var(--accent)' }}>
@@ -674,12 +673,12 @@ function DomainConflictModal({
           </code>
         </p>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20, lineHeight: 1.6 }}>
-          強制覆蓋會把這個網域改指向新服務，
-          <strong style={{ color: 'var(--status-critical)' }}>並會讓原本的服務失去這個網域</strong>。
-          確定要繼續嗎？
+          {t('forceOverrideWarning')}
+          <strong style={{ color: 'var(--status-critical)' }}>{t('loseWarning')}</strong>。
+          {t('confirmQuestion')}
         </p>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button className="btn" onClick={onCancel} disabled={busy}>取消</button>
+          <button className="btn" onClick={onCancel} disabled={busy}>{tc('cancel')}</button>
           <button
             className="btn"
             style={{ background: 'var(--status-critical)', color: '#fff', borderColor: 'var(--status-critical)' }}
@@ -689,7 +688,7 @@ function DomainConflictModal({
             }}
             disabled={busy}
           >
-            {busy ? '處理中...' : '強制覆蓋'}
+            {busy ? tc('processing') : t('forceOverride')}
           </button>
         </div>
       </div>
@@ -729,6 +728,8 @@ function DeleteModal({ project, deleting, deleteLog, onClose, onConfirm }: {
 }) {
   const done = deleteLog && deleteLog.length > 0 && !deleting;
   const allOk = done && deleteLog.every((l) => l.status === 'ok');
+  const t = useTranslations('projects.deleteModal');
+  const tc = useTranslations('common');
 
   return (
     <div style={{
@@ -740,18 +741,18 @@ function DeleteModal({ project, deleting, deleteLog, onClose, onConfirm }: {
         width: 520, maxWidth: '90vw', border: '1px solid var(--border)',
       }} onClick={(e) => e.stopPropagation()}>
         <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--status-critical)' }}>
-          刪除專案
+          {t('title')}
         </h3>
         <p style={{ color: 'var(--text-secondary)', marginBottom: 16, fontSize: 14, lineHeight: 1.5 }}>
-          確定要刪除 <strong style={{ color: 'var(--text-primary)' }}>{project.name}</strong>？
-          這將會清除所有相關的 GCP 資源：
+          {t('confirmMessage', { name: project.name })}
+          {' '}{t('resourceWarning')}
         </p>
         <ul style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16, paddingLeft: 20, lineHeight: 1.8 }}>
-          <li>Cloud Run 服務</li>
-          <li>網域對應與 SSL 憑證</li>
-          <li>Cloudflare DNS 紀錄</li>
-          <li>Artifact Registry 中的容器映像</li>
-          <li>所有資料庫紀錄（掃描、審查、部署）</li>
+          <li>{t('cloudRunService')}</li>
+          <li>{t('domainAndSsl')}</li>
+          <li>{t('cloudflareDns')}</li>
+          <li>{t('containerImages')}</li>
+          <li>{t('allDbRecords')}</li>
         </ul>
 
         {/* Teardown progress log */}
@@ -762,7 +763,7 @@ function DeleteModal({ project, deleting, deleteLog, onClose, onConfirm }: {
             fontFamily: 'monospace', border: '1px solid var(--border)',
           }}>
             {deleting && !deleteLog && (
-              <div style={{ color: 'var(--text-secondary)' }}>正在清除資源...</div>
+              <div style={{ color: 'var(--text-secondary)' }}>{t('cleaningResources')}</div>
             )}
             {deleteLog?.map((log, i) => (
               <div key={i} style={{ marginBottom: 4, display: 'flex', gap: 8 }}>
@@ -775,14 +776,14 @@ function DeleteModal({ project, deleting, deleteLog, onClose, onConfirm }: {
             ))}
             {allOk && (
               <div style={{ marginTop: 8, color: 'var(--status-live)', fontWeight: 500 }}>
-                所有資源已成功清除。
+                {t('allResourcesCleaned')}
               </div>
             )}
           </div>
         )}
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button className="btn" onClick={onClose} disabled={deleting}>取消</button>
+          <button className="btn" onClick={onClose} disabled={deleting}>{tc('cancel')}</button>
           {!done && (
             <button
               className="btn"
@@ -793,7 +794,7 @@ function DeleteModal({ project, deleting, deleteLog, onClose, onConfirm }: {
                 borderColor: 'var(--status-critical)', opacity: deleting ? 0.6 : 1,
               }}
             >
-              {deleting ? '刪除中...' : '刪除並清除資源'}
+              {deleting ? t('deleting') : t('deleteAndClean')}
             </button>
           )}
         </div>
@@ -818,7 +819,9 @@ function GroupCard({
 }) {
   const busyStop = actionBusy === `${group.groupId}:stop`;
   const busyStart = actionBusy === `${group.groupId}:start`;
-  const selectedLabel = selected.size > 0 ? `(${selected.size} 個選中)` : '(全部)';
+  const t = useTranslations('projects');
+  const tc = useTranslations('common');
+  const selectedLabel = selected.size > 0 ? t('selected', { count: String(selected.size) }) : t('all');
   const isMonorepo = group.serviceCount > 1;
 
   return (
@@ -835,7 +838,7 @@ function GroupCard({
         onClick={onToggleExpand}
       >
         <span style={{ fontSize: 12, color: 'var(--text-secondary)', width: 12 }}>
-          {expanded ? '▾' : '▸'}
+          {expanded ? '\u25BE' : '\u25B8'}
         </span>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600, fontSize: 15 }}>
@@ -845,14 +848,14 @@ function GroupCard({
                 marginLeft: 8, fontSize: 11, padding: '2px 6px', borderRadius: 4,
                 background: 'var(--bg-tertiary)', color: 'var(--text-secondary)',
                 fontWeight: 400,
-              }}>monorepo · {group.serviceCount} 個服務</span>
+              }}>{t('monorepoServices', { count: String(group.serviceCount) })}</span>
             )}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-            {group.liveCount > 0 && <span style={{ color: 'var(--status-live)' }}>● {group.liveCount} live </span>}
-            {group.stoppedCount > 0 && <span style={{ color: 'var(--text-secondary)' }}>● {group.stoppedCount} stopped </span>}
-            {group.failedCount > 0 && <span style={{ color: 'var(--status-critical)' }}>● {group.failedCount} failed </span>}
-            <span style={{ marginLeft: 8 }}>更新於 {new Date(group.updatedAt).toLocaleString()}</span>
+            {group.liveCount > 0 && <span style={{ color: 'var(--status-live)' }}>{'\u25CF'} {group.liveCount} live </span>}
+            {group.stoppedCount > 0 && <span style={{ color: 'var(--text-secondary)' }}>{'\u25CF'} {group.stoppedCount} stopped </span>}
+            {group.failedCount > 0 && <span style={{ color: 'var(--status-critical)' }}>{'\u25CF'} {group.failedCount} failed </span>}
+            <span style={{ marginLeft: 8 }}>{t('updatedAt', { time: new Date(group.updatedAt).toLocaleString() })}</span>
           </div>
         </div>
         {isMonorepo && (
@@ -862,18 +865,18 @@ function GroupCard({
               disabled={busyStop}
               onClick={() => onGroupAction('stop')}
               style={{ fontSize: 12, padding: '4px 10px' }}
-              title={`停止 ${selectedLabel}`}
+              title={`${tc('stop')} ${selectedLabel}`}
             >
-              {busyStop ? '停止中…' : `停止 ${selectedLabel}`}
+              {busyStop ? tc('stopping') : `${tc('stop')} ${selectedLabel}`}
             </button>
             <button
               className="btn"
               disabled={busyStart}
               onClick={() => onGroupAction('start')}
               style={{ fontSize: 12, padding: '4px 10px', color: 'var(--status-live)', borderColor: 'var(--status-live)' }}
-              title={`啟動 ${selectedLabel}`}
+              title={`${tc('start')} ${selectedLabel}`}
             >
-              {busyStart ? '啟動中…' : `啟動 ${selectedLabel}`}
+              {busyStart ? tc('starting') : `${tc('start')} ${selectedLabel}`}
             </button>
           </div>
         )}
@@ -919,6 +922,7 @@ function ServiceRow({
   const busyStart = actionBusy === `svc:${svc.id}:start`;
   const url = svc.latestDeployment?.cloudRunUrl || (svc.latestDeployment?.customDomain ? `https://${svc.latestDeployment.customDomain}` : null);
   const gcsSource = svc.resources.find((r) => r.kind === 'gcs_source');
+  const tc = useTranslations('common');
 
   return (
     <div style={{
@@ -939,7 +943,7 @@ function ServiceRow({
         </a>
         <StatusPill status={svc.status} />
         {svc.detectedLanguage && (
-          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{svc.detectedLanguage}{svc.detectedFramework ? ` · ${svc.detectedFramework}` : ''}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{svc.detectedLanguage}{svc.detectedFramework ? ` \u00B7 ${svc.detectedFramework}` : ''}</span>
         )}
         {url && (
           <a href={url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--accent-blue, #58a6ff)', fontFamily: 'monospace', marginLeft: 'auto' }}>
@@ -971,7 +975,7 @@ function ServiceRow({
             disabled={busyStop}
             onClick={() => onServiceAction(svc.id, 'stop')}
             style={{ fontSize: 11, padding: '3px 10px' }}
-          >{busyStop ? '停止中…' : '停止'}</button>
+          >{busyStop ? tc('stopping') : tc('stop')}</button>
         )}
         {canStart && (
           <button
@@ -979,20 +983,20 @@ function ServiceRow({
             disabled={busyStart}
             onClick={() => onServiceAction(svc.id, 'start')}
             style={{ fontSize: 11, padding: '3px 10px', color: 'var(--status-live)', borderColor: 'var(--status-live)' }}
-          >{busyStart ? '啟動中…' : '啟動'}</button>
+          >{busyStart ? tc('starting') : tc('start')}</button>
         )}
         {gcsSource && (
           <a
             href={`${API}/api/projects/${svc.id}/source-download`}
             className="btn"
             style={{ fontSize: 11, padding: '3px 10px', textDecoration: 'none' }}
-          >下載原始碼</a>
+          >{tc('downloadSourceCode')}</a>
         )}
         <button
           className="btn"
           onClick={onDeleteService}
           style={{ fontSize: 11, padding: '3px 10px', color: 'var(--status-critical)', borderColor: 'var(--status-critical)', marginLeft: 'auto' }}
-        >刪除</button>
+        >{tc('delete')}</button>
       </div>
     </div>
   );
@@ -1000,12 +1004,12 @@ function ServiceRow({
 
 function resourceIcon(kind: ProjectResource['kind']): string {
   switch (kind) {
-    case 'cloud_run': return '☁️';
-    case 'custom_domain': return '🌐';
-    case 'redis_db': return '🔴';
-    case 'postgres_db': return '🐘';
-    case 'gcs_source': return '📦';
-    default: return '•';
+    case 'cloud_run': return '\u2601\uFE0F';
+    case 'custom_domain': return '\uD83C\uDF10';
+    case 'redis_db': return '\uD83D\uDD34';
+    case 'postgres_db': return '\uD83D\uDC18';
+    case 'gcs_source': return '\uD83D\uDCE6';
+    default: return '\u2022';
   }
 }
 

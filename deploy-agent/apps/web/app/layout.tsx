@@ -1,5 +1,7 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import { NextIntlClientProvider } from 'next-intl';
+import { getLocale, getMessages, getTranslations } from 'next-intl/server';
 
 export const metadata: Metadata = {
   title: 'Wave Deploy Agent',
@@ -8,42 +10,42 @@ export const metadata: Metadata = {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const locale = await getLocale();
+  const messages = await getMessages();
+  const t = await getTranslations('nav');
+
   return (
-    <html lang="zh-TW">
+    <html lang={locale}>
       <body>
-        <div style={{ display: 'flex', minHeight: '100vh' }}>
-          <Sidebar />
-          <main style={{ flex: 1, padding: '24px 32px', overflow: 'auto' }}>
-            {children}
-          </main>
-        </div>
+        <NextIntlClientProvider messages={messages}>
+          <div style={{ display: 'flex', minHeight: '100vh' }}>
+            <nav style={{
+              width: 220,
+              background: 'var(--bg-secondary)',
+              borderRight: '1px solid var(--border)',
+              padding: '16px 0',
+              display: 'flex',
+              flexDirection: 'column',
+            }}>
+              <div style={{ padding: '0 16px 16px', borderBottom: '1px solid var(--border)' }}>
+                <h1 style={{ fontSize: 16, fontWeight: 600 }}>Wave Deploy Agent</h1>
+              </div>
+              <div style={{ padding: '8px 0', flex: 1 }}>
+                <NavLink href="/" label={t('projects')} />
+                <NavLink href="/reviews" label={t('reviews')} />
+                <NavLink href="/deploys" label={t('deploys')} />
+                <NavLink href="/infra" label={t('infra')} />
+                <NavLink href="/settings" label={t('settings')} />
+              </div>
+            </nav>
+            <main style={{ flex: 1, padding: '24px 32px', overflow: 'auto' }}>
+              {children}
+            </main>
+          </div>
+        </NextIntlClientProvider>
       </body>
     </html>
-  );
-}
-
-function Sidebar() {
-  return (
-    <nav style={{
-      width: 220,
-      background: 'var(--bg-secondary)',
-      borderRight: '1px solid var(--border)',
-      padding: '16px 0',
-      display: 'flex',
-      flexDirection: 'column',
-    }}>
-      <div style={{ padding: '0 16px 16px', borderBottom: '1px solid var(--border)' }}>
-        <h1 style={{ fontSize: 16, fontWeight: 600 }}>Wave Deploy Agent</h1>
-      </div>
-      <div style={{ padding: '8px 0', flex: 1 }}>
-        <NavLink href="/" label="專案" />
-        <NavLink href="/reviews" label="審查" />
-        <NavLink href="/deploys" label="部署紀錄" />
-        <NavLink href="/infra" label="基礎設施" />
-        <NavLink href="/settings" label="設定" />
-      </div>
-    </nav>
   );
 }
 

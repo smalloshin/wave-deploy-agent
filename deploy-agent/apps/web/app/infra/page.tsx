@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -51,6 +52,8 @@ export default function InfraPage() {
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
+  const t = useTranslations('infra');
+  const tc = useTranslations('common');
 
   const load = () => {
     setLoading(true);
@@ -72,14 +75,14 @@ export default function InfraPage() {
       setShowConfirm(false);
       load(); // refresh
     } catch (err) {
-      alert(`清理失敗: ${(err as Error).message}`);
+      alert(t('cleanupFailed', { error: (err as Error).message }));
     } finally {
       setCleanupBusy(false);
     }
   };
 
-  if (loading) return <div style={{ color: 'var(--text-secondary)' }}>載入中…</div>;
-  if (error) return <div style={{ color: 'var(--status-critical)' }}>載入失敗: {error}</div>;
+  if (loading) return <div style={{ color: 'var(--text-secondary)' }}>{tc('loading')}</div>;
+  if (error) return <div style={{ color: 'var(--status-critical)' }}>{t('loadFailed', { error })}</div>;
   if (!data) return null;
 
   const hasOrphans = data.orphans.tarballCount > 0 || data.orphans.packageCount > 0;
@@ -87,8 +90,8 @@ export default function InfraPage() {
   return (
     <div style={{ maxWidth: 1100 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 600 }}>基礎設施</h1>
-        <button onClick={load} style={btnSecondary}>🔄 重新整理</button>
+        <h1 style={{ fontSize: 24, fontWeight: 600 }}>{t('title')}</h1>
+        <button onClick={load} style={btnSecondary}>{t('refresh')}</button>
       </div>
 
       {/* Orphans banner */}
@@ -103,10 +106,10 @@ export default function InfraPage() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-                發現孤兒資源 · {data.orphans.tarballCount} 個 tarball ({formatBytes(data.orphans.tarballBytes)}) · {data.orphans.packageCount} 個 AR package
+                {t('orphansFound', { tarballCount: data.orphans.tarballCount, tarballSize: formatBytes(data.orphans.tarballBytes), packageCount: data.orphans.packageCount })}
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                這些資源對應的專案已從 DB 刪除，可安全清理
+                {t('orphansDescription')}
               </div>
             </div>
             <button
@@ -114,7 +117,7 @@ export default function InfraPage() {
               style={{ ...btnDanger, opacity: cleanupBusy ? 0.5 : 1 }}
               disabled={cleanupBusy}
             >
-              {cleanupBusy ? '清理中…' : '清理孤兒資源'}
+              {cleanupBusy ? t('cleaning') : t('cleanOrphans')}
             </button>
           </div>
         </div>
@@ -130,16 +133,16 @@ export default function InfraPage() {
           marginBottom: 24,
           fontSize: 13,
         }}>
-          ✓ 已清理 {cleanupResult.deletedTarballs} 個 tarball + {cleanupResult.deletedPackages} 個 AR package，釋放 {formatBytes(cleanupResult.freedBytes)}
-          <button onClick={() => setCleanupResult(null)} style={{ marginLeft: 12, ...btnGhost }}>關閉</button>
+          {t('cleanedResult', { tarballs: cleanupResult.deletedTarballs, packages: cleanupResult.deletedPackages, freed: formatBytes(cleanupResult.freedBytes) })}
+          <button onClick={() => setCleanupResult(null)} style={{ marginLeft: 12, ...btnGhost }}>{tc('close')}</button>
         </div>
       )}
 
       {/* Artifact Registry */}
       <Section title="Artifact Registry">
         <Metric label="Repo" value={`${data.artifactRegistry.repoName} · ${data.artifactRegistry.region}`} />
-        <Metric label="總容量" value={formatBytes(data.artifactRegistry.sizeBytes)} />
-        <Metric label="Cleanup policy" value={`${data.artifactRegistry.cleanupPolicyCount} 條規則 ${data.artifactRegistry.cleanupPolicyCount > 0 ? '✓' : '✗'}`} />
+        <Metric label={t('totalCapacity')} value={formatBytes(data.artifactRegistry.sizeBytes)} />
+        <Metric label={t('cleanupPolicy')} value={t('policyRules', { count: data.artifactRegistry.cleanupPolicyCount, status: data.artifactRegistry.cleanupPolicyCount > 0 ? '\u2713' : '\u2717' })} />
         <Metric label="Packages" value={`${data.artifactRegistry.packages.length}`} />
 
         {data.artifactRegistry.packages.length > 0 && (
@@ -147,8 +150,8 @@ export default function InfraPage() {
             <thead>
               <tr>
                 <th style={thStyle}>Package</th>
-                <th style={thStyle}>版本數</th>
-                <th style={thStyle}>最後更新</th>
+                <th style={thStyle}>{t('versionCount')}</th>
+                <th style={thStyle}>{t('lastUpdated')}</th>
               </tr>
             </thead>
             <tbody>
@@ -167,20 +170,20 @@ export default function InfraPage() {
       </Section>
 
       {/* GCS Sources */}
-      <Section title="Cloud Storage (原始碼)">
+      <Section title={t('cloudStorage')}>
         <Metric label="Bucket" value={`${data.gcsSources.bucket}/${data.gcsSources.prefix}`} />
-        <Metric label="物件數" value={`${data.gcsSources.objectCount}`} />
-        <Metric label="總容量" value={formatBytes(data.gcsSources.totalBytes)} />
-        <Metric label="Lifecycle" value={`${data.gcsSources.lifecycleRuleCount} 條規則 ${data.gcsSources.lifecycleRuleCount > 0 ? '✓' : '✗'}`} />
+        <Metric label={t('objectCount')} value={`${data.gcsSources.objectCount}`} />
+        <Metric label={t('totalCapacity')} value={formatBytes(data.gcsSources.totalBytes)} />
+        <Metric label={t('lifecycle')} value={t('policyRules', { count: data.gcsSources.lifecycleRuleCount, status: data.gcsSources.lifecycleRuleCount > 0 ? '\u2713' : '\u2717' })} />
       </Section>
 
       {/* Cloud Run */}
-      <Section title="Cloud Run (Agent 自身)">
+      <Section title={t('cloudRunAgent')}>
         <table style={tableStyle}>
           <thead>
             <tr>
               <th style={thStyle}>Service</th>
-              <th style={thStyle}>狀態</th>
+              <th style={thStyle}>{t('serviceStatus')}</th>
               <th style={thStyle}>URL</th>
             </tr>
           </thead>
@@ -190,7 +193,7 @@ export default function InfraPage() {
                 <td style={tdStyle}><code>{s.name}</code></td>
                 <td style={tdStyle}>
                   <span style={{ color: s.ready ? 'var(--status-success)' : 'var(--status-critical)' }}>
-                    ● {s.ready ? 'Ready' : 'Not Ready'}
+                    {'\u25CF'} {s.ready ? 'Ready' : 'Not Ready'}
                   </span>
                 </td>
                 <td style={{ ...tdStyle, fontSize: 12 }}>
@@ -206,21 +209,21 @@ export default function InfraPage() {
       {showConfirm && (
         <div style={modalBackdrop} onClick={() => setShowConfirm(false)}>
           <div style={modalBody} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>確認清理孤兒資源？</h3>
+            <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>{t('confirmCleanup')}</h3>
             <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 8 }}>
-              將刪除：
+              {t('willDelete')}
             </p>
             <ul style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16, paddingLeft: 20 }}>
-              <li>{data.orphans.tarballCount} 個 GCS tarball ({formatBytes(data.orphans.tarballBytes)})</li>
-              <li>{data.orphans.packageCount} 個 Artifact Registry package</li>
+              <li>{t('gcsTarballs', { count: data.orphans.tarballCount, size: formatBytes(data.orphans.tarballBytes) })}</li>
+              <li>{t('arPackages', { count: data.orphans.packageCount })}</li>
             </ul>
             <p style={{ fontSize: 13, color: 'var(--status-high)', marginBottom: 16 }}>
-              這些專案已從 DB 刪除，此操作無法復原。
+              {t('irreversibleWarning')}
             </p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => setShowConfirm(false)} style={btnSecondary}>取消</button>
+              <button onClick={() => setShowConfirm(false)} style={btnSecondary}>{tc('cancel')}</button>
               <button onClick={runCleanup} style={btnDanger} disabled={cleanupBusy}>
-                {cleanupBusy ? '清理中…' : '確認清理'}
+                {cleanupBusy ? t('cleaning') : t('confirmClean')}
               </button>
             </div>
           </div>
@@ -254,7 +257,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-// ─── styles ─────────────────────────────────────────────────────────
+// --- styles ---
 
 const tableStyle: React.CSSProperties = {
   width: '100%',

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -161,6 +162,9 @@ export default function ProjectDetailPage() {
   const [webhookNewSecret, setWebhookNewSecret] = useState<string | null>(null);
   const [webhookCopied, setWebhookCopied] = useState<string | null>(null);
 
+  const t = useTranslations('projectDetail');
+  const tc = useTranslations('common');
+
   const loadDetail = (silent = false) => {
     if (!silent) setLoading(true);
     fetch(`${API}/api/projects/${id}/detail`)
@@ -201,7 +205,6 @@ export default function ProjectDetailPage() {
     try {
       const res = await fetch(`${API}/api/projects/${id}/resubmit`, { method: 'POST' });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
-      // Reload the detail page
       loadDetail();
     } catch (err) {
       alert((err as Error).message);
@@ -246,7 +249,7 @@ export default function ProjectDetailPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileName: upgradeFile.name, fileSize: upgradeFile.size, contentType: upgradeFile.type || 'application/zip' }),
       });
-      if (!initRes.ok) throw new Error('上傳初始化失敗');
+      if (!initRes.ok) throw new Error(t('upgradeModal.uploadInitFailed'));
       const { uploadUrl, gcsUri, token } = await initRes.json();
 
       // Step 2: Upload to GCS
@@ -255,7 +258,7 @@ export default function ProjectDetailPage() {
         headers: { 'Content-Type': upgradeFile.type || 'application/zip', Authorization: `Bearer ${token}` },
         body: upgradeFile,
       });
-      if (!uploadRes.ok) throw new Error('上傳至 GCS 失敗');
+      if (!uploadRes.ok) throw new Error(t('upgradeModal.gcsUploadFailed'));
 
       // Step 3: Trigger new version
       const newVerRes = await fetch(`${API}/api/projects/${id}/new-version`, {
@@ -295,7 +298,7 @@ export default function ProjectDetailPage() {
   };
 
   const handleRemoveWebhook = async () => {
-    if (!confirm('確定要移除 GitHub Webhook 設定？')) return;
+    if (!confirm(t('confirmRemoveWebhook'))) return;
     try {
       const res = await fetch(`${API}/api/projects/${id}/github-webhook`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed');
@@ -332,7 +335,7 @@ export default function ProjectDetailPage() {
   if (loading) {
     return (
       <div>
-        <BackLink />
+        <BackLink t={t} />
         <div style={{ marginTop: 24 }}>
           {[1, 2, 3, 4].map((i) => (
             <div key={i} style={{
@@ -348,10 +351,10 @@ export default function ProjectDetailPage() {
   if (error || !data) {
     return (
       <div>
-        <BackLink />
+        <BackLink t={t} />
         <div style={{ marginTop: 24, padding: 16, background: 'rgba(248,81,73,0.1)', borderRadius: 6, border: '1px solid var(--status-critical)' }}>
-          <p>Failed to load project: {error ?? 'Not found'}</p>
-          <button className="btn" style={{ marginTop: 8 }} onClick={() => window.location.reload()}>Retry</button>
+          <p>{t('loadFailed', { error: error ?? t('notFound') })}</p>
+          <button className="btn" style={{ marginTop: 8 }} onClick={() => window.location.reload()}>{tc('retry')}</button>
         </div>
       </div>
     );
@@ -361,7 +364,7 @@ export default function ProjectDetailPage() {
 
   return (
     <div>
-      <BackLink />
+      <BackLink t={t} />
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
@@ -373,13 +376,13 @@ export default function ProjectDetailPage() {
           {(project.status === 'live' || project.status === 'stopped' || project.status === 'failed') && (
             <button className="btn btn-primary" onClick={() => setShowUpgradeModal(true)}
               style={{ fontSize: 13, padding: '6px 16px' }}>
-              升版部署
+              {t('upgradeVersion')}
             </button>
           )}
           {(project.status === 'failed' || project.status === 'needs_revision') && (
             <button className="btn" onClick={handleRetry} disabled={retrying}
               style={{ fontSize: 13, padding: '6px 16px' }}>
-              {retrying ? '重試中...' : '重試流程'}
+              {retrying ? t('retrying') : t('retryPipeline')}
             </button>
           )}
         </div>
@@ -434,47 +437,46 @@ export default function ProjectDetailPage() {
       {/* Grid: Info + Deployment */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 20 }}>
         {/* Project Info Card */}
-        <Card title="專案資訊">
-          <InfoRow label="語言" value={project.detectedLanguage ?? 'Detecting...'} />
-          <InfoRow label="框架" value={project.detectedFramework ?? 'Detecting...'} />
-          <InfoRow label="來源類型" value={project.sourceUrl ?? '—'} mono />
-          <InfoRow label="自訂網域" value={project.config?.customDomain ? `${project.config.customDomain}.punwave.com` : '無'} />
-          <InfoRow label="公開存取" value={project.config?.allowUnauthenticated ? '是' : '否'} />
+        <Card title={t('projectInfo')}>
+          <InfoRow label={t('language')} value={project.detectedLanguage ?? 'Detecting...'} />
+          <InfoRow label={t('framework')} value={project.detectedFramework ?? 'Detecting...'} />
+          <InfoRow label={t('sourceType')} value={project.sourceUrl ?? '—'} mono />
+          <InfoRow label={t('customDomain')} value={project.config?.customDomain ? `${project.config.customDomain}.punwave.com` : tc('none')} />
+          <InfoRow label={t('publicAccess')} value={project.config?.allowUnauthenticated ? tc('yes') : tc('no')} />
         </Card>
 
         {/* Deployment Card */}
-        <Card title="部署資訊">
+        <Card title={t('deploymentInfo')}>
           {deployments.length === 0 ? (
-            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>尚無部署。</p>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{t('noDeployments')}</p>
           ) : (
             deployments.slice(0, 1).map((d) => {
-              // Resolve custom domain: from deployment record or from project config
               const domainName = d.customDomain
                 || (project.config?.customDomain
                   ? `${project.config.customDomain}.punwave.com`
                   : null);
               return (
                 <div key={d.id} style={{ marginBottom: 12 }}>
-                  <InfoRow label="服務" value={d.cloudRunService ?? '—'} />
+                  <InfoRow label={t('service')} value={d.cloudRunService ?? '—'} />
                   {d.cloudRunUrl && (
-                    <InfoRow label="Cloud Run 網址">
+                    <InfoRow label={t('cloudRunUrl')}>
                       <a href={d.cloudRunUrl} target="_blank" rel="noreferrer"
                         style={{ color: 'var(--accent)', fontSize: 13 }}>{d.cloudRunUrl}</a>
                     </InfoRow>
                   )}
                   {domainName && (
-                    <InfoRow label="自訂網域">
+                    <InfoRow label={t('customDomain')}>
                       <a href={`https://${domainName}`} target="_blank" rel="noreferrer"
                         style={{ color: 'var(--accent)', fontSize: 13 }}>https://{domainName}</a>
                     </InfoRow>
                   )}
-                  <InfoRow label="SSL" value={d.sslStatus ?? 'N/A'} />
-                  <InfoRow label="健康狀態">
+                  <InfoRow label={t('ssl')} value={d.sslStatus ?? 'N/A'} />
+                  <InfoRow label={t('healthStatus')}>
                     <span style={{ color: d.healthStatus === 'healthy' ? 'var(--status-live)' : 'var(--text-secondary)' }}>
                       {d.healthStatus}
                     </span>
                   </InfoRow>
-                  {d.deployedAt && <InfoRow label="部署時間" value={new Date(d.deployedAt).toLocaleString()} />}
+                  {d.deployedAt && <InfoRow label={t('deployTime')} value={new Date(d.deployedAt).toLocaleString()} />}
                 </div>
               );
             })
@@ -484,10 +486,10 @@ export default function ProjectDetailPage() {
 
       {/* Version History (Netlify-like) */}
       {versions.length > 0 && (
-        <Card title="版本歷史" style={{ marginTop: 16 }}>
+        <Card title={t('versionHistory')} style={{ marginTop: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-              共 {versions.length} 個版本
+              {t('totalVersions', { count: versions.length })}
             </div>
             <button
               onClick={handleToggleLock}
@@ -499,7 +501,7 @@ export default function ProjectDetailPage() {
                 cursor: 'pointer',
               }}
             >
-              {deployLocked ? '已鎖定 — 點擊解鎖' : '鎖定部署'}
+              {deployLocked ? t('locked') : t('lockDeploy')}
             </button>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -539,7 +541,7 @@ export default function ProjectDetailPage() {
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                    {v.deployedAt ? new Date(v.deployedAt).toLocaleString() : '部署中...'}
+                    {v.deployedAt ? new Date(v.deployedAt).toLocaleString() : tc('deploying')}
                     {v.revisionName && <span> &middot; {v.revisionName}</span>}
                   </div>
                   {v.previewUrl && (
@@ -561,7 +563,7 @@ export default function ProjectDetailPage() {
                         opacity: publishing === v.id ? 0.6 : 1,
                       }}
                     >
-                      {publishing === v.id ? '發佈中...' : '發佈此版本'}
+                      {publishing === v.id ? t('publishing') : t('publishVersion')}
                     </button>
                   )}
                 </div>
@@ -572,7 +574,7 @@ export default function ProjectDetailPage() {
       )}
 
       {/* GitHub Auto-Deploy */}
-      <Card title="GitHub 自動部署" style={{ marginTop: 16 }}>
+      <Card title={t('githubAutoDeploy')} style={{ marginTop: 16 }}>
         {webhookConfig?.configured ? (
           <div>
             {/* Configured state */}
@@ -603,7 +605,7 @@ export default function ProjectDetailPage() {
                       cursor: 'pointer',
                     }}
                   >
-                    {webhookCopied === 'url' ? '已複製' : '複製'}
+                    {webhookCopied === 'url' ? tc('copied') : tc('copy')}
                   </button>
                 </div>
               </div>
@@ -619,7 +621,7 @@ export default function ProjectDetailPage() {
                   borderRadius: 8, marginTop: 4,
                 }}>
                   <div style={{ fontSize: 12, color: 'var(--status-live)', fontWeight: 600, marginBottom: 6 }}>
-                    Webhook Secret（僅顯示一次，請立即複製）
+                    {t('webhookSecretHint')}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <code style={{ fontSize: 12, fontFamily: 'monospace', wordBreak: 'break-all', flex: 1 }}>
@@ -634,13 +636,13 @@ export default function ProjectDetailPage() {
                         cursor: 'pointer', flexShrink: 0,
                       }}
                     >
-                      {webhookCopied === 'secret' ? '已複製' : '複製 Secret'}
+                      {webhookCopied === 'secret' ? tc('copied') : t('copySecret')}
                     </button>
                   </div>
                 </div>
               )}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>自動部署</span>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('autoDeploy')}</span>
                 <button
                   onClick={handleToggleAutoDeploy}
                   style={{
@@ -651,7 +653,7 @@ export default function ProjectDetailPage() {
                     cursor: 'pointer',
                   }}
                 >
-                  {webhookConfig.autoDeployEnabled ? '已啟用' : '已停用'}
+                  {webhookConfig.autoDeployEnabled ? tc('enabled') : tc('disabled')}
                 </button>
               </div>
             </div>
@@ -664,18 +666,18 @@ export default function ProjectDetailPage() {
                   color: 'var(--status-critical)', cursor: 'pointer',
                 }}
               >
-                移除 Webhook 設定
+                {t('removeWebhook')}
               </button>
             </div>
             <p style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              當 GitHub push 到 {webhookConfig.branch} 分支時，會自動觸發部署流程。目前僅支援公開 repo。
+              {t('webhookPushHint', { branch: webhookConfig.branch ?? 'main' })}
             </p>
           </div>
         ) : (
           <div>
             {/* Setup form */}
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-              連結 GitHub Repository，push 到指定分支時自動觸發部署。目前僅支援公開 repo。
+              {t('webhookSetupHint')}
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div>
@@ -721,7 +723,7 @@ export default function ProjectDetailPage() {
                     opacity: webhookSaving || !webhookRepoUrl.trim() ? 0.5 : 1,
                   }}
                 >
-                  {webhookSaving ? '設定中...' : '啟用自動部署'}
+                  {webhookSaving ? t('settingUp') : t('enableAutoDeploy')}
                 </button>
               </div>
             </div>
@@ -739,9 +741,9 @@ export default function ProjectDetailPage() {
             background: 'var(--bg-secondary)', border: '1px solid var(--border)',
             borderRadius: 12, padding: 24, width: 480, maxWidth: '90vw',
           }} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>升版部署</h3>
+            <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>{t('upgradeModal.title')}</h3>
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
-              上傳新版原始碼，將自動走掃描 → 審核 → 部署流程。部署成功後會產生新版本。
+              {t('upgradeModal.description')}
             </p>
             <div
               onDragOver={(e) => { e.preventDefault(); setUpgradeDragOver(true); }}
@@ -777,14 +779,14 @@ export default function ProjectDetailPage() {
                 </div>
               ) : (
                 <div style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
-                  拖曳新版原始碼壓縮檔到此處
+                  {t('upgradeModal.dragHint')}
                 </div>
               )}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
               <button onClick={() => { setShowUpgradeModal(false); setUpgradeFile(null); }}
                 style={{ fontSize: 13, padding: '8px 16px', borderRadius: 6, background: 'var(--bg-primary)', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-primary)' }}>
-                取消
+                {tc('cancel')}
               </button>
               <button onClick={handleUpgrade} disabled={!upgradeFile || upgrading}
                 style={{
@@ -794,7 +796,7 @@ export default function ProjectDetailPage() {
                   border: 'none', cursor: upgradeFile ? 'pointer' : 'not-allowed',
                   opacity: upgrading ? 0.6 : 1,
                 }}>
-                {upgrading ? '上傳中...' : '開始升版'}
+                {upgrading ? t('upgradeModal.uploading') : t('upgradeModal.startUpgrade')}
               </button>
             </div>
           </div>
@@ -814,9 +816,9 @@ export default function ProjectDetailPage() {
       {scanReport && <ScanReportSection scanReport={scanReport} projectStatus={project.status} projectId={project.id} />}
 
       {/* Pipeline Timeline */}
-      <Card title="流程時間軸" style={{ marginTop: 16 }}>
+      <Card title={t('timeline.title')} style={{ marginTop: 16 }}>
         {timeline.length === 0 ? (
-          <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>No events yet.</p>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{t('timeline.noEvents')}</p>
         ) : (
           <div style={{ position: 'relative', paddingLeft: 24 }}>
             {/* Vertical line */}
@@ -852,7 +854,7 @@ export default function ProjectDetailPage() {
                     </div>
                     {/* Show metadata if there's useful info */}
                     {entry.metadata && Object.keys(entry.metadata).length > 0 && (
-                      <MetadataBlock metadata={entry.metadata} />
+                      <MetadataBlock metadata={entry.metadata} t={t} />
                     )}
                   </div>
                 </div>
@@ -865,12 +867,12 @@ export default function ProjectDetailPage() {
   );
 }
 
-/* ─── Sub-components ─── */
+/* --- Sub-components --- */
 
-function BackLink() {
+function BackLink({ t }: { t: (key: string) => string }) {
   return (
     <a href="/" style={{ color: 'var(--text-secondary)', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-      &larr; 返回專案列表
+      &larr; {t('backToProjects')}
     </a>
   );
 }
@@ -907,7 +909,7 @@ function InfoRow({ label, value, mono, children }: {
   );
 }
 
-function MetadataBlock({ metadata }: { metadata: Record<string, unknown> }) {
+function MetadataBlock({ metadata, t }: { metadata: Record<string, unknown>; t: (key: string, values?: Record<string, string>) => string }) {
   const entries = Object.entries(metadata).filter(([k]) => k !== 'trigger' && k !== 'stack');
 
   if (entries.length === 0) return null;
@@ -924,7 +926,7 @@ function MetadataBlock({ metadata }: { metadata: Record<string, unknown> }) {
           <div style={{
             fontSize: 11, color: 'var(--status-critical)', marginBottom: 4, fontWeight: 500,
           }}>
-            失敗於：{failedStep}
+            {t('timeline.failedAt', { step: failedStep })}
           </div>
         )}
         <div style={{
@@ -970,7 +972,7 @@ function MetadataBlock({ metadata }: { metadata: Record<string, unknown> }) {
 }
 
 function ScanReportSection({ scanReport, projectStatus, projectId }: { scanReport: ScanReport; projectStatus: string; projectId: string }) {
-  // After approval/deploying/live, default to collapsed; during scanning/review, default to expanded
+  const t = useTranslations('projectDetail.scanReport');
   const postReview = ['approved', 'deploying', 'deployed', 'ssl_provisioning', 'canary_check', 'live'].includes(projectStatus);
   const [expanded, setExpanded] = useState(!postReview);
 
@@ -991,7 +993,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
         onClick={() => setExpanded(!expanded)}
       >
         <h3 style={{ fontSize: 14, fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: 0.5, margin: 0 }}>
-          {expanded ? '\u25BC' : '\u25B6'}&nbsp; 掃描報告 / Security Report
+          {expanded ? '\u25BC' : '\u25B6'}&nbsp; {t('title')}
         </h3>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {findings.length > 0 && (
@@ -1024,7 +1026,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
               onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--border)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
             >
-              <span style={{ fontSize: 14 }}>&#8681;</span> 下載報告
+              <span style={{ fontSize: 14 }}>&#8681;</span> {t('downloadReport')}
             </a>
           )}
         </div>
@@ -1049,7 +1051,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
           {scanReport.threatSummary && (
             <div style={{ marginBottom: 16 }}>
               <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4, textTransform: 'uppercase' }}>
-                威脅摘要 / Review Report
+                {t('threatSummary')}
               </label>
               <div style={{
                 background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 6,
@@ -1065,7 +1067,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
           {findings.length > 0 && (
             <div style={{ marginBottom: 16 }}>
               <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase' }}>
-                安全性問題 / Security Findings ({findings.length})
+                {t('securityFindings', { count: findings.length })}
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {findings.map((f, i) => (
@@ -1079,7 +1081,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
           {autoFixes.length > 0 && (
             <div>
               <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase' }}>
-                自動修復 / Auto-Fixes ({autoFixes.length})
+                {t('autoFixes', { count: autoFixes.length })}
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {autoFixes.map((fix, i) => (
@@ -1090,7 +1092,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
           )}
 
           {findings.length === 0 && !scanReport.threatSummary && (
-            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>掃描進行中... / Scanning in progress...</p>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{t('scanningInProgress')}</p>
           )}
         </div>
       )}
@@ -1107,12 +1109,13 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
   const [expanded, setExpanded] = useState(true);
+  const t = useTranslations('projectDetail.scanReport');
 
   const strategyLabel: Record<string, { label: string; color: string }> = {
-    auto_provision: { label: '自動配置 / Auto-provision', color: '#3fb950' },
-    user_provided: { label: '需提供 / User-provided', color: '#d29922' },
-    already_configured: { label: '已配置 / Configured', color: '#58a6ff' },
-    skip: { label: '略過 / Skip', color: '#8b949e' },
+    auto_provision: { label: t('autoProvision'), color: '#3fb950' },
+    user_provided: { label: t('userProvided'), color: '#d29922' },
+    already_configured: { label: t('alreadyConfigured'), color: '#58a6ff' },
+    skip: { label: t('skip'), color: '#8b949e' },
   };
 
   return (
@@ -1122,17 +1125,17 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
         onClick={() => setExpanded(!expanded)}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{expanded ? '▼' : '▶'}</span>
+          <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{expanded ? '\u25BC' : '\u25B6'}</span>
           <span style={{ fontSize: 13, fontWeight: 600 }}>
-            部署計畫 / Deployment Plan ({plan.requirements.length} resources)
+            {t('deploymentPlan', { count: plan.requirements.length })}
           </span>
           {plan.canAutoDeploy ? (
             <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: 'rgba(63,185,80,0.15)', color: '#3fb950' }}>
-              可自動部署 / Auto-deployable
+              {t('autoDeployable')}
             </span>
           ) : (
             <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: 'rgba(210,153,34,0.15)', color: '#d29922' }}>
-              需手動配置 / Manual config needed
+              {t('manualConfigNeeded')}
             </span>
           )}
         </div>
@@ -1175,7 +1178,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
           </div>
           {plan.missingUserEnvVars.length > 0 && (
             <div style={{ marginTop: 10, padding: 10, background: 'rgba(210,153,34,0.08)', borderRadius: 4, fontSize: 12 }}>
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>需要使用者提供 / User must provide:</div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>{t('userMustProvide')}</div>
               {plan.missingUserEnvVars.map((v, i) => (
                 <div key={i} style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)' }}>
                   {v.key} — {v.description}
@@ -1185,7 +1188,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
           )}
           {plan.blockers.length > 0 && (
             <div style={{ marginTop: 10, padding: 10, background: 'rgba(248,81,73,0.08)', borderRadius: 4, fontSize: 12 }}>
-              <div style={{ fontWeight: 600, color: '#f85149', marginBottom: 6 }}>部署阻礙 / Blockers:</div>
+              <div style={{ fontWeight: 600, color: '#f85149', marginBottom: 6 }}>{t('blockers')}</div>
               {plan.blockers.map((b, i) => (
                 <div key={i} style={{ color: 'var(--text-secondary)' }}>{b}</div>
               ))}
@@ -1259,9 +1262,10 @@ function FindingCard({ finding }: { finding: ScanFinding }) {
 
 function AutoFixCard({ fix }: { fix: AutoFixRecord }) {
   const [showDiff, setShowDiff] = useState(false);
-  const isApplied = fix.applied !== false; // default true for old format
+  const t = useTranslations('projectDetail.scanReport');
+  const isApplied = fix.applied !== false;
   const statusColor = isApplied ? 'var(--status-live)' : 'var(--status-critical)';
-  const statusLabel = isApplied ? '\u2714 已修復' : '\u2718 未套用';
+  const statusLabel = isApplied ? `\u2714 ${t('fixed')}` : `\u2718 ${t('notApplied')}`;
 
   return (
     <div style={{
@@ -1310,7 +1314,7 @@ function AutoFixCard({ fix }: { fix: AutoFixRecord }) {
   );
 }
 
-/* ─── Environment Variables Section ─── */
+/* --- Environment Variables Section --- */
 
 interface EnvEntry {
   key: string;
@@ -1330,6 +1334,8 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deleteKeys, setDeleteKeys] = useState<Set<string>>(new Set());
+  const t = useTranslations('projectDetail.envVars');
+  const tc = useTranslations('common');
 
   const loadEnvVars = () => {
     setLoadingEnv(true);
@@ -1367,7 +1373,6 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
   const removeEntry = (idx: number) => {
     const entry = editEntries[idx];
     if (!entry.isNew) {
-      // Mark existing var for deletion by setting empty value
       setDeleteKeys(prev => new Set(prev).add(entry.key));
     }
     setEditEntries(editEntries.filter((_, i) => i !== idx));
@@ -1383,7 +1388,6 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
     setSaving(true);
     setSaveMsg(null);
 
-    // Build envVars object: only send entries with non-empty values (changed/new)
     const envVarsObj: Record<string, string> = {};
     for (const entry of editEntries) {
       if (!entry.key.trim()) continue;
@@ -1393,7 +1397,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
     }
 
     if (Object.keys(envVarsObj).length === 0 && deleteKeys.size === 0) {
-      setSaveMsg({ type: 'error', text: '請至少修改一個環境變數的值 / Please change at least one value' });
+      setSaveMsg({ type: 'error', text: t('noChangeError') });
       setSaving(false);
       return;
     }
@@ -1406,7 +1410,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Failed to update');
-      setSaveMsg({ type: 'success', text: `已更新 ${data.updatedKeys?.length ?? 0} 個環境變數，Cloud Run 服務已同步` });
+      setSaveMsg({ type: 'success', text: t('updateSuccess', { count: String(data.updatedKeys?.length ?? 0) }) });
       setEditing(false);
       loadEnvVars();
     } catch (err) {
@@ -1427,7 +1431,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
         onClick={onToggle}
       >
         <h3 style={{ fontSize: 14, fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: 0.5, margin: 0 }}>
-          {expanded ? '\u25BC' : '\u25B6'}&nbsp; 環境變數 / Environment Variables
+          {expanded ? '\u25BC' : '\u25B6'}&nbsp; {t('title')}
         </h3>
         <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
           {envVars.length} vars
@@ -1437,7 +1441,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
       {expanded && (
         <div style={{ marginTop: 12 }}>
           {loadingEnv ? (
-            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>載入中...</p>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{tc('loading')}</p>
           ) : (
             <>
               {/* Action buttons */}
@@ -1451,7 +1455,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                       fontWeight: 500,
                     }}
                   >
-                    編輯環境變數
+                    {t('editVars')}
                   </button>
                 ) : (
                   <>
@@ -1464,7 +1468,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                         fontWeight: 500, opacity: saving ? 0.6 : 1,
                       }}
                     >
-                      {saving ? '儲存中...' : '儲存並部署'}
+                      {saving ? t('saving') : t('saveAndSync')}
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); cancelEditing(); }}
@@ -1474,7 +1478,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                         color: 'var(--text-secondary)', cursor: 'pointer',
                       }}
                     >
-                      取消
+                      {tc('cancel')}
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); addEntry(); }}
@@ -1484,7 +1488,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                         color: 'var(--status-live)', cursor: 'pointer', marginLeft: 'auto',
                       }}
                     >
-                      + 新增變數
+                      {t('addVar')}
                     </button>
                   </>
                 )}
@@ -1504,14 +1508,13 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
 
               {/* Env vars table */}
               {!editing ? (
-                /* Read-only view */
                 <div style={{
                   background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 6,
                   overflow: 'hidden',
                 }}>
                   {envVars.length === 0 ? (
                     <p style={{ padding: 12, color: 'var(--text-secondary)', fontSize: 13, margin: 0 }}>
-                      尚無環境變數 / No environment variables set
+                      No environment variables set
                     </p>
                   ) : (
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1533,7 +1536,6 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                   )}
                 </div>
               ) : (
-                /* Edit mode */
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {editEntries.map((entry, i) => {
                     const isReserved = RESERVED_VARS.has(entry.key.toUpperCase());
@@ -1557,7 +1559,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                           type="text"
                           value={entry.value}
                           onChange={(e) => updateEntry(i, 'value', e.target.value)}
-                          placeholder={entry.isNew ? 'value' : '(留空 = 不修改 / leave empty = no change)'}
+                          placeholder={entry.isNew ? 'value' : '(leave empty = no change)'}
                           style={{
                             flex: 1, padding: '6px 10px', fontSize: 12, fontFamily: 'monospace',
                             background: 'var(--bg-primary)', border: '1px solid var(--border)',
@@ -1566,7 +1568,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                         />
                         <button
                           onClick={() => removeEntry(i)}
-                          title="移除"
+                          title={tc('delete')}
                           style={{
                             width: 28, height: 28, borderRadius: 4, border: '1px solid var(--border)',
                             background: 'transparent', color: 'var(--status-critical)',
@@ -1578,7 +1580,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                         </button>
                         {isReserved && (
                           <span style={{ fontSize: 10, color: 'var(--status-critical)', flexShrink: 0 }}>
-                            reserved
+                            {t('reserved')}
                           </span>
                         )}
                       </div>
@@ -1586,15 +1588,11 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                   })}
                   {editEntries.length === 0 && (
                     <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                      點擊「+ 新增變數」來新增環境變數
+                      {t('addVar')}
                     </p>
                   )}
                 </div>
               )}
-
-              <p style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                修改後會直接更新 Cloud Run 服務（不需重新建置映像檔）。留空的值不會被修改。
-              </p>
             </>
           )}
         </div>

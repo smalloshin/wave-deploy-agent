@@ -222,3 +222,83 @@ API 提供 MCP 端點 `/mcp/tools/list` 和 `/mcp/tools/call`：
 | `reject_deploy` | 駁回審查 |
 | `get_deploy_status` | 查看部署健康狀態 |
 | `rollback_deploy` | 回滾到上一版本 |
+| `get_versions` | 取得專案版本歷史 |
+| `publish_version` | 發佈指定版本（切流量） |
+| `rollback_version` | 回滾到上一個已發佈版本 |
+| `toggle_deploy_lock` | 鎖定/解鎖部署 |
+
+---
+
+## 版本管理操作
+
+### 查看版本歷史
+```bash
+curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/versions" | python3 -m json.tool
+```
+
+### 發佈指定版本
+```bash
+curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/versions/DEPLOY_ID/publish" \
+  -H "Content-Type: application/json"
+```
+
+### 回滾到上一版本
+找到上一個版本的 deployment ID，然後用上面的 publish 端點發佈它。
+
+### 鎖定/解鎖部署
+```bash
+curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/deploy-lock" \
+  -H "Content-Type: application/json"
+```
+
+### 升版部署（新版本）
+```bash
+curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/new-version" \
+  -H "Content-Type: application/json" \
+  -d '{"gcsUri": "gs://bucket/path/to/source.tgz"}'
+```
+
+---
+
+## GitHub Webhook 自動部署
+
+### 設定 GitHub Webhook
+```bash
+curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/github-webhook" \
+  -H "Content-Type: application/json" \
+  -d '{"repoUrl": "https://github.com/owner/repo", "branch": "main"}'
+```
+
+回傳 webhook URL 和 secret。到 GitHub repo Settings → Webhooks 新增：
+- **Payload URL**: 回傳的 `webhookUrl`
+- **Content type**: `application/json`
+- **Secret**: 回傳的 `secret`
+- **Events**: Just the push event
+
+### 查看 Webhook 設定
+```bash
+curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/github-webhook"
+```
+
+### 移除 Webhook 設定
+```bash
+curl -s -X DELETE "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/github-webhook"
+```
+
+---
+
+## Discord Bot 自然語言操作
+
+Bot 支援 @mention 或 DM 方式輸入自然語言指令：
+
+| 指令範例 | 對應操作 |
+|----------|----------|
+| 列出所有專案 | list_projects |
+| bid-ops 的狀態 | get_project_status |
+| 通過 cold-outreach 的審查 | approve_deploy |
+| 駁回 cold-outreach | reject_deploy |
+| 發佈 bid-ops v3 | publish_version |
+| 回滾 bid-ops | rollback_version |
+| 鎖定 bid-ops 的部署 | toggle_deploy_lock |
+
+危險操作（發佈、回滾、鎖定）需要確認按鈕。

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -35,6 +36,8 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const t = useTranslations('settings');
+  const tc = useTranslations('common');
 
   useEffect(() => {
     fetch(`${API}/api/settings`)
@@ -58,9 +61,9 @@ export default function SettingsPage() {
       });
       const data = await res.json();
       if (data.success) {
-        setMessage({ type: 'success', text: '設定已儲存。' });
+        setMessage({ type: 'success', text: t('settingsSaved') });
       } else {
-        setMessage({ type: 'error', text: data.message ?? '儲存設定失敗。' });
+        setMessage({ type: 'error', text: data.message ?? t('saveSettingsFailed') });
       }
     } catch (err) {
       setMessage({ type: 'error', text: (err as Error).message });
@@ -71,37 +74,37 @@ export default function SettingsPage() {
   if (loading) {
     return (
       <div>
-        <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 24 }}>設定</h2>
-        <div style={{ color: 'var(--text-secondary)' }}>載入設定中...</div>
+        <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 24 }}>{t('title')}</h2>
+        <div style={{ color: 'var(--text-secondary)' }}>{t('loadingSettings')}</div>
       </div>
     );
   }
 
   return (
     <div>
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 24 }}>設定</h2>
+      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 24 }}>{t('title')}</h2>
 
-      <Section title="GCP 設定">
-        <Field label="GCP 專案 ID" placeholder="my-gcp-project" value={settings.gcpProject} onChange={(v) => update('gcpProject', v)} />
-        <Field label="區域" placeholder="asia-east1" value={settings.gcpRegion} onChange={(v) => update('gcpRegion', v)} />
+      <Section title={t('gcpSettings')}>
+        <Field label={t('gcpProjectId')} placeholder="my-gcp-project" value={settings.gcpProject} onChange={(v) => update('gcpProject', v)} />
+        <Field label={t('region')} placeholder="asia-east1" value={settings.gcpRegion} onChange={(v) => update('gcpRegion', v)} />
         <Field label="Artifact Registry" placeholder="asia-east1-docker.pkg.dev/project/repo" value={settings.artifactRegistry} onChange={(v) => update('artifactRegistry', v)} />
       </Section>
 
-      <Section title="網域管理">
-        <Field label="基礎網域" placeholder="deploy.yourdomain.com" value={settings.baseDomain} onChange={(v) => update('baseDomain', v)} />
+      <Section title={t('domainManagement')}>
+        <Field label={t('baseDomain')} placeholder="deploy.yourdomain.com" value={settings.baseDomain} onChange={(v) => update('baseDomain', v)} />
         <Field label="Cloudflare Zone ID" placeholder="zone-id" value={settings.cloudflareZoneId} onChange={(v) => update('cloudflareZoneId', v)} />
-        <Field label="Cloudflare Zone 名稱" placeholder="yourdomain.com" value={settings.cloudflareZoneName} onChange={(v) => update('cloudflareZoneName', v)} />
-        <Field label="Cloudflare API Token" placeholder="token" type="password" value={settings.cloudflareToken} onChange={(v) => update('cloudflareToken', v)} />
+        <Field label={t('cloudflareZoneName')} placeholder="yourdomain.com" value={settings.cloudflareZoneName} onChange={(v) => update('cloudflareZoneName', v)} />
+        <Field label={t('cloudflareApiToken')} placeholder="token" type="password" value={settings.cloudflareToken} onChange={(v) => update('cloudflareToken', v)} />
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 4 }}>
-          專案將部署至 [slug].yourdomain.com
+          {t('domainDeployHint')}
         </p>
       </Section>
 
-      <Section title="通知">
+      <Section title={t('notifications')}>
         <Field label="Slack Webhook URL" placeholder="https://hooks.slack.com/..." value={settings.slackWebhookUrl} onChange={(v) => update('slackWebhookUrl', v)} />
       </Section>
 
-      <Section title="API 金鑰">
+      <Section title={t('apiKeys')}>
         <Field label="Anthropic API Key" placeholder="sk-ant-..." type="password" value={settings.anthropicApiKey} onChange={(v) => update('anthropicApiKey', v)} />
         <Field label="GitHub Token" placeholder="ghp_..." type="password" value={settings.githubToken} onChange={(v) => update('githubToken', v)} />
       </Section>
@@ -119,7 +122,7 @@ export default function SettingsPage() {
 
       <div style={{ marginTop: 24 }}>
         <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-          {saving ? '儲存中...' : '儲存設定'}
+          {saving ? t('saving') : t('saveSettings')}
         </button>
       </div>
     </div>

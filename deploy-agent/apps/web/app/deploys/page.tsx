@@ -1,12 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
 export default function DeploysPage() {
   const [deployments, setDeployments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const t = useTranslations('deploys');
+  const tc = useTranslations('common');
 
   const loadDeployments = (silent = false) => {
     if (!silent) setLoading(true);
@@ -24,23 +27,23 @@ export default function DeploysPage() {
 
   return (
     <div>
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 16 }}>部署紀錄</h2>
+      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 16 }}>{t('title')}</h2>
       {loading ? (
-        <div style={{ color: 'var(--text-secondary)' }}>載入中...</div>
+        <div style={{ color: 'var(--text-secondary)' }}>{tc('loading')}</div>
       ) : deployments.length === 0 ? (
         <div style={{ marginTop: 32, textAlign: 'center', color: 'var(--text-secondary)' }}>
-          <p style={{ fontSize: 18 }}>尚無部署紀錄。</p>
-          <p>通過專案審查以觸發部署。</p>
+          <p style={{ fontSize: 18 }}>{t('noDeployments')}</p>
+          <p>{t('noDeploymentsHint')}</p>
         </div>
       ) : (
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: 12 }}>
-              <th style={{ padding: '8px 12px', textAlign: 'left' }}>專案</th>
-              <th style={{ padding: '8px 12px', textAlign: 'left' }}>自訂網域</th>
-              <th style={{ padding: '8px 12px', textAlign: 'left' }}>Cloud Run 網址</th>
-              <th style={{ padding: '8px 12px', textAlign: 'left' }}>健康狀態</th>
-              <th style={{ padding: '8px 12px', textAlign: 'left' }}>部署時間</th>
+              <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('project')}</th>
+              <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('customDomain')}</th>
+              <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('cloudRunUrl')}</th>
+              <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('healthStatus')}</th>
+              <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('deployTime')}</th>
             </tr>
           </thead>
           <tbody>
@@ -67,7 +70,7 @@ export default function DeploysPage() {
                   </span>
                 </td>
                 <td style={{ padding: '12px', color: 'var(--text-secondary)', fontSize: 13 }}>
-                  {d.deployed_at ? new Date(d.deployed_at).toLocaleString() : '等待中'}
+                  {d.deployed_at ? new Date(d.deployed_at).toLocaleString() : tc('waiting')}
                 </td>
               </tr>
             ))}

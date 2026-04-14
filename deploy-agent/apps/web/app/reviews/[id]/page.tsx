@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -43,6 +44,8 @@ export default function ReviewDetailPage() {
   const [review, setReview] = useState<ReviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const t = useTranslations('reviewDetail');
+  const tc = useTranslations('common');
 
   // Decision form
   const [decision, setDecision] = useState<'approved' | 'rejected' | ''>('');
@@ -58,8 +61,8 @@ export default function ReviewDetailPage() {
   }, [id]);
 
   const handleSubmit = async () => {
-    if (!decision) { setError('請選擇審查結果'); return; }
-    if (!email.trim()) { setError('請輸入審查者信箱'); return; }
+    if (!decision) { setError(t('selectDecisionError')); return; }
+    if (!email.trim()) { setError(t('emailRequiredError')); return; }
     setSubmitting(true);
     setError(null);
     try {
@@ -79,8 +82,8 @@ export default function ReviewDetailPage() {
   if (loading) {
     return (
       <div>
-        <BackLink />
-        <div style={{ marginTop: 24, color: 'var(--text-secondary)' }}>載入審查中...</div>
+        <BackLink t={t} />
+        <div style={{ marginTop: 24, color: 'var(--text-secondary)' }}>{t('loadingReview')}</div>
       </div>
     );
   }
@@ -88,9 +91,9 @@ export default function ReviewDetailPage() {
   if (!review) {
     return (
       <div>
-        <BackLink />
+        <BackLink t={t} />
         <div style={{ marginTop: 24, padding: 16, background: 'rgba(248,81,73,0.1)', borderRadius: 6, border: '1px solid var(--status-critical)' }}>
-          找不到此審查。 <button className="btn" onClick={() => router.push('/reviews')}>返回</button>
+          {t('notFound')} <button className="btn" onClick={() => router.push('/reviews')}>{t('returnBtn')}</button>
         </div>
       </div>
     );
@@ -110,11 +113,11 @@ export default function ReviewDetailPage() {
 
   return (
     <div>
-      <BackLink />
+      <BackLink t={t} />
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 600 }}>審查：{review.project_name}</h2>
+        <h2 style={{ fontSize: 22, fontWeight: 600 }}>{t('reviewTitle', { name: review.project_name })}</h2>
         {alreadyDecided && (
           <span className={`pill ${review.decision === 'approved' ? 'pill-live' : 'pill-failed'}`}>
             {review.decision}
@@ -122,28 +125,28 @@ export default function ReviewDetailPage() {
         )}
       </div>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 4 }}>
-        建立於 {new Date(review.created_at).toLocaleString()}
-        {review.reviewed_at && ` · 審查於 ${new Date(review.reviewed_at).toLocaleString()} 由 ${review.reviewer_email}`}
+        {t('createdAt', { time: new Date(review.created_at).toLocaleString() })}
+        {review.reviewed_at && ` · ${t('reviewedAt', { time: new Date(review.reviewed_at).toLocaleString(), email: review.reviewer_email ?? '' })}`}
       </p>
 
       {/* Summary Stats */}
       <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-        <StatCard label="發現總數" value={String(allFindings.length)} />
-        <StatCard label="嚴重" value={String(severityCounts['critical'] ?? 0)}
+        <StatCard label={t('totalFindings')} value={String(allFindings.length)} />
+        <StatCard label={t('critical')} value={String(severityCounts['critical'] ?? 0)}
           color={severityCounts['critical'] ? 'var(--status-critical)' : undefined} />
-        <StatCard label="高風險" value={String(severityCounts['high'] ?? 0)}
+        <StatCard label={t('high')} value={String(severityCounts['high'] ?? 0)}
           color={severityCounts['high'] ? '#f0883e' : undefined} />
-        <StatCard label="中風險" value={String(severityCounts['medium'] ?? 0)} />
-        <StatCard label="低風險/資訊" value={String((severityCounts['low'] ?? 0) + (severityCounts['info'] ?? 0))} />
-        <StatCard label="自動修復" value={`${autoFixes.filter((f) => f.applied).length}/${autoFixes.length}`} />
+        <StatCard label={t('medium')} value={String(severityCounts['medium'] ?? 0)} />
+        <StatCard label={t('lowInfo')} value={String((severityCounts['low'] ?? 0) + (severityCounts['info'] ?? 0))} />
+        <StatCard label={t('autoFixes')} value={`${autoFixes.filter((f) => f.applied).length}/${autoFixes.length}`} />
         {review.cost_estimate && (
-          <StatCard label="預估成本" value={`$${review.cost_estimate.monthlyTotal.toFixed(2)}/mo`} />
+          <StatCard label={t('estimatedCost')} value={`$${review.cost_estimate.monthlyTotal.toFixed(2)}/mo`} />
         )}
       </div>
 
       {/* Threat Summary */}
       {review.threat_summary && (
-        <Card title="威脅摘要" style={{ marginTop: 16 }}>
+        <Card title={t('threatSummary')} style={{ marginTop: 16 }}>
           <div style={{
             background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 6,
             padding: 12, fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', maxHeight: 300,
@@ -156,16 +159,16 @@ export default function ReviewDetailPage() {
 
       {/* Findings Table */}
       {allFindings.length > 0 && (
-        <Card title={`發現項目 (${allFindings.length})`} style={{ marginTop: 16 }}>
+        <Card title={t('findings', { count: allFindings.length })} style={{ marginTop: 16 }}>
           <div style={{ maxHeight: 400, overflowY: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: 11, textTransform: 'uppercase' }}>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>嚴重度</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>工具</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>標題</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>檔案</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>處理方式</th>
+                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>{t('severity')}</th>
+                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>{t('tool')}</th>
+                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>{t('findingTitle')}</th>
+                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>{t('file')}</th>
+                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>{t('action')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -188,7 +191,7 @@ export default function ReviewDetailPage() {
                         background: f.action === 'auto_fix' ? 'rgba(63,185,80,0.15)' : 'rgba(255,255,255,0.05)',
                         color: f.action === 'auto_fix' ? 'var(--status-live)' : 'var(--text-secondary)',
                       }}>
-                        {f.action === 'auto_fix' ? '已自動修復' : '待處理'}
+                        {f.action === 'auto_fix' ? t('autoFixApplied') : tc('pending')}
                       </span>
                     </td>
                   </tr>
@@ -201,7 +204,7 @@ export default function ReviewDetailPage() {
 
       {/* Auto-Fixes */}
       {autoFixes.length > 0 && (
-        <Card title={`自動修復 (${autoFixes.filter((f) => f.applied).length} 已套用)`} style={{ marginTop: 16 }}>
+        <Card title={t('autoFixSection', { applied: autoFixes.filter((f) => f.applied).length })} style={{ marginTop: 16 }}>
           {autoFixes.map((fix, i) => (
             <div key={i} style={{
               marginBottom: 12, padding: 10, background: 'var(--bg-primary)',
@@ -227,7 +230,7 @@ export default function ReviewDetailPage() {
 
       {/* Decision Form */}
       {!alreadyDecided && (
-        <Card title="提交審查決定" style={{ marginTop: 16 }}>
+        <Card title={t('submitDecision')} style={{ marginTop: 16 }}>
           <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
             <button
               type="button"
@@ -238,7 +241,7 @@ export default function ReviewDetailPage() {
                 ...(decision === 'approved' ? { background: 'var(--status-live)', borderColor: 'var(--status-live)' } : {}),
               }}
             >
-              通過
+              {t('approve')}
             </button>
             <button
               type="button"
@@ -249,13 +252,13 @@ export default function ReviewDetailPage() {
                 ...(decision === 'rejected' ? { background: 'var(--status-critical)', borderColor: 'var(--status-critical)' } : {}),
               }}
             >
-              駁回
+              {t('reject')}
             </button>
           </div>
 
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
-              審查者信箱
+              {t('reviewerEmail')}
             </label>
             <input
               type="email" value={email} onChange={(e) => setEmail(e.target.value)}
@@ -270,11 +273,11 @@ export default function ReviewDetailPage() {
 
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
-              備註（選填）
+              {t('notesOptional')}
             </label>
             <textarea
               value={comments} onChange={(e) => setComments(e.target.value)}
-              rows={3} placeholder="關於此次審查的備註..."
+              rows={3} placeholder={t('notesPlaceholder')}
               style={{
                 width: '100%', padding: '8px 12px',
                 background: 'var(--bg-primary)', border: '1px solid var(--border)',
@@ -293,7 +296,7 @@ export default function ReviewDetailPage() {
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <button className="btn btn-primary" onClick={handleSubmit} disabled={submitting || !decision}
               style={{ padding: '8px 24px', fontSize: 14 }}>
-              {submitting ? '提交中...' : `提交：${decision || '...'}`}
+              {submitting ? t('submitting') : t('submitLabel', { decision: decision || '...' })}
             </button>
           </div>
         </Card>
@@ -301,10 +304,10 @@ export default function ReviewDetailPage() {
 
       {/* Already decided info */}
       {alreadyDecided && (
-        <Card title="審查結果" style={{ marginTop: 16 }}>
+        <Card title={t('reviewResult')} style={{ marginTop: 16 }}>
           <div style={{ display: 'flex', gap: 16 }}>
             <div>
-              <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>結果：</span>
+              <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{t('result')}</span>
               <span className={`pill ${review.decision === 'approved' ? 'pill-live' : 'pill-failed'}`}>
                 {review.decision}
               </span>
@@ -326,12 +329,12 @@ export default function ReviewDetailPage() {
   );
 }
 
-/* ─── Sub-components ─── */
+/* --- Sub-components --- */
 
-function BackLink() {
+function BackLink({ t }: { t: (key: string) => string }) {
   return (
     <a href="/reviews" style={{ color: 'var(--text-secondary)', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-      &larr; 返回審查列表
+      &larr; {t('backToReviews')}
     </a>
   );
 }
