@@ -4,6 +4,21 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-14（下午）—— 全部 TODO 完成 + QA**
+
+- ✅ **Cloud Build 0742969e 部署成功**（API + Web + Bot 全部更新）
+  - MCP 12 工具全部上線（新增 get_versions, publish_version, rollback_version, toggle_deploy_lock）
+  - GitHub Webhook endpoint 上線（POST /api/webhooks/github）
+  - Webhook 設定 CRUD 上線（POST/GET/PATCH/DELETE /api/projects/:id/github-webhook）
+  - /api/infra/overview 恢復正常（之前 404）
+- ✅ **Dashboard i18n 實作完成**（commit a906e09）
+  - next-intl 整合 App Router（i18n/request.ts + NextIntlClientProvider）
+  - 248 個翻譯 key，9 個 namespace，zh-TW + en 完全對齊
+  - 全部 8 個頁面改用 useTranslations() hook
+  - TypeScript 0 errors，build 成功
+- ✅ **cold-outreach-2 清理完成**（Cloud Run + image + DB 全刪）
+- ✅ **QA 全部新功能通過**
+
 **2026-04-14 —— Versioning Phase 3: GitHub Webhook 自動部署**
 
 - ✅ **GitHub Webhook 自動部署功能完整實作**
@@ -247,14 +262,14 @@
 - [x] ~~**Versioning Phase 2**：Preview URL per revision、版本保留策略（keep last N）、canary 失敗自動 rollback~~（2026-04-13 完成）
 - [x] ~~**Versioning Phase 3**：Git push auto-deploy（webhook）~~（2026-04-14 完成：GitHub webhook + 自動部署。Branch Deploy 待後續）
 - [ ] Terraform for agent 自身 infra（目前是手動 gcloud deploy）
-- [ ] Dashboard i18n（next-intl 中英雙語）— design spec 已訂
+- [x] ~~Dashboard i18n（next-intl 中英雙語）~~（2026-04-14 完成：248 keys, 9 namespaces, 8 pages）
 - [x] ~~**Discord Bot**~~（2026-04-14 完成：已部署到 Cloud Run，NL enabled）
   - `apps/bot/` codebase 完成：7 個 slash commands + NL handler + OpenAI fallback
   - `discord-notifier.ts` 已部署：webhook 通知（deploy 完成/失敗/canary/review）
   - `cloudbuild.yaml` 已包含 build + push + deploy
   - **待辦**：使用者需到 Discord Developer Portal 開啟 Message Content Intent
   - **待辦**：加 DISCORD_CHANNEL_ID env var 啟用 morning digest
-  - **待辦**：重新部署 API 以修復 /api/infra 404
+  - ~~**待辦**：重新部署 API 以修復 /api/infra 404~~（2026-04-14 完成）
 - [ ] MCP server 實作（`@modelcontextprotocol/sdk`）
 - [ ] OpenClaw skill（`skills/deploy-agent/SKILL.md`）
 
