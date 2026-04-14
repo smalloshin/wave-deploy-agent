@@ -13,7 +13,7 @@ const VALID_TRANSITIONS: Record<ProjectStatus, ProjectStatus[]> = {
   ssl_provisioning: ['canary_check', 'failed'],
   canary_check: ['live', 'rolling_back'],
   rolling_back: ['deployed', 'failed'],
-  live: ['submitted', 'stopped'], // resubmit for new version, or manually stop
+  live: ['submitted', 'stopped', 'live'], // resubmit for new version, manually stop, or idempotent re-live (reconciler race)
   stopped: ['live', 'submitted'], // restart (deploy last image) or full rescan
   failed: ['submitted', 'review_pending', 'stopped'], // retry, skip-scan, or give up
 };

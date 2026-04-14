@@ -846,13 +846,22 @@ export async function runDeployPipeline(
           console.log(`[Deploy]   Deploy locked — v${deployVersion} deployed but NOT published`);
         }
 
-        await transitionProject(projectId, 'live', 'deploy-worker', {
-          serviceUrl: liveUrl,
-          cloudRunUrl: deployResult.serviceUrl,
-          canaryPassed: true,
-          version: deployVersion,
-          autoPublished: !isLocked,
-        });
+        try {
+          await transitionProject(projectId, 'live', 'deploy-worker', {
+            serviceUrl: liveUrl,
+            cloudRunUrl: deployResult.serviceUrl,
+            canaryPassed: true,
+            version: deployVersion,
+            autoPublished: !isLocked,
+          });
+        } catch (transErr) {
+          // Reconciler may have already pushed to 'live' — that's fine, skip
+          if ((transErr as Error).message?.includes('Invalid state transition')) {
+            console.warn(`[Deploy]   State already live (reconciler race) — continuing`);
+          } else {
+            throw transErr;
+          }
+        }
         console.log(`[Deploy] ✓ Project ${project.name} v${deployVersion} is LIVE at ${liveUrl}`);
         notifyDeployComplete(project.name, deployVersion, liveUrl ?? '', previewUrl, true).catch(() => {});
       } else {
