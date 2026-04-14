@@ -7,7 +7,12 @@ import {
   transitionProject,
   submitReview,
   createDeployment,
+  publishDeployment,
+  unpublishAllDeployments,
+  getPublishedDeployment,
+  setDeployLock,
 } from '../services/orchestrator';
+import { publishRevision } from '../services/deploy-engine';
 import { query } from '../db/index';
 import { checkSslStatus } from '../services/ssl-monitor';
 import { checkDomainConflict } from './projects';
@@ -105,6 +110,48 @@ const TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: { project_id: { type: 'string' } },
+      required: ['project_id'],
+    },
+  },
+  {
+    name: 'get_versions',
+    description: 'Get version history for a project (all deployments with version info)',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { project_id: { type: 'string', description: 'Project ID' } },
+      required: ['project_id'],
+    },
+  },
+  {
+    name: 'publish_version',
+    description: 'Publish a specific version — route all traffic to this deployment revision',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        project_id: { type: 'string', description: 'Project ID' },
+        deployment_id: { type: 'string', description: 'Deployment ID to publish' },
+      },
+      required: ['project_id', 'deployment_id'],
+    },
+  },
+  {
+    name: 'rollback_version',
+    description: 'Rollback to the previous published version',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { project_id: { type: 'string', description: 'Project ID' } },
+      required: ['project_id'],
+    },
+  },
+  {
+    name: 'toggle_deploy_lock',
+    description: 'Lock or unlock deployments for a project (locked = new deploys are blocked)',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        project_id: { type: 'string', description: 'Project ID' },
+        locked: { type: 'boolean', description: 'true = lock, false = unlock. Omit to toggle current state.' },
+      },
       required: ['project_id'],
     },
   },
@@ -314,6 +361,99 @@ async function handleToolCall(call: MCPToolCall): Promise<MCPToolResult> {
         }
         await transitionProject(project.id, 'rolling_back', 'mcp-user', { action: 'manual_rollback' });
         return text(`Rolling back "${project.name}" to previous version...`);
+      }
+
+      // ─── 版本管理工具 ───
+
+      case 'get_versions': {
+        const projectId = call.arguments.project_id as string;
+        const result = await query(
+          'SELECT * FROM deployments WHERE project_id = $1 ORDER BY version DESC',
+          [projectId]
+        );
+        if (result.rows.length === 0) return text('No versions found for this project.');
+        const lines = result.rows.map((r) => {
+          const published = r.is_published ? ' ← PUBLISHED' : '';
+          return `v${r.version} | health: ${r.health_status} | deployed: ${r.deployed_at ?? 'pending'} | preview: ${r.preview_url ?? 'N/A'}${published}`;
+        });
+        return text(`${result.rows.length} version(s):\n${lines.join('\n')}`);
+      }
+
+      case 'publish_version': {
+        const projectId = call.arguments.project_id as string;
+        const deploymentId = call.arguments.deployment_id as string;
+
+        // 取得部署記錄
+        const depResult = await query('SELECT * FROM deployments WHERE id = $1 AND project_id = $2', [deploymentId, projectId]);
+        if (depResult.rows.length === 0) return error('Deployment not found for this project');
+        const dep = depResult.rows[0];
+
+        if (!dep.revision_name) return error('This deployment has no Cloud Run revision — cannot publish');
+
+        // 取得專案資訊（需要 Cloud Run service 名稱）
+        const project = await getProject(projectId);
+        if (!project) return error('Project not found');
+
+        const gcpProject = process.env.GCP_PROJECT || 'wave-deploy-agent';
+        const gcpRegion = process.env.GCP_REGION || 'asia-east1';
+        const serviceName = dep.cloud_run_service as string;
+        if (!serviceName) return error('No Cloud Run service found on this deployment');
+
+        // 將流量切換到指定 revision
+        const pubResult = await publishRevision(gcpProject, gcpRegion, serviceName, dep.revision_name as string);
+        if (!pubResult.success) return error(`Failed to publish revision: ${pubResult.error}`);
+
+        // 更新資料庫：取消所有已發佈，標記此版本為已發佈
+        await publishDeployment(projectId, deploymentId);
+
+        return text(`Published v${dep.version} — traffic now routed to revision "${dep.revision_name}".`);
+      }
+
+      case 'rollback_version': {
+        const projectId = call.arguments.project_id as string;
+
+        // 找到目前已發佈的版本
+        const current = await getPublishedDeployment(projectId);
+        if (!current) return error('No currently published deployment found');
+
+        // 找到前一個版本（version 比目前小的最新一個）
+        const prevResult = await query(
+          'SELECT * FROM deployments WHERE project_id = $1 AND version < $2 AND revision_name IS NOT NULL ORDER BY version DESC LIMIT 1',
+          [projectId, current.version]
+        );
+        if (prevResult.rows.length === 0) return error('No previous version available to rollback to');
+
+        const prev = prevResult.rows[0];
+        const project = await getProject(projectId);
+        if (!project) return error('Project not found');
+
+        const gcpProject = process.env.GCP_PROJECT || 'wave-deploy-agent';
+        const gcpRegion = process.env.GCP_REGION || 'asia-east1';
+        const serviceName = prev.cloud_run_service as string;
+        if (!serviceName) return error('Previous deployment has no Cloud Run service');
+
+        // 將流量切回前一個版本
+        const pubResult = await publishRevision(gcpProject, gcpRegion, serviceName, prev.revision_name as string);
+        if (!pubResult.success) return error(`Failed to rollback: ${pubResult.error}`);
+
+        await publishDeployment(projectId, prev.id as string);
+
+        return text(`Rolled back from v${current.version} to v${prev.version}. Traffic now routed to revision "${prev.revision_name}".`);
+      }
+
+      case 'toggle_deploy_lock': {
+        const projectId = call.arguments.project_id as string;
+        const project = await getProject(projectId);
+        if (!project) return error('Project not found');
+
+        // 如果有提供 locked 值就用它，否則 toggle 目前狀態
+        const locked = call.arguments.locked !== undefined
+          ? (call.arguments.locked as boolean)
+          : !(project.config?.deployLocked ?? false);
+
+        await setDeployLock(projectId, locked);
+
+        return text(`Deploy lock for "${project.name}": ${locked ? '🔒 LOCKED — new deploys are blocked' : '🔓 UNLOCKED — deploys allowed'}`);
       }
 
       default:

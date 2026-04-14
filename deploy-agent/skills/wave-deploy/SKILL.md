@@ -271,3 +271,45 @@ curl -s -X DELETE "https://wave-deploy-agent-api.punwave.com/api/projects/PROJEC
 3. **Port 偵測**：自動從 Dockerfile EXPOSE、框架預設（FastAPI→8000, Next.js→3000, nginx→80）偵測
 4. **Custom Domain**：SSL 憑證通常需要 5-15 分鐘。在等待期間，Cloud Run URL 已可存取
 5. **公開存取**：部署後需確認 Cloud Run service 允許未驗證存取（`allUsers` → `roles/run.invoker`）
+
+---
+
+## 版本管理
+
+Wave Deploy 支援 Netlify 風格的不可變版本管理。每次部署會產生一個新版本（version），可隨時切換、回滾。
+
+### 查看版本歷史
+```bash
+# 透過 MCP tool: get_versions
+curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"get_versions","arguments":{"project_id":"PROJECT_ID"}}'
+```
+列出所有部署版本，包含版本號、健康狀態、是否為目前發佈版本、部署時間、預覽 URL。
+
+### 發佈指定版本
+```bash
+# 透過 MCP tool: publish_version
+curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"publish_version","arguments":{"project_id":"PROJECT_ID","deployment_id":"DEPLOYMENT_ID"}}'
+```
+將流量切換到指定版本的 Cloud Run revision。適用於需要回到特定版本的情況。
+
+### 回滾到前一版本
+```bash
+# 透過 MCP tool: rollback_version
+curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"rollback_version","arguments":{"project_id":"PROJECT_ID"}}'
+```
+自動找到前一個有 revision 的版本並切換流量。比 `publish_version` 更方便，不需要知道 deployment ID。
+
+### 鎖定／解鎖部署
+```bash
+# 透過 MCP tool: toggle_deploy_lock
+curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"toggle_deploy_lock","arguments":{"project_id":"PROJECT_ID","locked":true}}'
+```
+鎖定後新的部署會被擋住，適合在生產環境穩定後避免意外更新。省略 `locked` 參數會自動 toggle 目前狀態。

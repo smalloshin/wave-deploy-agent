@@ -124,3 +124,9 @@ ALTER TABLE deployments ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
 -- Projects: deploy lock prevents auto-publish; published_deployment_id tracks active version
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS published_deployment_id UUID REFERENCES deployments(id);
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS deploy_locked BOOLEAN DEFAULT false;
+
+-- ─── GitHub webhook auto-deploy (Versioning Phase 3) ───
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_repo_url TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_webhook_secret TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_branch TEXT DEFAULT 'main';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_deploy BOOLEAN DEFAULT false;

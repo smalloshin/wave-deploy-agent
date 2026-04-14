@@ -10,6 +10,7 @@ import { settingsRoutes } from './routes/settings';
 import { projectGroupRoutes } from './routes/project-groups';
 import { infraRoutes } from './routes/infra';
 import { versioningRoutes } from './routes/versioning';
+import { webhookRoutes } from './routes/webhooks';
 import { startReconciler } from './services/reconciler';
 import { runMigrations } from './db/migrate';
 
@@ -52,6 +53,13 @@ try {
   console.log('[startup] Versioning routes registered OK');
 } catch (err) {
   console.error('[startup] VERSIONING ROUTES FAILED TO REGISTER:', (err as Error).message);
+  console.error('[startup] Stack:', (err as Error).stack);
+}
+try {
+  await app.register(webhookRoutes);
+  console.log('[startup] Webhook routes registered OK');
+} catch (err) {
+  console.error('[startup] WEBHOOK ROUTES FAILED TO REGISTER:', (err as Error).message);
   console.error('[startup] Stack:', (err as Error).stack);
 }
 

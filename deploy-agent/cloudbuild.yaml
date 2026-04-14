@@ -93,6 +93,8 @@ steps:
       - '--service-account'
       - 'deploy-agent@${PROJECT_ID}.iam.gserviceaccount.com'
       - '--no-allow-unauthenticated'
+      - '--update-secrets=DISCORD_TOKEN=DISCORD_TOKEN:latest,DISCORD_APP_ID=DISCORD_APP_ID:latest,DISCORD_GUILD_ID=DISCORD_GUILD_ID:latest,DISCORD_CHANNEL_ID=DISCORD_CHANNEL_ID:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest,OPENAI_API_KEY=openai-api-key:latest'
+      - '--set-env-vars=API_BASE_URL=https://wave-deploy-agent-api.punwave.com'
       - '--quiet'
 
 substitutions:

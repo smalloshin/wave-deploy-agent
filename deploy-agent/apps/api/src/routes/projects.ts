@@ -1,11 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import crypto from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { gcpFetch } from '../services/gcp-auth';
+import { query } from '../db/index';
 import {
   createProject,
   listProjects,
@@ -487,7 +489,7 @@ export async function projectRoutes(app: FastifyInstance) {
         try {
           const gcsSourceUri = await uploadSourceToGcs(projectSlug, projectDir);
           const current = await getProject(project.id);
-          await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
+          if (current) await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
         } catch (err) {
           console.error(`[GCS Submit] Background GCS repack failed:`, (err as Error).message);
         }
@@ -863,7 +865,7 @@ export async function projectRoutes(app: FastifyInstance) {
         const gcsSourceUri = await uploadSourceToGcs(projectSlug, projectDir);
         // Persist GCS URI back to project config
         const current = await getProject(project.id);
-        await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
+        if (current) await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
       } catch (err) {
         console.error(`[Upload] Background GCS upload failed for ${project.id}:`, (err as Error).message);
       }
@@ -872,7 +874,7 @@ export async function projectRoutes(app: FastifyInstance) {
         try {
           const gcsDbDumpUri = await uploadDbDumpToGcs(projectSlug, dbDumpBuffer, dbDumpFileName);
           const currentForDump = await getProject(project.id);
-          await updateProjectConfig(project.id, { ...currentForDump.config, gcsDbDumpUri, dbDumpFileName });
+          if (currentForDump) await updateProjectConfig(project.id, { ...currentForDump.config, gcsDbDumpUri, dbDumpFileName });
         } catch (err) {
           console.error(`[Upload] Background DB dump upload failed:`, (err as Error).message);
         }
@@ -1415,6 +1417,154 @@ export async function projectRoutes(app: FastifyInstance) {
         conflict: domainResult.conflict,
       });
     }
+  });
+
+  // ─── GitHub Webhook Settings (Versioning Phase 3) ───
+
+  // Configure GitHub webhook for auto-deploy
+  app.post<{ Params: { id: string } }>('/api/projects/:id/github-webhook', async (request, reply) => {
+    const project = await getProject(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    const body = (request.body ?? {}) as {
+      repoUrl?: string;
+      branch?: string;
+      autoDeployEnabled?: boolean;
+    };
+
+    if (!body.repoUrl) {
+      return reply.status(400).send({ error: 'repoUrl is required' });
+    }
+
+    // Validate it looks like a GitHub URL
+    if (!body.repoUrl.includes('github.com/')) {
+      return reply.status(400).send({ error: 'repoUrl must be a GitHub repository URL' });
+    }
+
+    // Normalize URL: remove trailing .git and trailing slash
+    const normalizedUrl = body.repoUrl.replace(/\.git$/, '').replace(/\/$/, '');
+
+    // Generate a random webhook secret
+    const webhookSecret = crypto.randomBytes(32).toString('hex');
+    const branch = body.branch || 'main';
+    const autoDeployEnabled = body.autoDeployEnabled !== false; // default true
+
+    // Store in DB
+    await query(
+      `UPDATE projects
+       SET github_repo_url = $1,
+           github_webhook_secret = $2,
+           github_branch = $3,
+           auto_deploy = $4,
+           updated_at = NOW()
+       WHERE id = $5`,
+      [normalizedUrl, webhookSecret, branch, autoDeployEnabled, project.id]
+    );
+
+    const apiBase = process.env.API_BASE_URL || 'https://wave-deploy-agent-api.punwave.com';
+    const webhookUrl = `${apiBase}/api/webhooks/github`;
+
+    return {
+      configured: true,
+      webhookUrl,
+      webhookSecret,
+      repoUrl: normalizedUrl,
+      branch,
+      autoDeployEnabled,
+      message: '請將 Webhook URL 和 Secret 設定到 GitHub repository 的 Webhooks 設定中',
+      instructions: {
+        url: webhookUrl,
+        contentType: 'application/json',
+        secret: webhookSecret,
+        events: ['push'],
+      },
+    };
+  });
+
+  // Remove GitHub webhook config
+  app.delete<{ Params: { id: string } }>('/api/projects/:id/github-webhook', async (request, reply) => {
+    const project = await getProject(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    await query(
+      `UPDATE projects
+       SET github_repo_url = NULL,
+           github_webhook_secret = NULL,
+           github_branch = 'main',
+           auto_deploy = false,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [project.id]
+    );
+
+    return { removed: true, message: '已移除 GitHub Webhook 設定' };
+  });
+
+  // Get webhook config (mask secret)
+  app.get<{ Params: { id: string } }>('/api/projects/:id/github-webhook', async (request, reply) => {
+    const project = await getProject(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    const row = await query(
+      `SELECT github_repo_url, github_webhook_secret, github_branch, auto_deploy FROM projects WHERE id = $1`,
+      [project.id]
+    );
+
+    if (row.rows.length === 0) {
+      return reply.status(404).send({ error: 'Project not found' });
+    }
+
+    const data = row.rows[0];
+    const repoUrl = data.github_repo_url as string | null;
+    const secret = data.github_webhook_secret as string | null;
+    const branch = data.github_branch as string;
+    const autoDeploy = data.auto_deploy as boolean;
+
+    if (!repoUrl || !secret) {
+      return { configured: false };
+    }
+
+    const apiBase = process.env.API_BASE_URL || 'https://wave-deploy-agent-api.punwave.com';
+
+    return {
+      configured: true,
+      repoUrl,
+      branch,
+      autoDeployEnabled: autoDeploy,
+      webhookUrl: `${apiBase}/api/webhooks/github`,
+      // Mask secret: show first 8 chars + asterisks
+      maskedSecret: secret.slice(0, 8) + '••••••••••••••••',
+    };
+  });
+
+  // Toggle auto-deploy on/off (without reconfiguring webhook)
+  app.patch<{ Params: { id: string } }>('/api/projects/:id/github-webhook', async (request, reply) => {
+    const project = await getProject(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    const body = (request.body ?? {}) as { autoDeployEnabled?: boolean; branch?: string };
+
+    const sets: string[] = ['updated_at = NOW()'];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (body.autoDeployEnabled !== undefined) {
+      sets.push(`auto_deploy = $${idx++}`);
+      params.push(body.autoDeployEnabled);
+    }
+    if (body.branch !== undefined) {
+      sets.push(`github_branch = $${idx++}`);
+      params.push(body.branch);
+    }
+
+    params.push(project.id);
+    await query(`UPDATE projects SET ${sets.join(', ')} WHERE id = $${idx}`, params);
+
+    return {
+      updated: true,
+      autoDeployEnabled: body.autoDeployEnabled,
+      branch: body.branch,
+    };
   });
 
   // Versioning routes moved to ./versioning.ts for reliability

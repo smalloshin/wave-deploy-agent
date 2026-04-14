@@ -4,12 +4,16 @@
 locals {
   database_url = "postgresql://${google_sql_user.deploy_agent.name}:${var.db_password}@/${google_sql_database.deploy_agent.name}?host=/cloudsql/${google_sql_database_instance.deploy_agent.connection_name}"
   secrets = {
-    database-url      = local.database_url
-    redis-password    = var.redis_password
-    anthropic-api-key = var.anthropic_api_key
-    openai-api-key    = var.openai_api_key
-    github-token      = var.github_token
-    cloudflare-token  = var.cloudflare_token
+    database-url       = local.database_url
+    redis-password     = var.redis_password
+    anthropic-api-key  = var.anthropic_api_key
+    openai-api-key     = var.openai_api_key
+    github-token       = var.github_token
+    cloudflare-token   = var.cloudflare_token
+    DISCORD_TOKEN      = var.discord_token
+    DISCORD_APP_ID     = var.discord_app_id
+    DISCORD_GUILD_ID   = var.discord_guild_id
+    DISCORD_CHANNEL_ID = var.discord_channel_id
   }
 }
 

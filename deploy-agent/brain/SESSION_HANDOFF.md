@@ -4,6 +4,49 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-14 —— Versioning Phase 3: GitHub Webhook 自動部署**
+
+- ✅ **GitHub Webhook 自動部署功能完整實作**
+  - **DB Schema**：projects 表新增 `github_repo_url`、`github_webhook_secret`、`github_branch`、`auto_deploy` 四個欄位（ALTER TABLE IF NOT EXISTS）
+  - **Webhook Route**（`routes/webhooks.ts` 新檔）：
+    - `POST /api/webhooks/github` — 接收 GitHub push event
+    - HMAC-SHA256 簽名驗證（`X-Hub-Signature-256`，使用 `crypto.timingSafeEqual` 防 timing attack）
+    - 支援 push / ping / delete 三種 event type
+    - push 時：下載 GitHub tarball → 上傳 GCS → 解壓 → 觸發 pipeline（與 new-version 同流程）
+    - 支援 monorepo（`serviceDirName` 偵測）
+    - 目前僅支援公開 repo（TODO: 私有 repo 需 GitHub token）
+  - **專案設定 API**（加到 `routes/projects.ts`）：
+    - `POST /api/projects/:id/github-webhook` — 設定 webhook（生成隨機 secret）
+    - `GET /api/projects/:id/github-webhook` — 取得設定（secret 遮罩）
+    - `PATCH /api/projects/:id/github-webhook` — 切換 auto_deploy / 改 branch
+    - `DELETE /api/projects/:id/github-webhook` — 移除設定
+  - **Web UI**（`projects/[id]/page.tsx`）：
+    - 未設定時：顯示 Repo URL + Branch 表單 + 「啟用自動部署」按鈕
+    - 已設定時：顯示 Webhook URL（可複製）、遮罩 Secret、Branch、自動部署開關
+    - 首次設定後顯示完整 Secret（僅一次，提示使用者複製）
+    - 「移除 Webhook 設定」按鈕
+  - **index.ts**：已註冊 webhookRoutes（有 try/catch 保護）
+
+**2026-04-14 —— Discord Bot NL 部署完成 + QA**
+
+- ✅ **Discord Bot 部署到 Cloud Run**（revision `deploy-agent-bot-00008-k9b`）
+  - Image: `bot:bot1776093436`，512Mi / 1 CPU，min-instances=1，no-cpu-throttling
+  - Secrets: DISCORD_TOKEN, DISCORD_APP_ID, DISCORD_GUILD_ID, ANTHROPIC_API_KEY, OPENAI_API_KEY
+  - Health server on :8080, Bot Ready as wave deploy agent#9971, Guilds: 2
+  - `[Bot] NL: enabled` — 自然語言功能已啟用
+- ✅ **OpenAI GPT-4o-mini fallback** 已實作（`nl-handler.ts`）
+  - `callLLM()` 統一介面：先嘗試 Claude Haiku，billing/credit 錯誤時自動 fallback GPT
+  - GPT 回覆會附 ` (GPT)` 標籤，使用者可辨識
+- ✅ **QA 通過**（Health Score: 86/100，0 console errors）
+  - Web UI 7 個頁面全部正常載入
+  - API endpoints: project-groups ✅, projects/:id ✅, versions ✅
+  - Bot status: Running, NL enabled, 2 guilds connected
+- 🐛 **發現 4 個 issues**（全部 deferred — 需重新部署 API 或使用者手動操作）：
+  - ISSUE-001 (High): `/api/infra` route 404（API image 未含新 route）
+  - ISSUE-002 (Medium): `/api/projects/:id` 缺少 latestDeployment 欄位（API 未部署）
+  - ISSUE-003 (Medium): Discord Message Content Intent 未開啟
+  - ISSUE-004 (Low): cold-outreach-2 顯示 Not Found
+
 **2026-04-13（晚上）—— Versioning Phase 2 完成 + Discord Bot TODO**
 
 - ✅ **Tagged Preview URL per revision**
@@ -202,13 +245,16 @@
 
 ### 中優先
 - [x] ~~**Versioning Phase 2**：Preview URL per revision、版本保留策略（keep last N）、canary 失敗自動 rollback~~（2026-04-13 完成）
-- [ ] **Versioning Phase 3**：Git push auto-deploy（webhook）、Branch Deploy
+- [x] ~~**Versioning Phase 3**：Git push auto-deploy（webhook）~~（2026-04-14 完成：GitHub webhook + 自動部署。Branch Deploy 待後續）
 - [ ] Terraform for agent 自身 infra（目前是手動 gcloud deploy）
 - [ ] Dashboard i18n（next-intl 中英雙語）— design spec 已訂
-- [ ] **Discord Bot**（discord.js — 程式碼已完成，等使用者給 Discord token 後 deploy + QA）
-  - `apps/bot/` codebase 完成：7 個 slash commands + autocomplete + embeds
+- [x] ~~**Discord Bot**~~（2026-04-14 完成：已部署到 Cloud Run，NL enabled）
+  - `apps/bot/` codebase 完成：7 個 slash commands + NL handler + OpenAI fallback
   - `discord-notifier.ts` 已部署：webhook 通知（deploy 完成/失敗/canary/review）
-  - `cloudbuild.yaml` 已包含 build + push（deploy step 暫時註解等 secrets）
+  - `cloudbuild.yaml` 已包含 build + push + deploy
+  - **待辦**：使用者需到 Discord Developer Portal 開啟 Message Content Intent
+  - **待辦**：加 DISCORD_CHANNEL_ID env var 啟用 morning digest
+  - **待辦**：重新部署 API 以修復 /api/infra 404
 - [ ] MCP server 實作（`@modelcontextprotocol/sdk`）
 - [ ] OpenClaw skill（`skills/deploy-agent/SKILL.md`）
 
@@ -241,6 +287,7 @@
 10. **手動 `gcloud builds submit` 必須帶 `--substitutions=SHORT_SHA=xxx`**，否則 Docker tag 為空（`api:` → invalid reference format）。Git trigger 模式下 `SHORT_SHA` 是內建的。
 11. **Fastify plugin 超過 ~1500 行時，尾端 routes 可能不被註冊**（`tsx` 運行時 transpile 的特性）。解法：拆分大型 plugin 成多個檔案。（2026-04-13 踩坑：`projects.ts` 1615 行 → 拆出 `versioning.ts`）
 12. **Cloud Run v2 API traffic target 必須帶 `type`**：`type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION'`。不帶會 400 INVALID_ARGUMENT。
+13. **GitHub Webhook 需要 raw body 做 HMAC 驗證**。webhookRoutes 用 `addContentTypeParser('application/json', { parseAs: 'buffer' })` 覆蓋 JSON parser，Fastify plugin encapsulation 確保只影響 webhook 路由。
 
 ### 使用者偏好（Boss 習慣）
 - 直接給結論、不要囉嗦

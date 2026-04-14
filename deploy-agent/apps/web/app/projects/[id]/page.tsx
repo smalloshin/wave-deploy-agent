@@ -146,6 +146,20 @@ export default function ProjectDetailPage() {
   const [upgradeFile, setUpgradeFile] = useState<File | null>(null);
   const [upgrading, setUpgrading] = useState(false);
   const [upgradeDragOver, setUpgradeDragOver] = useState(false);
+  // GitHub webhook state
+  const [webhookConfig, setWebhookConfig] = useState<{
+    configured: boolean;
+    repoUrl?: string;
+    branch?: string;
+    autoDeployEnabled?: boolean;
+    webhookUrl?: string;
+    maskedSecret?: string;
+  } | null>(null);
+  const [webhookRepoUrl, setWebhookRepoUrl] = useState('');
+  const [webhookBranch, setWebhookBranch] = useState('main');
+  const [webhookSaving, setWebhookSaving] = useState(false);
+  const [webhookNewSecret, setWebhookNewSecret] = useState<string | null>(null);
+  const [webhookCopied, setWebhookCopied] = useState<string | null>(null);
 
   const loadDetail = (silent = false) => {
     if (!silent) setLoading(true);
@@ -167,9 +181,17 @@ export default function ProjectDetailPage() {
       .catch(() => {});
   };
 
+  const loadWebhookConfig = () => {
+    fetch(`${API}/api/projects/${id}/github-webhook`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d) setWebhookConfig(d); })
+      .catch(() => {});
+  };
+
   useEffect(() => {
     loadDetail();
     loadVersions();
+    loadWebhookConfig();
     const interval = setInterval(() => { loadDetail(true); loadVersions(); }, 5000);
     return () => clearInterval(interval);
   }, [id]);
@@ -251,6 +273,60 @@ export default function ProjectDetailPage() {
       alert((err as Error).message);
     }
     setUpgrading(false);
+  };
+
+  const handleSetupWebhook = async () => {
+    if (!webhookRepoUrl.trim()) return;
+    setWebhookSaving(true);
+    try {
+      const res = await fetch(`${API}/api/projects/${id}/github-webhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl: webhookRepoUrl, branch: webhookBranch, autoDeployEnabled: true }),
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+      const result = await res.json();
+      setWebhookNewSecret(result.webhookSecret);
+      loadWebhookConfig();
+    } catch (err) {
+      alert((err as Error).message);
+    }
+    setWebhookSaving(false);
+  };
+
+  const handleRemoveWebhook = async () => {
+    if (!confirm('確定要移除 GitHub Webhook 設定？')) return;
+    try {
+      const res = await fetch(`${API}/api/projects/${id}/github-webhook`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed');
+      setWebhookConfig({ configured: false });
+      setWebhookNewSecret(null);
+      setWebhookRepoUrl('');
+    } catch (err) {
+      alert((err as Error).message);
+    }
+  };
+
+  const handleToggleAutoDeploy = async () => {
+    if (!webhookConfig?.configured) return;
+    try {
+      const res = await fetch(`${API}/api/projects/${id}/github-webhook`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoDeployEnabled: !webhookConfig.autoDeployEnabled }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      setWebhookConfig({ ...webhookConfig, autoDeployEnabled: !webhookConfig.autoDeployEnabled });
+    } catch (err) {
+      alert((err as Error).message);
+    }
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setWebhookCopied(label);
+      setTimeout(() => setWebhookCopied(null), 2000);
+    });
   };
 
   if (loading) {
@@ -494,6 +570,164 @@ export default function ProjectDetailPage() {
           </div>
         </Card>
       )}
+
+      {/* GitHub Auto-Deploy */}
+      <Card title="GitHub 自動部署" style={{ marginTop: 16 }}>
+        {webhookConfig?.configured ? (
+          <div>
+            {/* Configured state */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Repository</span>
+                <a href={webhookConfig.repoUrl} target="_blank" rel="noreferrer"
+                  style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}>
+                  {webhookConfig.repoUrl}
+                </a>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Branch</span>
+                <span style={{ fontSize: 13, fontFamily: 'monospace' }}>{webhookConfig.branch}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Webhook URL</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <code style={{ fontSize: 12, color: 'var(--text-primary)', background: 'var(--bg-primary)', padding: '2px 8px', borderRadius: 4 }}>
+                    {webhookConfig.webhookUrl}
+                  </code>
+                  <button
+                    onClick={() => copyToClipboard(webhookConfig.webhookUrl!, 'url')}
+                    style={{
+                      fontSize: 11, padding: '3px 8px', borderRadius: 4,
+                      border: '1px solid var(--border)', background: 'var(--bg-primary)',
+                      color: webhookCopied === 'url' ? 'var(--status-live)' : 'var(--text-secondary)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {webhookCopied === 'url' ? '已複製' : '複製'}
+                  </button>
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Secret</span>
+                <code style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-primary)', padding: '2px 8px', borderRadius: 4 }}>
+                  {webhookConfig.maskedSecret}
+                </code>
+              </div>
+              {webhookNewSecret && (
+                <div style={{
+                  padding: 12, background: 'rgba(63,185,80,0.06)', border: '1px solid rgba(63,185,80,0.3)',
+                  borderRadius: 8, marginTop: 4,
+                }}>
+                  <div style={{ fontSize: 12, color: 'var(--status-live)', fontWeight: 600, marginBottom: 6 }}>
+                    Webhook Secret（僅顯示一次，請立即複製）
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <code style={{ fontSize: 12, fontFamily: 'monospace', wordBreak: 'break-all', flex: 1 }}>
+                      {webhookNewSecret}
+                    </code>
+                    <button
+                      onClick={() => copyToClipboard(webhookNewSecret, 'secret')}
+                      style={{
+                        fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                        border: '1px solid var(--border)', background: 'var(--bg-primary)',
+                        color: webhookCopied === 'secret' ? 'var(--status-live)' : 'var(--text-secondary)',
+                        cursor: 'pointer', flexShrink: 0,
+                      }}
+                    >
+                      {webhookCopied === 'secret' ? '已複製' : '複製 Secret'}
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>自動部署</span>
+                <button
+                  onClick={handleToggleAutoDeploy}
+                  style={{
+                    fontSize: 12, padding: '4px 14px', borderRadius: 4,
+                    background: webhookConfig.autoDeployEnabled ? 'rgba(63,185,80,0.1)' : 'var(--bg-primary)',
+                    border: `1px solid ${webhookConfig.autoDeployEnabled ? 'rgba(63,185,80,0.3)' : 'var(--border)'}`,
+                    color: webhookConfig.autoDeployEnabled ? 'var(--status-live)' : 'var(--text-secondary)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {webhookConfig.autoDeployEnabled ? '已啟用' : '已停用'}
+                </button>
+              </div>
+            </div>
+            <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={handleRemoveWebhook}
+                style={{
+                  fontSize: 12, padding: '4px 14px', borderRadius: 4,
+                  background: 'transparent', border: '1px solid rgba(248,81,73,0.3)',
+                  color: 'var(--status-critical)', cursor: 'pointer',
+                }}
+              >
+                移除 Webhook 設定
+              </button>
+            </div>
+            <p style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              當 GitHub push 到 {webhookConfig.branch} 分支時，會自動觸發部署流程。目前僅支援公開 repo。
+            </p>
+          </div>
+        ) : (
+          <div>
+            {/* Setup form */}
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+              連結 GitHub Repository，push 到指定分支時自動觸發部署。目前僅支援公開 repo。
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div>
+                <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                  Repository URL
+                </label>
+                <input
+                  type="text"
+                  value={webhookRepoUrl}
+                  onChange={(e) => setWebhookRepoUrl(e.target.value)}
+                  placeholder="https://github.com/owner/repo"
+                  style={{
+                    width: '100%', padding: '8px 12px', fontSize: 13, fontFamily: 'monospace',
+                    background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                    borderRadius: 6, color: 'var(--text-primary)', boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                  Branch
+                </label>
+                <input
+                  type="text"
+                  value={webhookBranch}
+                  onChange={(e) => setWebhookBranch(e.target.value)}
+                  placeholder="main"
+                  style={{
+                    width: 200, padding: '8px 12px', fontSize: 13, fontFamily: 'monospace',
+                    background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                    borderRadius: 6, color: 'var(--text-primary)',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                <button
+                  onClick={handleSetupWebhook}
+                  disabled={webhookSaving || !webhookRepoUrl.trim()}
+                  style={{
+                    fontSize: 13, padding: '8px 20px', borderRadius: 6,
+                    background: 'var(--accent)', color: '#fff', border: 'none',
+                    cursor: webhookSaving || !webhookRepoUrl.trim() ? 'not-allowed' : 'pointer',
+                    opacity: webhookSaving || !webhookRepoUrl.trim() ? 0.5 : 1,
+                  }}
+                >
+                  {webhookSaving ? '設定中...' : '啟用自動部署'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
 
       {/* Upgrade Modal */}
       {showUpgradeModal && (

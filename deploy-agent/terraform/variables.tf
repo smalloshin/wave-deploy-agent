@@ -94,6 +94,37 @@ variable "web_image_tag" {
   default     = "latest"
 }
 
+variable "bot_image_tag" {
+  description = "Container image tag for Discord Bot service"
+  type        = string
+  default     = "latest"
+}
+
+variable "discord_token" {
+  description = "Discord bot token"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "discord_app_id" {
+  description = "Discord application ID"
+  type        = string
+  default     = ""
+}
+
+variable "discord_guild_id" {
+  description = "Discord guild (server) ID"
+  type        = string
+  default     = ""
+}
+
+variable "discord_channel_id" {
+  description = "Discord channel ID for morning digest"
+  type        = string
+  default     = ""
+}
+
 variable "api_min_instances" {
   type    = number
   default = 1
