@@ -293,7 +293,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       const pending = reviews.find(r => !r.decision && r.project_slug === project.slug);
       if (!pending) return { text: `${project.name} 沒有待審查的部署` };
 
-      await decideReview(pending.id, 'approved', 'discord-bot', input.comments as string);
+      await decideReview(pending.id, 'approved', 'discord-bot@punwave.com', input.comments as string);
       return { text: `✅ **${project.name}** 的部署已核准` };
     }
 
@@ -305,7 +305,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       const pending = reviews.find(r => !r.decision && r.project_slug === project.slug);
       if (!pending) return { text: `${project.name} 沒有待審查的部署` };
 
-      await decideReview(pending.id, 'rejected', 'discord-bot', input.reason as string);
+      await decideReview(pending.id, 'rejected', 'discord-bot@punwave.com', input.reason as string);
       return { text: `❌ **${project.name}** 的部署已拒絕` };
     }
 

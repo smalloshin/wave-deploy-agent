@@ -63,8 +63,13 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`API ${path}: ${res.status} — ${err}`);
+    const raw = await res.text();
+    let msg = raw;
+    try {
+      const parsed = JSON.parse(raw) as { message?: string; error?: string };
+      msg = parsed.message ?? parsed.error ?? raw;
+    } catch { /* not JSON, use raw */ }
+    throw new Error(`API ${path}: ${res.status} — ${msg}`);
   }
   return res.json() as Promise<T>;
 }
