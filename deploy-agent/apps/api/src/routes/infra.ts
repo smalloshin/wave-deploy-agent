@@ -7,6 +7,8 @@
 import type { FastifyInstance } from 'fastify';
 import { gcpFetch } from '../services/gcp-auth';
 import { listProjects } from '../services/orchestrator';
+import { reconcileStuckProjects } from '../services/reconciler';
+import { runMigrations } from '../db/migrate';
 
 const GCP_PROJECT = process.env.GCP_PROJECT || 'wave-deploy-agent';
 const GCP_REGION = process.env.GCP_REGION || 'asia-east1';
@@ -317,6 +319,27 @@ export async function infraRoutes(app: FastifyInstance) {
         freedBytes,
         log,
       };
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // Manually run database migrations (idempotent).
+  app.post('/api/infra/migrate', async (_req, reply) => {
+    try {
+      await runMigrations();
+      return { success: true, message: 'Migrations completed successfully' };
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // Manually trigger the pipeline reconciler (recovers projects stuck in
+  // intermediate states after an API container restart).
+  app.post('/api/infra/reconcile', async (_req, reply) => {
+    try {
+      const result = await reconcileStuckProjects();
+      return result;
     } catch (err) {
       return reply.status(500).send({ error: (err as Error).message });
     }

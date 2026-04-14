@@ -382,8 +382,9 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
     if (!name.trim()) { setError('請輸入專案名稱'); return; }
     if (sourceType === 'upload' && !file) { setError('請上傳專案壓縮檔'); return; }
     if (sourceType === 'git' && !gitUrl.trim()) { setError('請輸入 Git URL'); return; }
+    if (!customDomain.trim()) { setError('請輸入自訂網域'); return; }
 
-    // Pre-flight: check custom domain for conflicts (if user set one)
+    // Pre-flight: check custom domain for conflicts
     if (customDomain.trim()) {
       setSubmitting(true);
       setError(null);
@@ -512,7 +513,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         )}
 
         <ModalField
-          label="自訂網域（選填）"
+          label="自訂網域"
           value={customDomain}
           onChange={setCustomDomain}
           placeholder="my-app（將會變成 my-app.punwave.com）"

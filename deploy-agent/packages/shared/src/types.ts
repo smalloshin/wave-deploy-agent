@@ -115,6 +115,8 @@ export interface ProjectConfig {
   // Domain error tracking
   domainError?: string;
   domainErrorAt?: string;
+  // Versioning: deploy lock prevents auto-publish of new versions
+  deployLocked?: boolean;
 }
 
 // ─── Project Group (aggregated view of related services + resources) ───
@@ -138,6 +140,8 @@ export interface ProjectWithResources extends Project {
     cloudRunUrl: string | null;
     customDomain: string | null;
     deployedAt: Date | null;
+    healthStatus?: string | null;
+    sslStatus?: string | null;
   } | null;
 }
 
@@ -310,6 +314,13 @@ export interface Deployment {
   gitPrUrl: string | null;
   deployedAt: Date | null;
   createdAt: Date;
+  // Versioning (Netlify-like immutable deploy model)
+  version: number;
+  imageUri: string | null;
+  revisionName: string | null;
+  previewUrl: string | null;
+  isPublished: boolean;
+  publishedAt: Date | null;
 }
 
 export interface CanaryResult {

@@ -183,11 +183,13 @@ export async function submitReview(
 
 export async function createDeployment(
   projectId: string,
-  reviewId?: string
+  reviewId?: string,
+  version?: number
 ): Promise<Deployment> {
+  const ver = version ?? await getNextDeploymentVersion(projectId);
   const result = await query(
-    `INSERT INTO deployments (project_id, review_id) VALUES ($1, $2) RETURNING *`,
-    [projectId, reviewId ?? null]
+    `INSERT INTO deployments (project_id, review_id, version) VALUES ($1, $2, $3) RETURNING *`,
+    [projectId, reviewId ?? null, ver]
   );
   return rowToDeployment(result.rows[0]);
 }
@@ -204,6 +206,11 @@ export async function updateDeployment(
     gitPrUrl: string;
     terraformConfig: string;
     deployedAt: Date;
+    imageUri: string;
+    revisionName: string;
+    previewUrl: string;
+    isPublished: boolean;
+    publishedAt: Date;
   }>
 ): Promise<Deployment> {
   const sets: string[] = [];
@@ -219,6 +226,11 @@ export async function updateDeployment(
   if (updates.gitPrUrl !== undefined) { sets.push(`git_pr_url = $${idx++}`); params.push(updates.gitPrUrl); }
   if (updates.terraformConfig !== undefined) { sets.push(`terraform_config = $${idx++}`); params.push(updates.terraformConfig); }
   if (updates.deployedAt !== undefined) { sets.push(`deployed_at = $${idx++}`); params.push(updates.deployedAt); }
+  if (updates.imageUri !== undefined) { sets.push(`image_uri = $${idx++}`); params.push(updates.imageUri); }
+  if (updates.revisionName !== undefined) { sets.push(`revision_name = $${idx++}`); params.push(updates.revisionName); }
+  if (updates.previewUrl !== undefined) { sets.push(`preview_url = $${idx++}`); params.push(updates.previewUrl); }
+  if (updates.isPublished !== undefined) { sets.push(`is_published = $${idx++}`); params.push(updates.isPublished); }
+  if (updates.publishedAt !== undefined) { sets.push(`published_at = $${idx++}`); params.push(updates.publishedAt); }
 
   if (sets.length === 0) {
     const row = await getOne('SELECT * FROM deployments WHERE id = $1', [id]);
@@ -375,5 +387,67 @@ function rowToDeployment(row: Record<string, unknown>): Deployment {
     gitPrUrl: row.git_pr_url as string | null,
     deployedAt: row.deployed_at ? new Date(row.deployed_at as string) : null,
     createdAt: new Date(row.created_at as string),
+    // Versioning fields
+    version: (row.version as number) ?? 1,
+    imageUri: (row.image_uri as string) ?? null,
+    revisionName: (row.revision_name as string) ?? null,
+    previewUrl: (row.preview_url as string) ?? null,
+    isPublished: (row.is_published as boolean) ?? false,
+    publishedAt: row.published_at ? new Date(row.published_at as string) : null,
   };
+}
+
+// ─── Versioning helpers ───
+
+/** Get the next version number for a project's deployments. */
+export async function getNextDeploymentVersion(projectId: string): Promise<number> {
+  const result = await query(
+    'SELECT COALESCE(MAX(version), 0) AS max_version FROM deployments WHERE project_id = $1',
+    [projectId]
+  );
+  return ((result.rows[0]?.max_version as number) ?? 0) + 1;
+}
+
+/** Un-publish all deployments for a project (before publishing a new one). */
+export async function unpublishAllDeployments(projectId: string): Promise<void> {
+  await query(
+    'UPDATE deployments SET is_published = false WHERE project_id = $1 AND is_published = true',
+    [projectId]
+  );
+}
+
+/** Mark a deployment as published and record the project's active deployment. */
+export async function publishDeployment(projectId: string, deploymentId: string): Promise<void> {
+  await unpublishAllDeployments(projectId);
+  await query(
+    'UPDATE deployments SET is_published = true, published_at = NOW() WHERE id = $1',
+    [deploymentId]
+  );
+  await query(
+    'UPDATE projects SET published_deployment_id = $1, updated_at = NOW() WHERE id = $2',
+    [deploymentId, projectId]
+  );
+}
+
+/** Get the currently published deployment for a project. */
+export async function getPublishedDeployment(projectId: string): Promise<Deployment | null> {
+  const row = await getOne(
+    'SELECT * FROM deployments WHERE project_id = $1 AND is_published = true LIMIT 1',
+    [projectId]
+  );
+  return row ? rowToDeployment(row) : null;
+}
+
+/** Set deploy lock on/off for a project. Updates both dedicated column and config JSONB. */
+export async function setDeployLock(projectId: string, locked: boolean): Promise<void> {
+  await query(
+    'UPDATE projects SET deploy_locked = $1, updated_at = NOW() WHERE id = $2',
+    [locked, projectId]
+  );
+  // Also sync to config JSONB so project.config.deployLocked works
+  const project = await getProject(projectId);
+  if (project) {
+    const config = { ...(project.config ?? {}), deployLocked: locked };
+    await query('UPDATE projects SET config = $1 WHERE id = $2', [JSON.stringify(config), projectId]);
+  }
 }

@@ -1,0 +1,22 @@
+{
+  "name": "@deploy-agent/bot",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "npx tsx src/index.ts",
+    "register": "tsx src/deploy-commands.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.5.0",
+    "openai": "^4.80.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

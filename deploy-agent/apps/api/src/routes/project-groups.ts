@@ -100,6 +100,8 @@ async function enrichProjectWithResources(project: Project): Promise<ProjectWith
       cloudRunUrl: activeDep.cloudRunUrl,
       customDomain: activeDep.customDomain,
       deployedAt: activeDep.deployedAt,
+      healthStatus: activeDep.healthStatus,
+      sslStatus: activeDep.sslStatus,
     } : null,
   };
 }

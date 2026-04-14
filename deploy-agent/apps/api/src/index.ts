@@ -9,6 +9,9 @@ import { mcpRoutes } from './routes/mcp';
 import { settingsRoutes } from './routes/settings';
 import { projectGroupRoutes } from './routes/project-groups';
 import { infraRoutes } from './routes/infra';
+import { versioningRoutes } from './routes/versioning';
+import { startReconciler } from './services/reconciler';
+import { runMigrations } from './db/migrate';
 
 const app = Fastify({
   logger: {
@@ -44,6 +47,13 @@ await app.register(mcpRoutes);
 await app.register(settingsRoutes);
 await app.register(projectGroupRoutes);
 await app.register(infraRoutes);
+try {
+  await app.register(versioningRoutes);
+  console.log('[startup] Versioning routes registered OK');
+} catch (err) {
+  console.error('[startup] VERSIONING ROUTES FAILED TO REGISTER:', (err as Error).message);
+  console.error('[startup] Stack:', (err as Error).stack);
+}
 
 // Global error handler
 app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {
@@ -70,8 +80,19 @@ const port = parseInt(process.env.PORT ?? '4000', 10);
 const host = process.env.HOST ?? '0.0.0.0';
 
 try {
+  // Auto-run migrations before starting (idempotent — safe to run every boot)
+  try {
+    await runMigrations();
+    app.log.info('Database migrations completed');
+  } catch (err) {
+    app.log.error({ err }, 'Migration failed — continuing with existing schema');
+  }
+
   await app.listen({ port, host });
   app.log.info(`Deploy Agent API running on ${host}:${port}`);
+  // Start the pipeline reconciler (recovers projects stuck in intermediate
+  // states after a container restart). Non-blocking.
+  startReconciler();
 } catch (err) {
   app.log.fatal(err);
   process.exit(1);

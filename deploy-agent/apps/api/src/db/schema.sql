@@ -110,3 +110,17 @@ UPDATE projects
 SET config = jsonb_set(config, '{allowUnauthenticated}', 'true')
 WHERE config->>'allowUnauthenticated' = 'false'
    OR config->>'allowUnauthenticated' IS NULL;
+
+-- ─── Versioning support (Netlify-like deploy model) ───
+-- Each deployment is an immutable snapshot with its own Cloud Run revision.
+-- Only one deployment is "published" (receiving production traffic) at a time.
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS image_uri TEXT;
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS revision_name VARCHAR(255);
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS preview_url TEXT;
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS is_published BOOLEAN DEFAULT false;
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
+
+-- Projects: deploy lock prevents auto-publish; published_deployment_id tracks active version
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS published_deployment_id UUID REFERENCES deployments(id);
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS deploy_locked BOOLEAN DEFAULT false;

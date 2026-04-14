@@ -13,6 +13,7 @@ import {
 } from './orchestrator';
 import { detectProject } from './project-detector';
 import { generateDockerfile } from './dockerfile-gen';
+import { notifyReviewNeeded } from './discord-notifier';
 import { runSemgrep, runTrivy } from './scanner';
 import { analyzeThreatModel, generateReviewReport } from './llm-analyzer';
 import { analyzeResources } from './resource-analyzer';
@@ -333,7 +334,12 @@ export async function runPipeline(
 
     // Create review entry for the human reviewer
     if (scanReport) {
-      await createReview(scanReport.id);
+      const review = await createReview(scanReport.id);
+      // Notify Discord
+      const proj = await getProject(projectId);
+      if (proj) {
+        notifyReviewNeeded(proj.name, proj.slug, review.id).catch(() => {});
+      }
     }
 
     console.log(`[Pipeline] ✓ Complete for project ${projectId}`);

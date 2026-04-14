@@ -29,6 +29,9 @@ export interface DeployResult {
   serviceName: string;
   error: string | null;
   duration: number;
+  // Versioning: captured after deploy for immutable deploy model
+  revisionName?: string;
+  imageUri?: string;
 }
 
 // ─── Cloud Build: build and push image ───
@@ -298,12 +301,20 @@ export async function deployToCloudRun(config: DeployConfig, imageUri: string): 
       }
     }
 
-    // Get service URL
+    // Get service URL + latest revision name
     const svcRes = await gcpFetch(getUrl);
     let serviceUrl: string | null = null;
+    let latestRevision: string | undefined;
     if (svcRes.ok) {
-      const svc = await svcRes.json() as { uri?: string };
+      const svc = await svcRes.json() as {
+        uri?: string;
+        latestReadyRevision?: string;     // e.g. "projects/.../revisions/da-myapp-00003-abc"
+      };
       serviceUrl = svc.uri ?? null;
+      // Extract short revision name (last segment)
+      if (svc.latestReadyRevision) {
+        latestRevision = svc.latestReadyRevision.split('/').pop() ?? undefined;
+      }
     }
 
     // Set IAM policy for unauthenticated access if needed
@@ -338,6 +349,8 @@ export async function deployToCloudRun(config: DeployConfig, imageUri: string): 
       serviceName,
       error: null,
       duration: Date.now() - start,
+      revisionName: latestRevision,
+      imageUri,
     };
   } catch (err) {
     return {
@@ -412,7 +425,11 @@ export async function rollbackService(
     const patchRes = await gcpFetch(svcUrl, {
       method: 'PATCH',
       body: JSON.stringify({
-        traffic: [{ revision: previousRevision, percent: 100 }],
+        traffic: [{
+          type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION',
+          revision: previousRevision,
+          percent: 100,
+        }],
       }),
     });
 
@@ -425,6 +442,221 @@ export async function rollbackService(
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }
+}
+
+// ─── Versioning: publish a specific revision (route 100% traffic) ───
+
+export async function publishRevision(
+  gcpProject: string,
+  gcpRegion: string,
+  serviceName: string,
+  revisionName: string
+): Promise<{ success: boolean; error: string | null }> {
+  try {
+    const svcUrl = `https://run.googleapis.com/v2/projects/${gcpProject}/locations/${gcpRegion}/services/${serviceName}?updateMask=traffic`;
+    // First, get the current service to preserve the template
+    const getRes = await gcpFetch(`https://run.googleapis.com/v2/projects/${gcpProject}/locations/${gcpRegion}/services/${serviceName}`);
+    if (!getRes.ok) throw new Error(`Failed to get service: ${getRes.status}`);
+    const currentService = await getRes.json() as Record<string, unknown>;
+    // Update only the traffic field, keep the existing template
+    const res = await gcpFetch(svcUrl, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        ...currentService,
+        traffic: [{
+          type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION',
+          revision: revisionName,
+          percent: 100,
+        }],
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Traffic update failed (${res.status}): ${err}`);
+    }
+    // Wait for operation to complete
+    const op = await res.json() as { name: string; done?: boolean };
+    if (!op.done && op.name) {
+      const opUrl = `https://run.googleapis.com/v2/${op.name}`;
+      const maxWait = 60_000;
+      const start = Date.now();
+      while (Date.now() - start < maxWait) {
+        await sleep(3000);
+        const opRes = await gcpFetch(opUrl);
+        if (!opRes.ok) break;
+        const opData = await opRes.json() as { done?: boolean; error?: { message: string } };
+        if (opData.done) {
+          if (opData.error) throw new Error(opData.error.message);
+          break;
+        }
+      }
+    }
+    console.log(`[Deploy]   Published revision ${revisionName} for ${serviceName} (100% traffic)`);
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+// ─── Tag a revision for preview URL (v3---service.a.run.app) ───
+
+export async function tagRevision(
+  gcpProject: string,
+  gcpRegion: string,
+  serviceName: string,
+  revisionName: string,
+  tag: string
+): Promise<{ success: boolean; taggedUrl: string | null; error: string | null }> {
+  try {
+    const svcPath = `projects/${gcpProject}/locations/${gcpRegion}/services/${serviceName}`;
+
+    // Get current service (need existing traffic + URI)
+    const getRes = await gcpFetch(`https://run.googleapis.com/v2/${svcPath}`);
+    if (!getRes.ok) throw new Error(`Failed to get service: ${getRes.status}`);
+    const currentService = await getRes.json() as {
+      uri?: string;
+      traffic?: Array<{ type?: string; revision?: string; percent?: number; tag?: string }>;
+      [key: string]: unknown;
+    };
+
+    // Build traffic: keep existing 100% route, add 0% tagged route
+    const existingTraffic = (currentService.traffic ?? [])
+      .filter((t) => (t.percent ?? 0) > 0)
+      .map((t) => {
+        if (t.revision) {
+          return {
+            type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION' as const,
+            revision: t.revision,
+            percent: t.percent,
+          };
+        }
+        // latestRevision=true style → convert to LATEST
+        return {
+          type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST' as const,
+          percent: t.percent,
+        };
+      });
+
+    const newTraffic = [
+      ...existingTraffic,
+      {
+        type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION' as const,
+        revision: revisionName,
+        percent: 0,
+        tag,
+      },
+    ];
+
+    const patchUrl = `https://run.googleapis.com/v2/${svcPath}?updateMask=traffic`;
+    const res = await gcpFetch(patchUrl, {
+      method: 'PATCH',
+      body: JSON.stringify({ ...currentService, traffic: newTraffic }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Tag revision failed (${res.status}): ${err}`);
+    }
+
+    // Construct tagged URL: https://<tag>---<service-host>
+    const serviceUri = currentService.uri ?? '';
+    const taggedUrl = serviceUri
+      ? serviceUri.replace('https://', `https://${tag}---`)
+      : null;
+
+    console.log(`[Deploy]   Tagged revision ${revisionName} as "${tag}" → ${taggedUrl}`);
+    return { success: true, taggedUrl, error: null };
+  } catch (err) {
+    console.error(`[Deploy]   Tag revision failed:`, (err as Error).message);
+    return { success: false, taggedUrl: null, error: (err as Error).message };
+  }
+}
+
+// ─── Delete a Cloud Run revision ───
+
+export async function deleteRevision(
+  gcpProject: string,
+  gcpRegion: string,
+  revisionName: string
+): Promise<{ success: boolean; error: string | null }> {
+  try {
+    const url = `https://run.googleapis.com/v2/projects/${gcpProject}/locations/${gcpRegion}/services/-/revisions/${revisionName}`;
+    const res = await gcpFetch(url, { method: 'DELETE' });
+    if (!res.ok && res.status !== 404) {
+      const err = await res.text();
+      throw new Error(`Delete revision failed (${res.status}): ${err}`);
+    }
+    console.log(`[Deploy]   Deleted revision: ${revisionName}`);
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+// ─── Versioning: list Cloud Run revisions for a service ───
+
+export interface RevisionInfo {
+  name: string;           // Short name: "da-myapp-00003-abc"
+  fullName: string;       // Full resource path
+  image: string;          // Container image URI
+  createTime: string;
+  ready: boolean;
+  trafficPercent: number; // 0-100
+}
+
+export async function listCloudRunRevisions(
+  gcpProject: string,
+  gcpRegion: string,
+  serviceName: string,
+  limit = 20
+): Promise<RevisionInfo[]> {
+  const parent = `projects/${gcpProject}/locations/${gcpRegion}/services/${serviceName}`;
+
+  // Get service to read traffic routing
+  const svcUrl = `https://run.googleapis.com/v2/${parent}`;
+  const svcRes = await gcpFetch(svcUrl);
+  const trafficMap = new Map<string, number>();
+  if (svcRes.ok) {
+    const svc = await svcRes.json() as {
+      traffic?: Array<{ revision?: string; percent?: number }>;
+      trafficStatuses?: Array<{ revision?: string; percent?: number }>;
+    };
+    for (const t of (svc.trafficStatuses ?? svc.traffic ?? [])) {
+      if (t.revision) {
+        const short = t.revision.split('/').pop()!;
+        trafficMap.set(short, t.percent ?? 0);
+      }
+    }
+  }
+
+  // List revisions
+  const listUrl = `https://run.googleapis.com/v2/${parent}/revisions?pageSize=${limit}`;
+  const listRes = await gcpFetch(listUrl);
+  if (!listRes.ok) return [];
+
+  const data = await listRes.json() as {
+    revisions?: Array<{
+      name: string;
+      containers?: Array<{ image?: string }>;
+      createTime?: string;
+      conditions?: Array<{ type?: string; state?: string }>;
+    }>;
+  };
+
+  return (data.revisions ?? []).map((r) => {
+    const shortName = r.name.split('/').pop()!;
+    const ready = r.conditions?.some(
+      (c) => c.type === 'Ready' && c.state === 'CONDITION_SUCCEEDED'
+    ) ?? false;
+    return {
+      name: shortName,
+      fullName: r.name,
+      image: r.containers?.[0]?.image ?? '',
+      createTime: r.createTime ?? '',
+      ready,
+      trafficPercent: trafficMap.get(shortName) ?? 0,
+    };
+  });
 }
 
 // ─── Delete domain mapping ───

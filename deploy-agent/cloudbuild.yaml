@@ -19,9 +19,17 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/deploy-agent/api:${SHORT_SHA}']
 
+  # Build Bot image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/deploy-agent/bot:${SHORT_SHA}', '-f', 'apps/bot/Dockerfile', '.']
+
   # Push Web image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/deploy-agent/web:${SHORT_SHA}']
+
+  # Push Bot image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/deploy-agent/bot:${SHORT_SHA}']
 
   # Deploy API to Cloud Run (public — allUsers invoker preserved via --allow-unauthenticated)
   - name: 'gcr.io/cloud-builders/gcloud'
@@ -59,6 +67,32 @@ steps:
       - '--service-account'
       - 'deploy-agent@${PROJECT_ID}.iam.gserviceaccount.com'
       - '--allow-unauthenticated'
+      - '--quiet'
+
+  # Deploy Bot to Cloud Run (always-on for Discord WebSocket)
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'deploy-agent-bot'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/deploy-agent/bot:${SHORT_SHA}'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--memory'
+      - '512Mi'
+      - '--cpu'
+      - '1'
+      - '--min-instances'
+      - '1'
+      - '--max-instances'
+      - '1'
+      - '--no-cpu-throttling'
+      - '--service-account'
+      - 'deploy-agent@${PROJECT_ID}.iam.gserviceaccount.com'
+      - '--no-allow-unauthenticated'
       - '--quiet'
 
 substitutions:

@@ -4,6 +4,113 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-13（晚上）—— Versioning Phase 2 完成 + Discord Bot TODO**
+
+- ✅ **Tagged Preview URL per revision**
+  - 每次 deploy 後用 `tagRevision()` 為 revision 打 tag（`ver-N` 格式，Cloud Run 要求 3-47 字元）
+  - 產生獨立 preview URL：`https://ver-6---service.a.run.app`，每個版本可以獨立預覽
+  - UI 顯示 "Preview: v6 ↗" 可點擊連結（tagged），舊版顯示 "Preview URL ↗"
+- ✅ **版本保留策略（Version Retention）**
+  - deploy-worker 完成部署後自動檢查：超過 5 個版本時清理舊 revision（published 版本永不刪除）
+  - 新增 `POST /api/projects/:id/versions/cleanup` 手動清理端點
+  - `deleteRevision()` 新增到 deploy-engine.ts
+- ✅ **Canary 失敗自動 Rollback**
+  - deploy-worker 的 canary 從 advisory 改成 blocking + auto-rollback
+  - canary 失敗時：自動找到上一個 published version，用 `publishRevision()` 切回流量
+  - 首次部署（無 rollback 目標）：仍然 go live with warnings
+- ✅ **Bug fixes**：
+  - `tagRevision` 400（tag 長度 < 3）→ `v5` 改 `ver-5` 格式
+  - `tagRevision` 400（`latestRevision: true` 格式不相容）→ 轉成 `TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST`
+  - `rollbackService` 400（缺少 traffic `type` 欄位）→ 同步修復
+  - versioning routes 404（deploy 後偶爾新 revision 還在切）→ 加 explicit error handling 到 index.ts
+- 📝 **新增 Discord Bot TODO**（使用者要求）
+
+**2026-04-13（下午）—— Versioning 完整 QA + Bug Fix**
+
+- ✅ **修復 versioning routes 404 bug（CRITICAL）**
+  - 根因：`projectRoutes` plugin 超過 1600 行，尾端的 versioning routes 在某些 Cloud Run revision 上不會註冊
+  - 修法：拆分成獨立 `routes/versioning.ts` plugin，在 `index.ts` 單獨註冊
+  - 結果：連續 3 次部署都穩定註冊，不再 intermittent 404
+- ✅ **修復 `publishRevision` 400 bug**
+  - 根因：Cloud Run v2 API 的 traffic target 需要 `type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION'`
+  - 修法：在 `deploy-engine.ts` 的 traffic 物件加上 `type` 欄位
+- ✅ **修復 `isRollback` 永遠 false bug**
+  - 根因：`publishDeployment()` 更新 DB 後再查 `getPublishedDeployment()` 回傳的已是新版
+  - 修法：先查 `previousPublished`，再呼叫 `publishDeployment()`
+- ✅ **完整 E2E QA 通過**（Publish v3 → Rollback v2 → isRollback=true → UI 驗證）
+  - GET /versions: 200, 3 個版本正確
+  - POST /deploy-lock: 200, toggle 雙向正確
+  - POST /new-version: 201, pipeline 完整跑完 → v3 live
+  - POST /publish (forward): 200, isRollback=false
+  - POST /publish (rollback): 200, isRollback=true
+  - POST /publish (no revision): 400, 正確拒絕
+  - UI: version history 綠色高亮 LIVE 版本, deploy lock 紅色按鈕, 部署資訊只顯示最新 1 筆
+
+**2026-04-13 —— Netlify-like 版本管理 Phase 1 完成**
+
+- ✅ **完整實作 Netlify-like 版本管理系統**（決策：`decisions/2026-04-13-netlify-like-versioning.md`）
+  - 利用 Cloud Run Revision 機制：每次部署 = immutable snapshot，一鍵 publish/rollback
+  - DB schema：deployments 表新增 version / image_uri / revision_name / preview_url / is_published / published_at；projects 表新增 published_deployment_id / deploy_locked
+  - **deploy-engine.ts**：`deployToCloudRun()` 捕捉 `latestReadyRevision`；新增 `publishRevision()`（traffic 100% routing）和 `listCloudRunRevisions()`
+  - **deploy-worker.ts**：自動遞增版本號、記錄 imageUri/revisionName/previewUrl、Go Live 時自動 publish（除非 deployLocked）
+  - **orchestrator.ts**：新增 `getNextDeploymentVersion()`、`unpublishAllDeployments()`、`publishDeployment()`、`getPublishedDeployment()`、`setDeployLock()`
+  - **routes/projects.ts**：4 個新端點
+    - `GET /api/projects/:id/versions` — 版本歷史
+    - `POST /api/projects/:id/versions/:deployId/publish` — 發佈指定版本
+    - `POST /api/projects/:id/new-version` — 升版部署（接受 gcsUri，觸發新 pipeline）
+    - `POST /api/projects/:id/deploy-lock` — 切換部署鎖定
+  - **Web UI**（`projects/[id]/page.tsx`）：版本歷史面板、發佈按鈕、Deploy Lock toggle、升版部署 modal（drag-and-drop 上傳）
+- ✅ **Cloud Build 部署成功**（build c2adf382）
+- ✅ **API 驗證**：`/versions` 端點正確回傳資料，舊部署向後相容（version=1, imageUri=null）
+- ✅ **QA 驗證通過**（6 項）：
+  - DB migration 自動化（API 啟動時跑 `runMigrations()`，Cloud Run log 確認）
+  - Deploy Lock API（POST toggle 正確）
+  - Deploy Lock UI（按鈕狀態 + 顏色切換）
+  - Versions API（版本列表 + 新 columns）
+  - 版本歷史面板（v1 + healthy badge）
+  - 升版部署 Modal（拖曳上傳區 + 按鈕）
+- ⏭️ **未測項目**（需真實操作）：升版 E2E（上傳→pipeline→v2）、Publish 版本切換（需 ≥2 版本）
+- 🐛 **修復 3 個 bug**：
+  1. DB migration 沒跑（production DB 缺新 columns）→ API startup 自動 `runMigrations()`
+  2. `deploy-lock` 端點 body undefined 防禦不足 → `(request.body ?? {})`
+  3. Cloud Build 手動提交缺 `SHORT_SHA` substitution → 加 `--substitutions=SHORT_SHA=$(date +%s)`
+
+**2026-04-10（下午）—— Pipeline Reconciler 系統性修復**
+
+- ✅ **系統性修復 pipeline 卡住 → `health_status=unknown` 問題**
+  - 根因：deploy pipeline 是 in-process async 跑的，API container 在 SSL monitoring（10 分鐘等待）或 canary 階段重啟 → in-flight pipeline 消失 → project 永遠卡在 `deploying`/`ssl_provisioning`/`canary_check`，`health_status` 停在預設值 `'unknown'`
+  - 解法：新增 **Pipeline Reconciler**（`apps/api/src/services/reconciler.ts`）
+    - **啟動時**掃一次卡住的 project（`deploying`/`deployed`/`ssl_provisioning`/`canary_check` 且 `updated_at > 5 分鐘`）
+    - **每 2 分鐘**週期性掃一次
+    - 每個卡住的 project：驗證 Cloud Run service 真的 ready → 走狀態機 fast-forward → 跑真正的 canary check → 轉 `live` 並更新 `health_status`
+    - Cloud Run service 不存在 → 轉 `failed`
+  - 新增 `POST /api/infra/reconcile` 手動觸發端點
+  - `apps/api/src/index.ts` 啟動時 `startReconciler()`
+  - `project-groups` API 的 `latestDeployment` 加上 `healthStatus`、`sslStatus` 欄位（之前沒傳給 UI）
+- ✅ **端到端驗證**
+  - 刪掉之前卡住的 bid-ops-ai（backend + frontend）與所有 GCP 資源
+  - 透過 Web UI 重新上傳（用 GCS 中轉 + synthetic DragEvent 注入 React state）
+  - Reconciler 初次啟動時自動把前一版卡住的 bid-ops-ai 推到 `live`（證明機制有效）
+  - 新版 pipeline：scanning → review_pending → approved → deploying → ssl_provisioning → **live**
+  - `/api/deploys` 回傳：frontend `health_status=healthy`（canary 全過）、backend `health_status=unhealthy`（canary probe `/` 被 FastAPI 回 404 — 非系統 bug）
+  - 重點：**`health_status` 不再卡在 `unknown`** — 問題徹底解決
+- 📝 後續改進（非阻塞）：canary 目前固定 probe `/`，對 API-only 服務（FastAPI 沒有 root route）會回 404 → 建議改成 probe `/health` 或 `/docs`，或從 project 設定讀自訂 health path
+
+**2026-04-10**
+
+- ✅ 修復 `submit-gcs` 路由缺少 monorepo 偵測的 bug
+  - 問題：透過 GCS 上傳路徑提交的 monorepo（如 bid-ops-ai）被當成 single project 處理，Cloud Build 在 root 找不到 Dockerfile 而失敗
+  - 修復：在 `apps/api/src/routes/projects.ts` 的 `/api/projects/submit-gcs` 路由加入完整 monorepo 偵測邏輯（與 upload 路由一致）
+  - 包含：service role 分類（backend/frontend）、siblings 設定、每個 service 獨立 GCS 上傳 + pipeline
+- ✅ bid-ops-ai 成功部署（monorepo: backend + frontend）
+  - Backend: `da-bid-ops-ai-backend` → `api.bid-ops-ai.punwave.com`（SSL provisioning）
+  - Frontend: `da-bid-ops-ai-frontend` → `bid-ops-ai.punwave.com`（SSL provisioning）
+  - Cloud Run URLs:
+    - `https://da-bid-ops-ai-backend-zdjl362voq-de.a.run.app`
+    - `https://da-bid-ops-ai-frontend-zdjl362voq-de.a.run.app`
+- ✅ Deploy Agent API + Web 重新部署（Cloud Build 6b8ce3a9, SUCCESS）
+- ✅ GCS direct upload 流程驗證成功（34.8MB zip 繞過 Cloud Run 32MB 限制）
+
 **2026-04-06**
 
 - ✅ DB Dump 上傳 + 自動匯入功能（整套 7 個檔案一次到位）
@@ -87,20 +194,25 @@
 - [x] ~~**GCS lifecycle rule**：為 `gs://wave-deploy-agent_cloudbuild/sources/` 設 30 天自動刪除~~（2026-04-05 完成，見 `decisions/2026-04-05-gcs-sources-lifecycle-30d.md`）
 - [x] ~~**Artifact Registry cleanup**~~（2026-04-05 完成：keep 5 tagged + 清 7d untagged / 30d tagged，見 `decisions/2026-04-05-artifact-registry-cleanup.md`）
 - [x] ~~**Dashboard GCP 資源管理頁**~~（2026-04-05 完成：`/infra` 頁 + orphan cleanup 一鍵清理）
-- [ ] **執行 orphan cleanup**：首次清理 39 個 tarball + 1 AR package（用 dashboard 按鈕即可）
-- [ ] **驗證 bootstrap.sh**：在 throwaway GCP project 跑一次完整 `./terraform/bootstrap.sh`
+- [x] ~~**執行 orphan cleanup**~~（2026-04-13 完成：21 AR packages 刪除，0 orphans。SA 權限從 `artifactregistry.writer` 升到 `artifactregistry.admin`）
+- [ ] **驗證 bootstrap.sh**：在 throwaway GCP project 跑一次完整 `./terraform/bootstrap.sh`（需要使用者手動操作）
 - [x] ~~**migrate prod secrets 到 Secret Manager**~~（2026-04-05 完成）
 - [x] ~~**Terraform import 現有 prod 資源**~~（2026-04-05 完成：30+ resources, 0 drift）
-- [ ] **遷移 prod Cloud Run 到 deploy-agent@ SA**：目前還用 default compute SA，遷完後把 services.tf.deferred + domains.tf.deferred 接管起來
+- [x] ~~**遷移 prod Cloud Run 到 deploy-agent@ SA**~~（已完成，API + Web 都用 `deploy-agent@` SA）
 
 ### 中優先
+- [x] ~~**Versioning Phase 2**：Preview URL per revision、版本保留策略（keep last N）、canary 失敗自動 rollback~~（2026-04-13 完成）
+- [ ] **Versioning Phase 3**：Git push auto-deploy（webhook）、Branch Deploy
 - [ ] Terraform for agent 自身 infra（目前是手動 gcloud deploy）
 - [ ] Dashboard i18n（next-intl 中英雙語）— design spec 已訂
+- [ ] **Discord Bot**（discord.js — 程式碼已完成，等使用者給 Discord token 後 deploy + QA）
+  - `apps/bot/` codebase 完成：7 個 slash commands + autocomplete + embeds
+  - `discord-notifier.ts` 已部署：webhook 通知（deploy 完成/失敗/canary/review）
+  - `cloudbuild.yaml` 已包含 build + push（deploy step 暫時註解等 secrets）
 - [ ] MCP server 實作（`@modelcontextprotocol/sdk`）
 - [ ] OpenClaw skill（`skills/deploy-agent/SKILL.md`）
 
 ### 低優先 / Phase 3+
-- [ ] Canary monitor + auto-rollback
 - [ ] IaC auto-generation（為使用者的專案產 Terraform）
 - [ ] Cost estimation（GCP pricing API）
 - [ ] Git PR 自動化（security fix diffs）
@@ -121,6 +233,14 @@
 2. **Next.js `NEXT_PUBLIC_*` 環境變數必須 build 時 bake**，runtime 設沒用 → cloudbuild.yaml 要用 `--build-arg`
 3. **GCP 沒有 Cloud Run pause**，唯一真正釋放資源的方式是 delete service；start 靠快取 image 重 deploy
 4. **有 REDIS_URL 的專案必須啟 Direct VPC egress**，否則連不到 internal Redis
+5. **Cloud Run HTTP/1.1 request body 上限 32MiB**（hardcoded by Google ingress proxy），超過的檔案必須走 GCS direct upload
+6. **`submit-gcs` 路由之前漏了 monorepo 偵測**，已修復（2026-04-10）
+7. **gcloud 路徑可能在 `~/Downloads/google-cloud-sdk/bin/gcloud`**（非標準安裝位置）
+8. **Pipeline 是 in-process async，沒有 durable queue**。API container 重啟會讓 in-flight pipeline 消失。已靠 **Reconciler**（啟動 + 每 2 分鐘週期掃描）補救（2026-04-10）。真正的架構正解還是應該搬到 Cloud Run Jobs。
+9. **DB migration 必須自動化**。手動 `gcloud sql connect` 跑 migration 不可行（Cloud SQL 只接受 socket 連線，本地沒有 cloud-sql-proxy）。已改成 API 啟動時自動 `runMigrations()`（idempotent），並加 `/api/infra/migrate` 端點備用。
+10. **手動 `gcloud builds submit` 必須帶 `--substitutions=SHORT_SHA=xxx`**，否則 Docker tag 為空（`api:` → invalid reference format）。Git trigger 模式下 `SHORT_SHA` 是內建的。
+11. **Fastify plugin 超過 ~1500 行時，尾端 routes 可能不被註冊**（`tsx` 運行時 transpile 的特性）。解法：拆分大型 plugin 成多個檔案。（2026-04-13 踩坑：`projects.ts` 1615 行 → 拆出 `versioning.ts`）
+12. **Cloud Run v2 API traffic target 必須帶 `type`**：`type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION'`。不帶會 400 INVALID_ARGUMENT。
 
 ### 使用者偏好（Boss 習慣）
 - 直接給結論、不要囉嗦

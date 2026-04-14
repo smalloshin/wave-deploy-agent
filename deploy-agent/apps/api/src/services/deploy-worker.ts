@@ -10,8 +10,10 @@ import {
   getDeploymentsByProject,
   getLatestScanReport,
   updateProjectConfig,
+  getNextDeploymentVersion,
+  publishDeployment,
 } from './orchestrator';
-import { buildAndPushImage, deployToCloudRun } from './deploy-engine';
+import { buildAndPushImage, deployToCloudRun, tagRevision, publishRevision, deleteRevision } from './deploy-engine';
 import { setupCustomDomainWithDns, type DnsConfig } from './dns-manager';
 import { monitorSsl } from './ssl-monitor';
 import { runCanaryChecks } from './canary-monitor';
@@ -21,6 +23,7 @@ import { classifyEnvWithLLM, type EnvClassificationContext } from './llm-analyze
 import { provisionProjectDatabase } from './db-provisioner';
 import { provisionProjectRedis } from './redis-provisioner';
 import { restoreDbDump } from './db-restore';
+import { notifyDeployComplete, notifyCanaryFailed, notifyDeployFailed } from './discord-notifier';
 
 export async function runDeployPipeline(
   projectId: string,
@@ -45,8 +48,10 @@ export async function runDeployPipeline(
     console.log(`[Deploy] ${currentStep} for ${project.name}`);
     await transitionProject(projectId, 'deploying', 'deploy-worker', { trigger: 'auto-after-approval' });
 
-    // Create deployment record
-    const deployment = await createDeployment(projectId, reviewId);
+    // Create deployment record with auto-incrementing version
+    const deployVersion = await getNextDeploymentVersion(projectId);
+    const deployment = await createDeployment(projectId, reviewId, deployVersion);
+    console.log(`[Deploy]   Version: v${deployVersion}`);
 
     // ─── Step 2: Detect project settings + env vars ───
     currentStep = 'Step 2: Detect project settings';
@@ -562,13 +567,38 @@ export async function runDeployPipeline(
     }
     console.log(`[Deploy]   Service: ${deployResult.serviceName}`);
     console.log(`[Deploy]   URL: ${deployResult.serviceUrl}`);
+    if (deployResult.revisionName) {
+      console.log(`[Deploy]   Revision: ${deployResult.revisionName}`);
+    }
 
-    // Update deployment record
+    // Tag revision for preview URL: https://v3---service.a.run.app
+    let previewUrl: string | undefined;
+    if (deployResult.revisionName && deployResult.serviceUrl) {
+      const tag = `ver-${deployVersion}`; // Cloud Run tags must be 3-47 chars
+      try {
+        const tagResult = await tagRevision(gcpProject, gcpRegion, deployResult.serviceName, deployResult.revisionName, tag);
+        if (tagResult.success && tagResult.taggedUrl) {
+          previewUrl = tagResult.taggedUrl;
+          console.log(`[Deploy]   Preview URL: ${previewUrl}`);
+        } else {
+          console.warn(`[Deploy]   Revision tag failed: ${tagResult.error}, using service URL`);
+          previewUrl = deployResult.serviceUrl;
+        }
+      } catch (tagErr) {
+        console.warn(`[Deploy]   Revision tag error: ${(tagErr as Error).message}, using service URL`);
+        previewUrl = deployResult.serviceUrl;
+      }
+    }
+
+    // Update deployment record with versioning info
     await updateDeployment(deployment.id, {
       cloudRunService: deployResult.serviceName,
       cloudRunUrl: deployResult.serviceUrl ?? undefined,
       healthStatus: 'unknown',
       deployedAt: new Date(),
+      imageUri: deployResult.imageUri ?? buildResult.imageUri,
+      revisionName: deployResult.revisionName,
+      previewUrl,
     });
 
     // Cache last-deployed image so /start can restart the service without rebuilding
@@ -801,45 +831,129 @@ export async function runDeployPipeline(
       });
 
       if (canaryResult.passed) {
-        // ─── Step 8: Go live ───
+        // ─── Step 8: Go live + auto-publish ───
         currentStep = 'Step 8: Go live';
         console.log(`[Deploy] ${currentStep}...`);
         const liveUrl = customDomainUrl || deployResult.serviceUrl;
+
+        // Auto-publish unless deploy is locked
+        const freshProject = await getProject(projectId);
+        const isLocked = freshProject?.config?.deployLocked === true;
+        if (!isLocked) {
+          await publishDeployment(projectId, deployment.id);
+          console.log(`[Deploy]   Auto-published v${deployVersion}`);
+        } else {
+          console.log(`[Deploy]   Deploy locked — v${deployVersion} deployed but NOT published`);
+        }
+
         await transitionProject(projectId, 'live', 'deploy-worker', {
           serviceUrl: liveUrl,
           cloudRunUrl: deployResult.serviceUrl,
           canaryPassed: true,
+          version: deployVersion,
+          autoPublished: !isLocked,
         });
-        console.log(`[Deploy] ✓ Project ${project.name} is LIVE at ${liveUrl}`);
+        console.log(`[Deploy] ✓ Project ${project.name} v${deployVersion} is LIVE at ${liveUrl}`);
+        notifyDeployComplete(project.name, deployVersion, liveUrl ?? '', previewUrl, true).catch(() => {});
       } else {
-        // Canary failed — log details but go live anyway (don't block on canary for now)
+        // Canary failed — auto-rollback to previous published version
         const failedChecks = canaryResult.checks
           .filter((c) => !c.passed)
           .map((c) => `${c.type}: ${c.value} (threshold: ${c.threshold})`)
           .join(', ');
-        console.warn(`[Deploy]   Canary checks had failures: ${failedChecks}`);
-        console.warn(`[Deploy]   Continuing to live (canary is advisory for now)`);
+        console.warn(`[Deploy]   Canary FAILED: ${failedChecks}`);
 
-        currentStep = 'Step 8: Go live';
-        const liveUrl = customDomainUrl || deployResult.serviceUrl;
-        await transitionProject(projectId, 'live', 'deploy-worker', {
-          serviceUrl: liveUrl,
-          cloudRunUrl: deployResult.serviceUrl,
-          canaryWarnings: failedChecks,
-        });
-        console.log(`[Deploy] ✓ Project ${project.name} is LIVE at ${liveUrl} (with canary warnings)`);
+        // Find previous published deployment to rollback to
+        const allDeploys = await getDeploymentsByProject(projectId);
+        const previousPublished = allDeploys.find(
+          (d) => d.id !== deployment.id && d.revisionName && d.isPublished
+        );
+
+        if (previousPublished?.revisionName && previousPublished.cloudRunService) {
+          // Auto-rollback: route traffic back to previous version
+          console.warn(`[Deploy]   Auto-rolling back to v${previousPublished.version} (${previousPublished.revisionName})`);
+          const rollbackResult = await publishRevision(
+            gcpProject, gcpRegion,
+            previousPublished.cloudRunService,
+            previousPublished.revisionName
+          );
+          if (rollbackResult.success) {
+            console.log(`[Deploy]   Rollback successful — traffic on v${previousPublished.version}`);
+            // Don't publish the new deployment in DB — keep previous as published
+          } else {
+            console.error(`[Deploy]   Rollback failed: ${rollbackResult.error}`);
+          }
+
+          const liveUrl = customDomainUrl || deployResult.serviceUrl;
+          await transitionProject(projectId, 'live', 'deploy-worker', {
+            serviceUrl: liveUrl,
+            cloudRunUrl: deployResult.serviceUrl,
+            canaryFailed: true,
+            canaryWarnings: failedChecks,
+            rolledBackTo: `v${previousPublished.version}`,
+            version: deployVersion,
+            autoPublished: false,
+          });
+          console.warn(`[Deploy] ⚠ v${deployVersion} deployed but canary failed — rolled back to v${previousPublished.version}`);
+          notifyCanaryFailed(project.name, deployVersion, failedChecks, `v${previousPublished.version}`).catch(() => {});
+        } else {
+          // No previous version to rollback to — first deploy, go live with warning
+          console.warn(`[Deploy]   No previous version to rollback to — going live with warnings`);
+          currentStep = 'Step 8: Go live (canary warning)';
+          const liveUrl = customDomainUrl || deployResult.serviceUrl;
+
+          const freshProject = await getProject(projectId);
+          const isLocked = freshProject?.config?.deployLocked === true;
+          if (!isLocked) {
+            await publishDeployment(projectId, deployment.id);
+          }
+
+          await transitionProject(projectId, 'live', 'deploy-worker', {
+            serviceUrl: liveUrl,
+            cloudRunUrl: deployResult.serviceUrl,
+            canaryWarnings: failedChecks,
+            version: deployVersion,
+            autoPublished: !isLocked,
+          });
+          console.log(`[Deploy] ✓ Project ${project.name} v${deployVersion} is LIVE at ${liveUrl} (with canary warnings, no rollback target)`);
+        }
       }
     } else {
       // No URL to check, just go live
+      const freshProject = await getProject(projectId);
+      const isLocked = freshProject?.config?.deployLocked === true;
+      if (!isLocked) {
+        await publishDeployment(projectId, deployment.id);
+      }
       await transitionProject(projectId, 'live', 'deploy-worker', {
         serviceUrl: 'unknown',
         canarySkipped: true,
       });
     }
 
+    // ─── Step 9: Version retention (keep last N) ───
+    const MAX_VERSIONS = 5;
+    try {
+      const allVersions = await getDeploymentsByProject(projectId);
+      if (allVersions.length > MAX_VERSIONS) {
+        const toCleanup = allVersions.slice(MAX_VERSIONS); // oldest versions beyond limit
+        for (const old of toCleanup) {
+          if (old.isPublished) continue; // never delete published version
+          if (old.revisionName) {
+            console.log(`[Deploy]   Cleaning up old revision: ${old.revisionName} (v${old.version})`);
+            await deleteRevision(gcpProject, gcpRegion, old.revisionName);
+          }
+        }
+        console.log(`[Deploy]   Version retention: kept ${MAX_VERSIONS}, cleaned ${toCleanup.filter(d => !d.isPublished && d.revisionName).length} old revisions`);
+      }
+    } catch (retentionErr) {
+      console.warn(`[Deploy]   Version retention cleanup failed (non-fatal): ${(retentionErr as Error).message}`);
+    }
+
   } catch (err) {
     const error = err as Error;
     console.error(`[Deploy] ✗ Failed for project ${projectId} at ${currentStep}:\n${error.message}`);
+    notifyDeployFailed(projectId, error.message, currentStep).catch(() => {});
     try {
       await transitionProject(projectId, 'failed', 'deploy-worker', {
         error: error.message,

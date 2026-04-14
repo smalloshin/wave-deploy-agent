@@ -5,7 +5,11 @@ import { pool } from './index';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-async function migrate() {
+/**
+ * Run all migrations (idempotent — uses IF NOT EXISTS / ADD COLUMN IF NOT EXISTS).
+ * Can be called from API startup or as a standalone script.
+ */
+export async function runMigrations(): Promise<void> {
   console.log('Running database migrations...');
   const schemaPath = path.join(__dirname, 'schema.sql');
   const schema = fs.readFileSync(schemaPath, 'utf-8');
@@ -19,11 +23,16 @@ async function migrate() {
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Migration failed:', err);
-    process.exit(1);
+    throw err;
   } finally {
     client.release();
-    await pool.end();
   }
 }
 
-migrate();
+// Allow running as standalone script: `npx tsx src/db/migrate.ts`
+const isMain = process.argv[1]?.endsWith('migrate.ts') || process.argv[1]?.endsWith('migrate.js');
+if (isMain) {
+  runMigrations()
+    .then(() => { pool.end(); process.exit(0); })
+    .catch(() => { pool.end(); process.exit(1); });
+}

@@ -100,6 +100,28 @@ interface Deployment {
   healthStatus: string;
   deployedAt: string | null;
   createdAt: string;
+  version?: number;
+  imageUri?: string | null;
+  revisionName?: string | null;
+  previewUrl?: string | null;
+  isPublished?: boolean;
+  publishedAt?: string | null;
+}
+
+interface VersionInfo {
+  id: string;
+  version: number;
+  cloudRunService: string | null;
+  cloudRunUrl: string | null;
+  customDomain: string | null;
+  imageUri: string | null;
+  revisionName: string | null;
+  previewUrl: string | null;
+  healthStatus: string;
+  isPublished: boolean;
+  publishedAt: string | null;
+  deployedAt: string | null;
+  createdAt: string;
 }
 
 interface ProjectDetail {
@@ -117,6 +139,13 @@ export default function ProjectDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [showEnvEditor, setShowEnvEditor] = useState(false);
+  const [versions, setVersions] = useState<VersionInfo[]>([]);
+  const [deployLocked, setDeployLocked] = useState(false);
+  const [publishing, setPublishing] = useState<string | null>(null);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [upgradeFile, setUpgradeFile] = useState<File | null>(null);
+  const [upgrading, setUpgrading] = useState(false);
+  const [upgradeDragOver, setUpgradeDragOver] = useState(false);
 
   const loadDetail = (silent = false) => {
     if (!silent) setLoading(true);
@@ -126,9 +155,22 @@ export default function ProjectDetailPage() {
       .catch((err) => { setError(err.message); setLoading(false); });
   };
 
+  const loadVersions = () => {
+    fetch(`${API}/api/projects/${id}/versions`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => {
+        if (d) {
+          setVersions(d.versions ?? []);
+          setDeployLocked(d.deployLocked ?? false);
+        }
+      })
+      .catch(() => {});
+  };
+
   useEffect(() => {
     loadDetail();
-    const interval = setInterval(() => loadDetail(true), 5000);
+    loadVersions();
+    const interval = setInterval(() => { loadDetail(true); loadVersions(); }, 5000);
     return () => clearInterval(interval);
   }, [id]);
 
@@ -143,6 +185,72 @@ export default function ProjectDetailPage() {
       alert((err as Error).message);
     }
     setRetrying(false);
+  };
+
+  const handlePublish = async (deployId: string) => {
+    setPublishing(deployId);
+    try {
+      const res = await fetch(`${API}/api/projects/${id}/versions/${deployId}/publish`, { method: 'POST' });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+      loadDetail();
+      loadVersions();
+    } catch (err) {
+      alert((err as Error).message);
+    }
+    setPublishing(null);
+  };
+
+  const handleToggleLock = async () => {
+    try {
+      const res = await fetch(`${API}/api/projects/${id}/deploy-lock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locked: !deployLocked }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      setDeployLocked(!deployLocked);
+    } catch (err) {
+      alert((err as Error).message);
+    }
+  };
+
+  const handleUpgrade = async () => {
+    if (!upgradeFile) return;
+    setUpgrading(true);
+    try {
+      // Step 1: Init upload
+      const initRes = await fetch(`${API}/api/upload/init`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: upgradeFile.name, fileSize: upgradeFile.size, contentType: upgradeFile.type || 'application/zip' }),
+      });
+      if (!initRes.ok) throw new Error('上傳初始化失敗');
+      const { uploadUrl, gcsUri, token } = await initRes.json();
+
+      // Step 2: Upload to GCS
+      const uploadRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': upgradeFile.type || 'application/zip', Authorization: `Bearer ${token}` },
+        body: upgradeFile,
+      });
+      if (!uploadRes.ok) throw new Error('上傳至 GCS 失敗');
+
+      // Step 3: Trigger new version
+      const newVerRes = await fetch(`${API}/api/projects/${id}/new-version`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gcsUri, fileName: upgradeFile.name }),
+      });
+      if (!newVerRes.ok) { const d = await newVerRes.json(); throw new Error(d.error); }
+
+      setShowUpgradeModal(false);
+      setUpgradeFile(null);
+      loadDetail();
+      loadVersions();
+    } catch (err) {
+      alert((err as Error).message);
+    }
+    setUpgrading(false);
   };
 
   if (loading) {
@@ -186,8 +294,14 @@ export default function ProjectDetailPage() {
           <StatusPill status={project.status} />
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          {(project.status === 'live' || project.status === 'stopped' || project.status === 'failed') && (
+            <button className="btn btn-primary" onClick={() => setShowUpgradeModal(true)}
+              style={{ fontSize: 13, padding: '6px 16px' }}>
+              升版部署
+            </button>
+          )}
           {(project.status === 'failed' || project.status === 'needs_revision') && (
-            <button className="btn btn-primary" onClick={handleRetry} disabled={retrying}
+            <button className="btn" onClick={handleRetry} disabled={retrying}
               style={{ fontSize: 13, padding: '6px 16px' }}>
               {retrying ? '重試中...' : '重試流程'}
             </button>
@@ -257,7 +371,7 @@ export default function ProjectDetailPage() {
           {deployments.length === 0 ? (
             <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>尚無部署。</p>
           ) : (
-            deployments.map((d) => {
+            deployments.slice(0, 1).map((d) => {
               // Resolve custom domain: from deployment record or from project config
               const domainName = d.customDomain
                 || (project.config?.customDomain
@@ -291,6 +405,167 @@ export default function ProjectDetailPage() {
           )}
         </Card>
       </div>
+
+      {/* Version History (Netlify-like) */}
+      {versions.length > 0 && (
+        <Card title="版本歷史" style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              共 {versions.length} 個版本
+            </div>
+            <button
+              onClick={handleToggleLock}
+              style={{
+                fontSize: 12, padding: '4px 12px', borderRadius: 4,
+                background: deployLocked ? 'rgba(248,81,73,0.1)' : 'var(--bg-primary)',
+                border: `1px solid ${deployLocked ? 'rgba(248,81,73,0.3)' : 'var(--border)'}`,
+                color: deployLocked ? 'var(--status-critical)' : 'var(--text-secondary)',
+                cursor: 'pointer',
+              }}
+            >
+              {deployLocked ? '已鎖定 — 點擊解鎖' : '鎖定部署'}
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {versions.map((v) => (
+              <div
+                key={v.id}
+                style={{
+                  padding: '12px 16px',
+                  background: v.isPublished ? 'rgba(63,185,80,0.06)' : 'var(--bg-primary)',
+                  border: `1px solid ${v.isPublished ? 'rgba(63,185,80,0.3)' : 'var(--border)'}`,
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600, fontSize: 14 }}>v{v.version}</span>
+                    {v.isPublished && (
+                      <span style={{
+                        fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                        background: 'rgba(63,185,80,0.15)', color: 'var(--status-live)',
+                        fontWeight: 500,
+                      }}>
+                        LIVE
+                      </span>
+                    )}
+                    <span style={{
+                      fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                      background: v.healthStatus === 'healthy' ? 'rgba(63,185,80,0.1)' :
+                                  v.healthStatus === 'unhealthy' ? 'rgba(248,81,73,0.1)' : 'var(--bg-secondary)',
+                      color: v.healthStatus === 'healthy' ? 'var(--status-live)' :
+                             v.healthStatus === 'unhealthy' ? 'var(--status-critical)' : 'var(--text-secondary)',
+                    }}>
+                      {v.healthStatus}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {v.deployedAt ? new Date(v.deployedAt).toLocaleString() : '部署中...'}
+                    {v.revisionName && <span> &middot; {v.revisionName}</span>}
+                  </div>
+                  {v.previewUrl && (
+                    <a href={v.previewUrl} target="_blank" rel="noreferrer"
+                      style={{ fontSize: 11, color: 'var(--accent)', marginTop: 2, display: 'inline-block', textDecoration: 'none' }}>
+                      {v.previewUrl.includes('---') ? `Preview: v${v.version}` : 'Preview URL'} ↗
+                    </a>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {!v.isPublished && v.revisionName && (
+                    <button
+                      onClick={() => handlePublish(v.id)}
+                      disabled={publishing === v.id}
+                      style={{
+                        fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        cursor: publishing === v.id ? 'wait' : 'pointer',
+                        opacity: publishing === v.id ? 0.6 : 1,
+                      }}
+                    >
+                      {publishing === v.id ? '發佈中...' : '發佈此版本'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Upgrade Modal */}
+      {showUpgradeModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+        }} onClick={() => { setShowUpgradeModal(false); setUpgradeFile(null); }}>
+          <div style={{
+            background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+            borderRadius: 12, padding: 24, width: 480, maxWidth: '90vw',
+          }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>升版部署</h3>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
+              上傳新版原始碼，將自動走掃描 → 審核 → 部署流程。部署成功後會產生新版本。
+            </p>
+            <div
+              onDragOver={(e) => { e.preventDefault(); setUpgradeDragOver(true); }}
+              onDragLeave={() => setUpgradeDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setUpgradeDragOver(false);
+                const f = e.dataTransfer.files[0];
+                if (f) setUpgradeFile(f);
+              }}
+              onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.zip,.tar.gz,.tgz,.tar';
+                input.onchange = () => { if (input.files?.[0]) setUpgradeFile(input.files[0]); };
+                input.click();
+              }}
+              style={{
+                border: `2px dashed ${upgradeDragOver ? 'var(--accent)' : upgradeFile ? 'var(--status-live)' : 'var(--border)'}`,
+                borderRadius: 8, padding: upgradeFile ? '16px' : '32px 16px',
+                textAlign: 'center', cursor: 'pointer',
+                background: upgradeDragOver ? 'rgba(88,166,255,0.05)' : 'var(--bg-primary)',
+              }}
+            >
+              {upgradeFile ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                  <div style={{ textAlign: 'left' }}>
+                    <div style={{ fontWeight: 500, fontSize: 14 }}>{upgradeFile.name}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      {(upgradeFile.size / 1024 / 1024).toFixed(1)} MB
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+                  拖曳新版原始碼壓縮檔到此處
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <button onClick={() => { setShowUpgradeModal(false); setUpgradeFile(null); }}
+                style={{ fontSize: 13, padding: '8px 16px', borderRadius: 6, background: 'var(--bg-primary)', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-primary)' }}>
+                取消
+              </button>
+              <button onClick={handleUpgrade} disabled={!upgradeFile || upgrading}
+                style={{
+                  fontSize: 13, padding: '8px 16px', borderRadius: 6,
+                  background: upgradeFile ? 'var(--accent)' : 'var(--bg-primary)',
+                  color: upgradeFile ? '#fff' : 'var(--text-secondary)',
+                  border: 'none', cursor: upgradeFile ? 'pointer' : 'not-allowed',
+                  opacity: upgrading ? 0.6 : 1,
+                }}>
+                {upgrading ? '上傳中...' : '開始升版'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Environment Variables */}
       {deployments.length > 0 && (

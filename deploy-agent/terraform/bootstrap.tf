@@ -39,7 +39,7 @@ locals {
   agent_roles = [
     "roles/run.admin",                    # deploy/manage Cloud Run services
     "roles/iam.serviceAccountUser",       # act as service accounts
-    "roles/artifactregistry.writer",      # push images
+    "roles/artifactregistry.admin",       # push + delete images (orphan cleanup)
     "roles/cloudbuild.builds.editor",     # trigger Cloud Build
     "roles/storage.admin",                # GCS tarballs + build sources + bucket metadata
     "roles/cloudsql.client",              # connect to Cloud SQL

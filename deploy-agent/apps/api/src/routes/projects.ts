@@ -21,7 +21,7 @@ import {
   updateDeployment,
 } from '../services/orchestrator';
 import { runPipeline } from '../services/pipeline-worker';
-import { deleteService, deleteDomainMapping, deleteContainerImage, updateServiceEnvVars, getServiceEnvVars } from '../services/deploy-engine';
+import { deleteService, deleteDomainMapping, deleteContainerImage, updateServiceEnvVars, getServiceEnvVars, listCloudRunRevisions } from '../services/deploy-engine';
 import { deleteCname, setupCustomDomainWithDns, type DnsConfig } from '../services/dns-manager';
 import { stopProjectService, startProjectService } from '../services/service-lifecycle';
 
@@ -341,45 +341,161 @@ export async function projectRoutes(app: FastifyInstance) {
 
     const userEnvVars = parseEnvVarsText(body.envVars || '');
 
-    const project = await createProject({
-      name: body.name.trim(),
-      sourceType: 'upload',
-      sourceUrl: projectDir,
-      config: {
-        deployTarget: 'cloud_run' as const,
-        customDomain: body.customDomain?.trim(),
-        forceDomain: body.forceDomain ?? false,
-        allowUnauthenticated: body.allowUnauthenticated ?? true,
-        gcsSourceUri: body.gcsUri,
-        envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
-        gcsDbDumpUri: body.dbDumpGcsUri,
-        dbDumpFileName: body.dbDumpFileName,
-      },
-    });
+    // ── Monorepo detection (same logic as upload route) ──
+    const { readFileSync: rfs } = await import('node:fs');
+    const monorepoSubdirs = readdirSync(projectDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('.') && d.name !== 'node_modules')
+      .map(d => d.name);
+    const servicesWithDockerfile = monorepoSubdirs.filter(d => existsSync(join(projectDir, d, 'Dockerfile')));
+    const rootHasDockerfile = existsSync(join(projectDir, 'Dockerfile'));
+    const isMonorepo = servicesWithDockerfile.length >= 2 && !rootHasDockerfile;
 
-    await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
-    const scanReport = await createScanReport(project.id);
+    console.log(`[GCS Submit] projectDir: ${projectDir}, isMonorepo: ${isMonorepo}, services: [${servicesWithDockerfile.join(', ')}]`);
 
-    // Return immediately, pipeline runs in background
-    reply.status(201).send({
-      project: { ...project, status: 'scanning' },
-      scanReport,
-      uploadedFile: body.fileName,
-    });
+    if (isMonorepo) {
+      // ── Monorepo: create one project per service ──
+      const groupId = `group-${Date.now()}`;
+      const classifyService = (dirName: string, serviceDir: string): 'backend' | 'frontend' => {
+        const lower = dirName.toLowerCase();
+        if (lower.includes('backend') || lower.includes('api') || lower.includes('server')) return 'backend';
+        if (lower.includes('frontend') || lower.includes('web') || lower.includes('client') || lower.includes('app')) return 'frontend';
+        if (existsSync(join(serviceDir, 'requirements.txt')) || existsSync(join(serviceDir, 'go.mod'))) return 'backend';
+        if (existsSync(join(serviceDir, 'vite.config.ts')) || existsSync(join(serviceDir, 'next.config.js')) ||
+            existsSync(join(serviceDir, 'next.config.ts')) || existsSync(join(serviceDir, 'next.config.mjs'))) return 'frontend';
+        try {
+          const pkg = JSON.parse(rfs(join(serviceDir, 'package.json'), 'utf8'));
+          const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+          if (deps.next || deps.nuxt || deps.vite || deps['@sveltejs/kit'] || deps.react) return 'frontend';
+          if (deps.express || deps.fastify || deps.hono || deps.koa) return 'backend';
+        } catch { /* ignore */ }
+        return 'backend';
+      };
 
-    // Background: re-upload as proper source tarball + start pipeline
-    (async () => {
-      try {
-        const gcsSourceUri = await uploadSourceToGcs(projectSlug, projectDir);
-        const current = await getProject(project.id);
-        await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
-      } catch (err) {
-        console.error(`[GCS Submit] Background GCS repack failed:`, (err as Error).message);
+      const siblings = servicesWithDockerfile.map(d => ({
+        dirName: d,
+        role: classifyService(d, join(projectDir, d)),
+        projectName: `${body.name.trim()}-${d}`,
+      }));
+      siblings.sort((a, b) => (a.role === 'backend' ? -1 : 1) - (b.role === 'backend' ? -1 : 1));
+
+      const createdProjects: Array<{ project: unknown; scanReport: unknown }> = [];
+      const failedServices: Array<{ name: string; error: string }> = [];
+
+      for (const svc of siblings) {
+        try {
+          const serviceDir = join(projectDir, svc.dirName);
+          const project = await createProject({
+            name: svc.projectName,
+            sourceType: 'upload',
+            sourceUrl: serviceDir,
+            config: {
+              deployTarget: 'cloud_run',
+              customDomain: body.customDomain?.trim()
+                ? (svc.role === 'frontend' ? body.customDomain.trim() : `api.${body.customDomain.trim()}`)
+                : undefined,
+              forceDomain: body.forceDomain ?? false,
+              allowUnauthenticated: body.allowUnauthenticated ?? true,
+              envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
+              gcsDbDumpUri: svc.role === 'backend' ? body.dbDumpGcsUri : undefined,
+              dbDumpFileName: svc.role === 'backend' ? body.dbDumpFileName : undefined,
+              projectGroup: groupId,
+              groupName: body.name.trim(),
+              serviceRole: svc.role,
+              serviceDirName: svc.dirName,
+              siblings: siblings.map(s => ({ name: s.projectName, role: s.role, dirName: s.dirName })),
+            },
+          });
+          await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
+          const scanReport = await createScanReport(project.id);
+          createdProjects.push({ project: { ...project, status: 'scanning' }, scanReport });
+        } catch (err) {
+          const msg = (err as Error).message;
+          console.error(`[GCS Submit] Failed to create monorepo service "${svc.projectName}": ${msg}`);
+          failedServices.push({ name: svc.projectName, error: msg });
+        }
       }
-      runPipeline(project.id, projectDir).catch((err) => {
-        console.error(`[Pipeline] Async dispatch failed for ${project.id}:`, (err as Error).message);
+
+      reply.status(201).send({
+        monorepo: true,
+        groupId,
+        services: createdProjects,
+        failedServices: failedServices.length > 0 ? failedServices : undefined,
+        uploadedFile: body.fileName,
       });
-    })();
+
+      // Background: upload source + pipeline for each service
+      for (const svc of siblings) {
+        const serviceDir = join(projectDir, svc.dirName);
+        const svcSlug = svc.projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+        const created = createdProjects.find(
+          (c) => (c.project as { name: string }).name === svc.projectName,
+        );
+        if (!created) continue;
+        const projectId = (created.project as { id: string }).id;
+
+        (async () => {
+          try {
+            const gcsSourceUri = await uploadSourceToGcs(svcSlug, serviceDir);
+            const current = await getProject(projectId);
+            await updateProjectConfig(projectId, { ...(current?.config ?? {}), gcsSourceUri });
+          } catch (err) {
+            console.error(`[GCS Submit] Background GCS repack failed for ${svc.projectName}:`, (err as Error).message);
+          }
+          runPipeline(projectId, serviceDir).catch((err) => {
+            console.error(`[Pipeline] Async dispatch failed for ${svc.projectName}:`, (err as Error).message);
+          });
+        })();
+      }
+    } else {
+      // ── Single service ──
+      // If root has no Dockerfile/package.json, check subdirectories
+      if (!rootHasDockerfile && !existsSync(join(projectDir, 'package.json'))) {
+        const subWithDockerfile = monorepoSubdirs.find(d => existsSync(join(projectDir, d, 'Dockerfile')));
+        if (subWithDockerfile) {
+          console.log(`[GCS Submit] Dockerfile found in subdirectory: ${subWithDockerfile}, adjusting projectDir`);
+          projectDir = join(projectDir, subWithDockerfile);
+        }
+      }
+
+      const project = await createProject({
+        name: body.name.trim(),
+        sourceType: 'upload',
+        sourceUrl: projectDir,
+        config: {
+          deployTarget: 'cloud_run' as const,
+          customDomain: body.customDomain?.trim(),
+          forceDomain: body.forceDomain ?? false,
+          allowUnauthenticated: body.allowUnauthenticated ?? true,
+          gcsSourceUri: body.gcsUri,
+          envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
+          gcsDbDumpUri: body.dbDumpGcsUri,
+          dbDumpFileName: body.dbDumpFileName,
+        },
+      });
+
+      await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
+      const scanReport = await createScanReport(project.id);
+
+      reply.status(201).send({
+        project: { ...project, status: 'scanning' },
+        scanReport,
+        uploadedFile: body.fileName,
+      });
+
+      // Background: re-upload as proper source tarball + start pipeline
+      (async () => {
+        try {
+          const gcsSourceUri = await uploadSourceToGcs(projectSlug, projectDir);
+          const current = await getProject(project.id);
+          await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
+        } catch (err) {
+          console.error(`[GCS Submit] Background GCS repack failed:`, (err as Error).message);
+        }
+        runPipeline(project.id, projectDir).catch((err) => {
+          console.error(`[Pipeline] Async dispatch failed for ${project.id}:`, (err as Error).message);
+        });
+      })();
+    }
   });
 
   // Submit new project via file upload (multipart form)
@@ -702,7 +818,7 @@ export async function projectRoutes(app: FastifyInstance) {
           try {
             const gcsSourceUri = await uploadSourceToGcs(svcSlug, serviceDir);
             const current = await getProject(projectId);
-            await updateProjectConfig(projectId, { ...current.config, gcsSourceUri });
+            await updateProjectConfig(projectId, { ...(current?.config ?? {}), gcsSourceUri });
           } catch (err) {
             console.error(`[Upload] Background GCS upload failed for ${svc.projectName}:`, (err as Error).message);
           }
@@ -1300,4 +1416,7 @@ export async function projectRoutes(app: FastifyInstance) {
       });
     }
   });
+
+  // Versioning routes moved to ./versioning.ts for reliability
+  // (intermittent 404 when defined at end of this 1600+ line plugin)
 }
