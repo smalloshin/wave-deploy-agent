@@ -829,6 +829,7 @@ export async function projectRoutes(app: FastifyInstance) {
           });
         })();
       }
+      return; // monorepo handled — don't fall through to single-service path
     }
 
     // ── Single-service project (original flow) ──
