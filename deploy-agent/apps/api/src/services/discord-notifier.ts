@@ -93,14 +93,42 @@ export async function notifyDeployFailed(
   projectName: string,
   error: string,
   step: string,
+  buildDiagnosis?: {
+    category: string;
+    summary: string;
+    rootCause: string;
+    suggestedFix: string;
+    errorLocation: string | null;
+    provider: string;
+  },
 ): Promise<void> {
+  const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+    { name: '失敗步驟', value: step, inline: true },
+  ];
+
+  if (buildDiagnosis) {
+    const categoryLabels: Record<string, string> = {
+      user_code: '🔧 程式碼錯誤',
+      dependency: '📦 套件/依賴問題',
+      config: '⚙️ 設定問題',
+      infra: '☁️ 基礎設施問題',
+      unknown: '❓ 未知',
+    };
+    fields.push({ name: '問題類型', value: categoryLabels[buildDiagnosis.category] ?? buildDiagnosis.category, inline: true });
+    fields.push({ name: '原因分析', value: buildDiagnosis.rootCause.slice(0, 500) });
+    if (buildDiagnosis.errorLocation) {
+      fields.push({ name: '錯誤位置', value: `\`${buildDiagnosis.errorLocation}\``, inline: true });
+    }
+    fields.push({ name: '💡 修復建議', value: buildDiagnosis.suggestedFix.slice(0, 500) });
+    fields.push({ name: 'AI 分析', value: `by ${buildDiagnosis.provider}`, inline: true });
+  } else {
+    fields.push({ name: '錯誤', value: `\`\`\`\n${error.slice(0, 900)}\n\`\`\`` });
+  }
+
   await postToDiscord([{
     title: `❌ 部署失敗 — ${projectName}`,
     color: 0xf85149,
-    fields: [
-      { name: '失敗步驟', value: step, inline: true },
-      { name: '錯誤', value: `\`\`\`\n${error.slice(0, 900)}\n\`\`\`` },
-    ],
+    fields,
     timestamp: new Date().toISOString(),
   }]);
 }

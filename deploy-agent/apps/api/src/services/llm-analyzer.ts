@@ -209,6 +209,109 @@ Respond with JSON:
   }
 }
 
+// ─── Build Failure Analysis (LLM-powered) ───
+
+export interface BuildFailureAnalysis {
+  /** 'user_code' = 使用者程式碼問題, 'infra' = 基礎設施/設定問題, 'unknown' = 無法判斷 */
+  category: 'user_code' | 'infra' | 'dependency' | 'config' | 'unknown';
+  /** 一句話摘要（繁體中文） */
+  summary: string;
+  /** 錯誤的根本原因 */
+  rootCause: string;
+  /** 具體的修復建議（給使用者看的） */
+  suggestedFix: string;
+  /** 出問題的檔案和行號（如果能從 log 判斷） */
+  errorLocation: string | null;
+  /** LLM provider */
+  provider: 'claude' | 'gpt' | 'fallback';
+}
+
+/**
+ * 用 LLM 分析 Docker build / Cloud Build 失敗的 log，
+ * 判斷是使用者程式碼問題還是基礎設施問題，
+ * 回傳友善的錯誤訊息和修復建議。
+ */
+export async function analyzeBuildFailure(
+  buildLog: string,
+  errorMessage: string,
+  projectName: string,
+): Promise<BuildFailureAnalysis> {
+  if (!anthropic && !openai) {
+    return {
+      category: 'unknown',
+      summary: 'LLM 不可用，無法分析 build 失敗原因',
+      rootCause: errorMessage,
+      suggestedFix: '請查看 Cloud Build log 了解詳情',
+      errorLocation: null,
+      provider: 'fallback',
+    };
+  }
+
+  // 取 log 的最後 6000 字元（錯誤通常在尾端）
+  const logTail = buildLog.length > 6000 ? buildLog.slice(-6000) : buildLog;
+
+  const system = `你是一位資深 DevOps 工程師，專門分析 Docker build 和 Cloud Build 的失敗原因。
+
+你的任務：
+1. 從 build log 判斷失敗的根本原因
+2. 分類問題類型：user_code（使用者程式碼錯誤）、dependency（套件/依賴問題）、config（Dockerfile/設定問題）、infra（GCP/Cloud Build 基礎設施問題）
+3. 給出具體的修復建議，要具體到檔案名和行號（如果 log 有提供）
+4. 用繁體中文回答，語氣直接明確
+
+常見的 user_code 問題：TypeScript 編譯錯誤、ESLint 錯誤、missing import、type error
+常見的 dependency 問題：npm install 失敗、版本衝突、missing peer dependency
+常見的 config 問題：Dockerfile 語法錯誤、missing Dockerfile、錯誤的 build 指令
+常見的 infra 問題：GCS 存取失敗、Cloud Build quota、網路錯誤、auth 問題
+
+回應格式（僅 JSON）：
+{"category":"user_code|dependency|config|infra|unknown","summary":"一句話摘要","rootCause":"根本原因的詳細說明","suggestedFix":"具體的修復步驟","errorLocation":"檔案:行號 或 null"}`;
+
+  const userMessage = `專案名稱：${projectName}
+錯誤訊息：${errorMessage}
+
+Build Log（最後部分）：
+\`\`\`
+${logTail}
+\`\`\``;
+
+  try {
+    const result = await callLLM(system, userMessage, 1500);
+    const jsonMatch = result.text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      console.warn('[LLM-Build] No JSON in response');
+      return {
+        category: 'unknown',
+        summary: `Build 失敗：${errorMessage.slice(0, 100)}`,
+        rootCause: errorMessage,
+        suggestedFix: '請查看 Cloud Build log 了解詳情',
+        errorLocation: null,
+        provider: result.provider,
+      };
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as BuildFailureAnalysis;
+    const validCategories = ['user_code', 'dependency', 'config', 'infra', 'unknown'];
+    return {
+      category: validCategories.includes(parsed.category) ? parsed.category : 'unknown',
+      summary: parsed.summary || `Build 失敗：${errorMessage.slice(0, 80)}`,
+      rootCause: parsed.rootCause || errorMessage,
+      suggestedFix: parsed.suggestedFix || '請查看 Cloud Build log 了解詳情',
+      errorLocation: parsed.errorLocation || null,
+      provider: result.provider,
+    };
+  } catch (err) {
+    console.warn(`[LLM-Build] Analysis failed: ${(err as Error).message}`);
+    return {
+      category: 'unknown',
+      summary: `Build 失敗：${errorMessage.slice(0, 100)}`,
+      rootCause: errorMessage,
+      suggestedFix: '請查看 Cloud Build log 了解詳情',
+      errorLocation: null,
+      provider: 'fallback',
+    };
+  }
+}
+
 // ─── Env Var Placeholder Detection (LLM-powered) ───
 
 export interface EnvVarAnalysis {

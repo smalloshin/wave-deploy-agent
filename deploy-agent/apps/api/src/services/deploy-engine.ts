@@ -42,7 +42,7 @@ export async function buildAndPushImage(
   projectDir: string,
   config: DeployConfig,
   gcsSourceUri?: string,
-): Promise<{ success: boolean; imageUri: string; error: string | null }> {
+): Promise<{ success: boolean; imageUri: string; error: string | null; buildLog?: string }> {
   const imageUri = `${config.gcpRegion}-docker.pkg.dev/${config.gcpProject}/deploy-agent/${config.imageName}:${config.imageTag}`;
 
   try {
@@ -143,11 +143,12 @@ export async function buildAndPushImage(
       if (status.status === 'FAILURE' || status.status === 'INTERNAL_ERROR' || status.status === 'TIMEOUT' || status.status === 'CANCELLED') {
         // Try to fetch build log for detailed error
         let detailMsg = status.statusDetail ?? 'no details';
+        let fullBuildLog = '';
         try {
           const logUrl = `https://cloudbuild.googleapis.com/v1/projects/${config.gcpProject}/builds/${buildId}`;
           const logRes = await gcpFetch(logUrl);
           if (logRes.ok) {
-            const logData = await logRes.json() as { logUrl?: string; failureInfo?: { detail?: string; type?: string }; statusDetail?: string };
+            const logData = await logRes.json() as { logUrl?: string; logsBucket?: string; failureInfo?: { detail?: string; type?: string }; statusDetail?: string };
             if (logData.failureInfo?.detail) {
               detailMsg = logData.failureInfo.detail;
             } else if (logData.statusDetail) {
@@ -156,16 +157,36 @@ export async function buildAndPushImage(
             if (logData.logUrl) {
               detailMsg += ` | Logs: ${logData.logUrl}`;
             }
+            // Fetch full build log from GCS (Cloud Build stores logs as log-{buildId}.txt)
+            if (logData.logsBucket) {
+              try {
+                const bucket = logData.logsBucket.replace('gs://', '');
+                const logObjUrl = `https://storage.googleapis.com/storage/v1/b/${bucket}/o/${encodeURIComponent(`log-${buildId}.txt`)}?alt=media`;
+                const logTextRes = await gcpFetch(logObjUrl);
+                if (logTextRes.ok) {
+                  fullBuildLog = await logTextRes.text();
+                  console.log(`[Deploy]   Fetched build log: ${fullBuildLog.length} chars`);
+                }
+              } catch { /* ignore log text fetch errors */ }
+            }
           }
         } catch { /* ignore log fetch errors */ }
-        throw new Error(`Cloud Build ${status.status}: ${detailMsg}`);
+        // Attach build log to error for LLM analysis
+        const err = new Error(`Cloud Build ${status.status}: ${detailMsg}`);
+        (err as Error & { buildLog?: string }).buildLog = fullBuildLog;
+        throw err;
       }
       console.log(`[Deploy]   Cloud Build status: ${status.status}`);
     }
 
     throw new Error('Cloud Build timed out after 10 minutes');
   } catch (err) {
-    return { success: false, imageUri, error: (err as Error).message };
+    return {
+      success: false,
+      imageUri,
+      error: (err as Error).message,
+      buildLog: (err as Error & { buildLog?: string }).buildLog,
+    };
   }
 }
 

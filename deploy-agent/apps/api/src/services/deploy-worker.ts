@@ -19,7 +19,7 @@ import { monitorSsl } from './ssl-monitor';
 import { runCanaryChecks } from './canary-monitor';
 import { detectProject } from './project-detector';
 import { detectEnvVars, mergeEnvVars } from './env-detector';
-import { classifyEnvWithLLM, type EnvClassificationContext } from './llm-analyzer';
+import { classifyEnvWithLLM, analyzeBuildFailure, type EnvClassificationContext } from './llm-analyzer';
 import { provisionProjectDatabase } from './db-provisioner';
 import { provisionProjectRedis } from './redis-provisioner';
 import { restoreDbDump } from './db-restore';
@@ -534,7 +534,24 @@ export async function runDeployPipeline(
     }, gcsSourceUri);
 
     if (!buildResult.success) {
-      throw new Error(`Docker build failed: ${buildResult.error}`);
+      // LLM 分析 build 失敗原因
+      let buildDiagnosis: Awaited<ReturnType<typeof analyzeBuildFailure>> | null = null;
+      if (buildResult.buildLog) {
+        try {
+          console.log(`[Deploy]   Analyzing build failure with LLM (${buildResult.buildLog.length} chars log)...`);
+          buildDiagnosis = await analyzeBuildFailure(
+            buildResult.buildLog,
+            buildResult.error ?? 'Unknown build error',
+            project.name,
+          );
+          console.log(`[Deploy]   Build diagnosis: [${buildDiagnosis.category}] ${buildDiagnosis.summary}`);
+        } catch (llmErr) {
+          console.warn(`[Deploy]   LLM build analysis failed: ${(llmErr as Error).message}`);
+        }
+      }
+      const err = new Error(`Docker build failed: ${buildResult.error}`);
+      (err as Error & { buildDiagnosis?: typeof buildDiagnosis }).buildDiagnosis = buildDiagnosis;
+      throw err;
     }
     console.log(`[Deploy]   Image: ${buildResult.imageUri}`);
 
@@ -961,13 +978,27 @@ export async function runDeployPipeline(
 
   } catch (err) {
     const error = err as Error;
+    const buildDiagnosis = (error as Error & { buildDiagnosis?: Awaited<ReturnType<typeof analyzeBuildFailure>> }).buildDiagnosis;
     console.error(`[Deploy] ✗ Failed for project ${projectId} at ${currentStep}:\n${error.message}`);
-    notifyDeployFailed(projectId, error.message, currentStep).catch(() => {});
+    if (buildDiagnosis) {
+      console.error(`[Deploy]   Diagnosis: [${buildDiagnosis.category}] ${buildDiagnosis.rootCause}`);
+    }
+    notifyDeployFailed(projectId, error.message, currentStep, buildDiagnosis ?? undefined).catch(() => {});
     try {
       await transitionProject(projectId, 'failed', 'deploy-worker', {
         error: error.message,
         failedStep: currentStep,
         stack: error.stack?.split('\n').slice(0, 5).join(' → ') ?? '',
+        ...(buildDiagnosis ? {
+          buildDiagnosis: {
+            category: buildDiagnosis.category,
+            summary: buildDiagnosis.summary,
+            rootCause: buildDiagnosis.rootCause,
+            suggestedFix: buildDiagnosis.suggestedFix,
+            errorLocation: buildDiagnosis.errorLocation,
+            provider: buildDiagnosis.provider,
+          },
+        } : {}),
       });
     } catch (transitionErr) {
       console.error('[Deploy] Could not transition to failed:', (transitionErr as Error).message);
