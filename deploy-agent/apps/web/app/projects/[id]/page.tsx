@@ -454,9 +454,9 @@ export default function ProjectDetailPage() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 20 }}>
         {/* Project Info Card */}
         <Card title={t('projectInfo')}>
-          <InfoRow label={t('language')} value={project.detectedLanguage ?? 'Detecting...'} />
-          <InfoRow label={t('framework')} value={project.detectedFramework ?? 'Detecting...'} />
-          <InfoRow label={t('sourceType')} value={project.sourceUrl ?? '—'} mono />
+          <InfoRow label={t('language')} value={project.detectedLanguage ?? '—'} />
+          <InfoRow label={t('framework')} value={project.detectedFramework ?? '—'} />
+          <InfoRow label={t('sourceType')} value={project.sourceType} />
           <InfoRow label={t('customDomain')} value={project.config?.customDomain ? `${project.config.customDomain}.punwave.com` : tc('none')} />
           <InfoRow label={t('publicAccess')} value={project.config?.allowUnauthenticated ? tc('yes') : tc('no')} />
         </Card>
@@ -519,18 +519,26 @@ export default function ProjectDetailPage() {
             <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               {t('totalVersions', { count: versions.length })}
             </div>
-            <button
-              onClick={handleToggleLock}
-              style={{
-                fontSize: 12, padding: '4px 12px', borderRadius: 4,
-                background: deployLocked ? 'rgba(248,81,73,0.1)' : 'var(--bg-primary)',
-                border: `1px solid ${deployLocked ? 'rgba(248,81,73,0.3)' : 'var(--border)'}`,
-                color: deployLocked ? 'var(--status-critical)' : 'var(--text-secondary)',
-                cursor: 'pointer',
-              }}
-            >
-              {deployLocked ? t('locked') : t('lockDeploy')}
-            </button>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {project.status === 'live' && (
+                <button className="btn btn-primary" onClick={handleUpgrade}
+                  style={{ fontSize: 12, padding: '4px 12px' }}>
+                  {t('upgradeVersion')}
+                </button>
+              )}
+              <button
+                onClick={handleToggleLock}
+                style={{
+                  fontSize: 12, padding: '4px 12px', borderRadius: 4,
+                  background: deployLocked ? 'rgba(248,81,73,0.1)' : 'var(--bg-primary)',
+                  border: `1px solid ${deployLocked ? 'rgba(248,81,73,0.3)' : 'var(--border)'}`,
+                  color: deployLocked ? 'var(--status-critical)' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                }}
+              >
+                {deployLocked ? t('locked') : t('lockDeploy')}
+              </button>
+            </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {versions.map((v) => (

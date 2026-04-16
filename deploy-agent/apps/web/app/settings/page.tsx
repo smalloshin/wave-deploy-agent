@@ -81,7 +81,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div>
+    <div style={{ maxWidth: 720 }}>
       <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 24 }}>{t('title')}</h2>
 
       <Section title={t('gcpSettings')}>
@@ -158,7 +158,7 @@ function Field({ label, placeholder, type = 'text', value, onChange }: {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         style={{
-          width: '100%', maxWidth: 400, padding: '8px 12px',
+          width: '100%', maxWidth: 560, padding: '8px 12px',
           background: 'var(--bg-primary)', border: '1px solid var(--border)',
           borderRadius: 6, color: 'var(--text-primary)', fontSize: 14,
         }}

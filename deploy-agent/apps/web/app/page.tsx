@@ -89,6 +89,9 @@ export default function ProjectsPage() {
   const runGroupAction = async (group: ProjectGroup, action: 'stop' | 'start') => {
     const sel = selected[group.groupId];
     const serviceIds = sel && sel.size > 0 ? Array.from(sel) : undefined;
+    const targetCount = serviceIds ? serviceIds.length : group.serviceCount;
+    const actionLabel = action === 'stop' ? tc('stop') : tc('start');
+    if (!window.confirm(`${actionLabel} ${targetCount} 個服務？`)) return;
     const key = `${group.groupId}:${action}`;
     setActionBusy(key);
     try {
@@ -859,7 +862,14 @@ function GroupCard({
         </span>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600, fontSize: 15 }}>
-            {group.groupName}
+            {!isMonorepo && group.services.length === 1 ? (
+              <a href={`/projects/${group.services[0].id}`} style={{ color: 'var(--text-primary)', textDecoration: 'none' }}
+                onClick={(e) => e.stopPropagation()}>
+                {group.groupName}
+              </a>
+            ) : (
+              group.groupName
+            )}
             {isMonorepo && (
               <span style={{
                 marginLeft: 8, fontSize: 11, padding: '2px 6px', borderRadius: 4,
@@ -1022,7 +1032,7 @@ function ServiceRow({
           >{tc('downloadSourceCode')}</a>
         )}
         <button
-          className="btn"
+          className="btn btn-delete"
           onClick={onDeleteService}
           style={{ fontSize: 11, padding: '3px 10px', color: 'var(--status-critical)', borderColor: 'var(--status-critical)', marginLeft: 'auto' }}
         >{tc('delete')}</button>

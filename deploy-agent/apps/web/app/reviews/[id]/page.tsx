@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
+import ReactMarkdown from 'react-markdown';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -147,12 +148,12 @@ export default function ReviewDetailPage() {
       {/* Threat Summary */}
       {review.threat_summary && (
         <Card title={t('threatSummary')} style={{ marginTop: 16 }}>
-          <div style={{
+          <div className="markdown-body" style={{
             background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 6,
-            padding: 12, fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', maxHeight: 300,
-            overflowY: 'auto', fontFamily: 'monospace',
+            padding: 12, fontSize: 13, lineHeight: 1.6, maxHeight: 300,
+            overflowY: 'auto',
           }}>
-            {review.threat_summary}
+            <ReactMarkdown>{review.threat_summary}</ReactMarkdown>
           </div>
         </Card>
       )}
