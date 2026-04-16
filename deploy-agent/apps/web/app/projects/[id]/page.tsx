@@ -22,6 +22,8 @@ interface Project {
     gcpProject?: string;
     gcpRegion?: string;
     envVars?: Record<string, string>;
+    domainError?: string;
+    domainErrorAt?: string;
   };
   createdAt: string;
   updatedAt: string;
@@ -139,6 +141,7 @@ export default function ProjectDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [retryingDomain, setRetryingDomain] = useState(false);
   const [showEnvEditor, setShowEnvEditor] = useState(false);
   const [versions, setVersions] = useState<VersionInfo[]>([]);
   const [deployLocked, setDeployLocked] = useState(false);
@@ -210,6 +213,19 @@ export default function ProjectDetailPage() {
       alert((err as Error).message);
     }
     setRetrying(false);
+  };
+
+  const handleRetryDomain = async () => {
+    setRetryingDomain(true);
+    try {
+      const res = await fetch(`${API}/api/projects/${id}/retry-domain`, { method: 'POST' });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
+      loadDetail();
+    } catch (err) {
+      alert((err as Error).message);
+    }
+    setRetryingDomain(false);
   };
 
   const handlePublish = async (deployId: string) => {
@@ -471,6 +487,18 @@ export default function ProjectDetailPage() {
                     </InfoRow>
                   )}
                   <InfoRow label={t('ssl')} value={d.sslStatus ?? 'N/A'} />
+                  {project.config?.domainError && (
+                    <div style={{ margin: '8px 0', padding: '8px 12px', background: 'rgba(248,81,73,0.1)', borderRadius: 6, border: '1px solid var(--status-critical)', fontSize: 13 }}>
+                      <div style={{ color: 'var(--status-critical)', fontWeight: 500, marginBottom: 4 }}>⚠ Domain 設定失敗</div>
+                      <div style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>{String(project.config.domainError)}</div>
+                      <button
+                        className="btn"
+                        disabled={retryingDomain}
+                        onClick={handleRetryDomain}
+                        style={{ fontSize: 12, padding: '4px 12px', color: 'var(--accent-blue, #58a6ff)', borderColor: 'var(--accent-blue, #58a6ff)' }}
+                      >{retryingDomain ? '重試中...' : '重試 Domain 設定'}</button>
+                    </div>
+                  )}
                   <InfoRow label={t('healthStatus')}>
                     <span style={{ color: d.healthStatus === 'healthy' ? 'var(--status-live)' : 'var(--text-secondary)' }}>
                       {d.healthStatus}
