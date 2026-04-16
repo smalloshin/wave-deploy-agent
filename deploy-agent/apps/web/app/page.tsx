@@ -112,6 +112,21 @@ export default function ProjectsPage() {
     }
   };
 
+  const retryService = async (projectId: string) => {
+    const key = `svc:${projectId}:retry`;
+    setActionBusy(key);
+    try {
+      const res = await fetch(`${API}/api/projects/${projectId}/resubmit`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      loadGroups(true);
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
   const runServiceAction = async (projectId: string, action: 'stop' | 'start') => {
     const key = `svc:${projectId}:${action}`;
     setActionBusy(key);
@@ -190,6 +205,7 @@ export default function ProjectsPage() {
               onToggleSelect={(sid) => toggleSelect(g.groupId, sid)}
               onGroupAction={(action) => runGroupAction(g, action)}
               onServiceAction={runServiceAction}
+              onRetryService={retryService}
               onDeleteService={(svc) => { setDeleteTarget(svc); setDeleteLog(null); }}
             />
           ))}
@@ -805,7 +821,7 @@ function DeleteModal({ project, deleting, deleteLog, onClose, onConfirm }: {
 
 function GroupCard({
   group, expanded, selected, actionBusy,
-  onToggleExpand, onToggleSelect, onGroupAction, onServiceAction, onDeleteService,
+  onToggleExpand, onToggleSelect, onGroupAction, onServiceAction, onRetryService, onDeleteService,
 }: {
   group: ProjectGroup;
   expanded: boolean;
@@ -815,6 +831,7 @@ function GroupCard({
   onToggleSelect: (serviceId: string) => void;
   onGroupAction: (action: 'stop' | 'start') => void;
   onServiceAction: (projectId: string, action: 'stop' | 'start') => void;
+  onRetryService: (projectId: string) => void;
   onDeleteService: (svc: ProjectWithResources) => void;
 }) {
   const busyStop = actionBusy === `${group.groupId}:stop`;
@@ -894,6 +911,7 @@ function GroupCard({
               actionBusy={actionBusy}
               onToggleSelect={() => onToggleSelect(svc.id)}
               onServiceAction={onServiceAction}
+              onRetryService={onRetryService}
               onDeleteService={() => onDeleteService(svc)}
             />
           ))}
@@ -904,7 +922,7 @@ function GroupCard({
 }
 
 function ServiceRow({
-  svc, isMonorepo, checked, actionBusy, onToggleSelect, onServiceAction, onDeleteService,
+  svc, isMonorepo, checked, actionBusy, onToggleSelect, onServiceAction, onRetryService, onDeleteService,
 }: {
   svc: ProjectWithResources;
   isMonorepo: boolean;
@@ -912,14 +930,17 @@ function ServiceRow({
   actionBusy: string | null;
   onToggleSelect: () => void;
   onServiceAction: (projectId: string, action: 'stop' | 'start') => void;
+  onRetryService: (projectId: string) => void;
   onDeleteService: () => void;
 }) {
   const running = svc.status === 'live';
   const stopped = svc.status === 'stopped';
+  const failed = svc.status === 'failed' || svc.status === 'needs_revision';
   const canStop = running;
   const canStart = stopped;
   const busyStop = actionBusy === `svc:${svc.id}:stop`;
   const busyStart = actionBusy === `svc:${svc.id}:start`;
+  const busyRetry = actionBusy === `svc:${svc.id}:retry`;
   const url = svc.latestDeployment?.cloudRunUrl || (svc.latestDeployment?.customDomain ? `https://${svc.latestDeployment.customDomain}` : null);
   const gcsSource = svc.resources.find((r) => r.kind === 'gcs_source');
   const tc = useTranslations('common');
@@ -984,6 +1005,14 @@ function ServiceRow({
             onClick={() => onServiceAction(svc.id, 'start')}
             style={{ fontSize: 11, padding: '3px 10px', color: 'var(--status-live)', borderColor: 'var(--status-live)' }}
           >{busyStart ? tc('starting') : tc('start')}</button>
+        )}
+        {failed && (
+          <button
+            className="btn"
+            disabled={busyRetry}
+            onClick={() => onRetryService(svc.id)}
+            style={{ fontSize: 11, padding: '3px 10px', color: 'var(--accent-blue, #58a6ff)', borderColor: 'var(--accent-blue, #58a6ff)' }}
+          >{busyRetry ? tc('retrying') : tc('retryPipeline')}</button>
         )}
         {gcsSource && (
           <a

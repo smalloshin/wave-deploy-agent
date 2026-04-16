@@ -36,7 +36,9 @@
     "no": "No",
     "autoFixed": "Auto-fixed",
     "download": "Download",
-    "downloadSourceCode": "Download Source"
+    "downloadSourceCode": "Download Source",
+    "retryPipeline": "Retry Pipeline",
+    "retrying": "Retrying..."
   },
   "projects": {
     "title": "Projects",

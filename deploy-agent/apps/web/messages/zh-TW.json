@@ -36,7 +36,9 @@
     "no": "否",
     "autoFixed": "已自動修復",
     "download": "下載",
-    "downloadSourceCode": "下載原始碼"
+    "downloadSourceCode": "下載原始碼",
+    "retryPipeline": "重試流程",
+    "retrying": "重試中..."
   },
   "projects": {
     "title": "專案",
