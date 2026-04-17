@@ -57,7 +57,7 @@ export default function InfraPage() {
 
   const load = () => {
     setLoading(true);
-    fetch(`${API}/api/infra/overview`)
+    fetch(`${API}/api/infra/overview`, { credentials: 'include' })
       .then((r) => r.json())
       .then((d) => { setData(d); setLoading(false); })
       .catch((err) => { setError(err.message); setLoading(false); });
@@ -69,7 +69,7 @@ export default function InfraPage() {
     setCleanupBusy(true);
     setCleanupResult(null);
     try {
-      const res = await fetch(`${API}/api/infra/cleanup-orphans`, { method: 'POST' });
+      const res = await fetch(`${API}/api/infra/cleanup-orphans`, { credentials: 'include', method: 'POST' });
       const json = await res.json();
       setCleanupResult(json);
       setShowConfirm(false);

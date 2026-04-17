@@ -15,7 +15,7 @@ export default function DeploysPage() {
 
   const loadDeployments = (silent = false) => {
     if (!silent) setLoading(true);
-    fetch(`${API}/api/deploys`)
+    fetch(`${API}/api/deploys`, { credentials: 'include' })
       .then((r) => r.json())
       .then((data) => { setDeployments(data.deployments); setLoading(false); })
       .catch(() => setLoading(false));

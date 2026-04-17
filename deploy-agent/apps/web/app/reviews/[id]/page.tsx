@@ -55,7 +55,7 @@ export default function ReviewDetailPage() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch(`${API}/api/reviews/${id}`)
+    fetch(`${API}/api/reviews/${id}`, { credentials: 'include' })
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((d) => { setReview(d.review); setLoading(false); })
       .catch((err) => { setError(err.message); setLoading(false); });
@@ -67,8 +67,7 @@ export default function ReviewDetailPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/api/reviews/${id}/decide`, {
-        method: 'POST',
+      const res = await fetch(`${API}/api/reviews/${id}/decide`, { credentials: 'include', method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ decision, reviewerEmail: email.trim(), comments: comments.trim() || undefined }),
       });

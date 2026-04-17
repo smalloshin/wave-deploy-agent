@@ -13,7 +13,7 @@ export default function ReviewsPage() {
 
   const loadReviews = (silent = false) => {
     if (!silent) setLoading(true);
-    fetch(`${API}/api/reviews`)
+    fetch(`${API}/api/reviews`, { credentials: 'include' })
       .then((r) => r.json())
       .then((data) => { setReviews(data.reviews); setLoading(false); })
       .catch(() => setLoading(false));

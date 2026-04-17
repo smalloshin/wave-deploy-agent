@@ -65,7 +65,7 @@ export default function ProjectsPage() {
 
   const loadGroups = (silent = false) => {
     if (!silent) setLoading(true);
-    fetch(`${API}/api/project-groups`)
+    fetch(`${API}/api/project-groups`, { credentials: 'include' })
       .then((r) => r.json())
       .then((data) => { setGroups(data.groups ?? []); setLoading(false); })
       .catch((err) => { setError(err.message); setLoading(false); });
@@ -95,8 +95,7 @@ export default function ProjectsPage() {
     const key = `${group.groupId}:${action}`;
     setActionBusy(key);
     try {
-      const res = await fetch(`${API}/api/project-groups/${group.groupId}/actions`, {
-        method: 'POST',
+      const res = await fetch(`${API}/api/project-groups/${group.groupId}/actions`, { credentials: 'include', method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, serviceIds }),
       });
@@ -119,7 +118,7 @@ export default function ProjectsPage() {
     const key = `svc:${projectId}:retry`;
     setActionBusy(key);
     try {
-      const res = await fetch(`${API}/api/projects/${projectId}/resubmit`, { method: 'POST' });
+      const res = await fetch(`${API}/api/projects/${projectId}/resubmit`, { credentials: 'include', method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       loadGroups(true);
@@ -134,7 +133,7 @@ export default function ProjectsPage() {
     const key = `svc:${projectId}:${action}`;
     setActionBusy(key);
     try {
-      const res = await fetch(`${API}/api/projects/${projectId}/${action}`, { method: 'POST' });
+      const res = await fetch(`${API}/api/projects/${projectId}/${action}`, { credentials: 'include', method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       loadGroups(true);
@@ -230,7 +229,7 @@ export default function ProjectsPage() {
             setDeleting(true);
             setDeleteLog(null);
             try {
-              const res = await fetch(`${API}/api/projects/${deleteTarget.id}`, { method: 'DELETE' });
+              const res = await fetch(`${API}/api/projects/${deleteTarget.id}`, { credentials: 'include', method: 'DELETE' });
               const data = await res.json();
               if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
               setDeleteLog(data.teardownLog ?? []);
@@ -307,8 +306,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
       if (sourceType === 'upload' && file && file.size > GCS_UPLOAD_THRESHOLD) {
         setError(null);
 
-        const initRes = await fetch(`${API}/api/upload/init`, {
-          method: 'POST',
+        const initRes = await fetch(`${API}/api/upload/init`, { credentials: 'include', method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ fileName: file.name, contentType: file.type || 'application/octet-stream' }),
         });
@@ -331,8 +329,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
           throw new Error(t('gcsUploadFailed', { status: String(uploadRes.status), detail: errText.slice(0, 200) }));
         }
 
-        const submitRes = await fetch(`${API}/api/projects/submit-gcs`, {
-          method: 'POST',
+        const submitRes = await fetch(`${API}/api/projects/submit-gcs`, { credentials: 'include', method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: name.trim(),
@@ -376,8 +373,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         formData.append('dbDump', dbDumpFile);
       }
 
-      const res = await fetch(`${API}/api/projects/upload`, {
-        method: 'POST',
+      const res = await fetch(`${API}/api/projects/upload`, { credentials: 'include', method: 'POST',
         body: formData,
       });
 
@@ -410,7 +406,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
       try {
         const subs = [customDomain.trim(), `api.${customDomain.trim()}`];
         for (const sub of subs) {
-          const res = await fetch(`${API}/api/infra/check-domain?subdomain=${encodeURIComponent(sub)}&zone=punwave.com`);
+          const res = await fetch(`${API}/api/infra/check-domain?subdomain=${encodeURIComponent(sub)}&zone=punwave.com`, { credentials: 'include' });
           const data = await res.json();
           if (res.ok && data.available === false) {
             setDomainConflict({ fqdn: data.fqdn, existingRoute: data.existingRoute });

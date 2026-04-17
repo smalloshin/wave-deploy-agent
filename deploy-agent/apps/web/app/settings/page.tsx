@@ -40,7 +40,7 @@ export default function SettingsPage() {
   const tc = useTranslations('common');
 
   useEffect(() => {
-    fetch(`${API}/api/settings`)
+    fetch(`${API}/api/settings`, { credentials: 'include' })
       .then((r) => r.json())
       .then((data) => { setSettings(data.settings); setLoading(false); })
       .catch(() => { setLoading(false); });
@@ -54,8 +54,7 @@ export default function SettingsPage() {
     setSaving(true);
     setMessage(null);
     try {
-      const res = await fetch(`${API}/api/settings`, {
-        method: 'PUT',
+      const res = await fetch(`${API}/api/settings`, { credentials: 'include', method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
       });

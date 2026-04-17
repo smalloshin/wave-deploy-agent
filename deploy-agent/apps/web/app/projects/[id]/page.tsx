@@ -170,14 +170,14 @@ export default function ProjectDetailPage() {
 
   const loadDetail = (silent = false) => {
     if (!silent) setLoading(true);
-    fetch(`${API}/api/projects/${id}/detail`)
+    fetch(`${API}/api/projects/${id}/detail`, { credentials: 'include' })
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((d) => { setData(d); setLoading(false); })
       .catch((err) => { setError(err.message); setLoading(false); });
   };
 
   const loadVersions = () => {
-    fetch(`${API}/api/projects/${id}/versions`)
+    fetch(`${API}/api/projects/${id}/versions`, { credentials: 'include' })
       .then((r) => r.ok ? r.json() : null)
       .then((d) => {
         if (d) {
@@ -189,7 +189,7 @@ export default function ProjectDetailPage() {
   };
 
   const loadWebhookConfig = () => {
-    fetch(`${API}/api/projects/${id}/github-webhook`)
+    fetch(`${API}/api/projects/${id}/github-webhook`, { credentials: 'include' })
       .then((r) => r.ok ? r.json() : null)
       .then((d) => { if (d) setWebhookConfig(d); })
       .catch(() => {});
@@ -206,7 +206,7 @@ export default function ProjectDetailPage() {
   const handleRetry = async () => {
     setRetrying(true);
     try {
-      const res = await fetch(`${API}/api/projects/${id}/resubmit`, { method: 'POST' });
+      const res = await fetch(`${API}/api/projects/${id}/resubmit`, { credentials: 'include', method: 'POST' });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
       loadDetail();
     } catch (err) {
@@ -218,7 +218,7 @@ export default function ProjectDetailPage() {
   const handleRetryDomain = async () => {
     setRetryingDomain(true);
     try {
-      const res = await fetch(`${API}/api/projects/${id}/retry-domain`, { method: 'POST' });
+      const res = await fetch(`${API}/api/projects/${id}/retry-domain`, { credentials: 'include', method: 'POST' });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
       loadDetail();
@@ -231,7 +231,7 @@ export default function ProjectDetailPage() {
   const handlePublish = async (deployId: string) => {
     setPublishing(deployId);
     try {
-      const res = await fetch(`${API}/api/projects/${id}/versions/${deployId}/publish`, { method: 'POST' });
+      const res = await fetch(`${API}/api/projects/${id}/versions/${deployId}/publish`, { credentials: 'include', method: 'POST' });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
       loadDetail();
       loadVersions();
@@ -243,8 +243,7 @@ export default function ProjectDetailPage() {
 
   const handleToggleLock = async () => {
     try {
-      const res = await fetch(`${API}/api/projects/${id}/deploy-lock`, {
-        method: 'POST',
+      const res = await fetch(`${API}/api/projects/${id}/deploy-lock`, { credentials: 'include', method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ locked: !deployLocked }),
       });
@@ -260,8 +259,7 @@ export default function ProjectDetailPage() {
     setUpgrading(true);
     try {
       // Step 1: Init upload
-      const initRes = await fetch(`${API}/api/upload/init`, {
-        method: 'POST',
+      const initRes = await fetch(`${API}/api/upload/init`, { credentials: 'include', method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileName: upgradeFile.name, fileSize: upgradeFile.size, contentType: upgradeFile.type || 'application/zip' }),
       });
@@ -277,8 +275,7 @@ export default function ProjectDetailPage() {
       if (!uploadRes.ok) throw new Error(t('upgradeModal.gcsUploadFailed'));
 
       // Step 3: Trigger new version
-      const newVerRes = await fetch(`${API}/api/projects/${id}/new-version`, {
-        method: 'POST',
+      const newVerRes = await fetch(`${API}/api/projects/${id}/new-version`, { credentials: 'include', method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ gcsUri, fileName: upgradeFile.name }),
       });
@@ -298,8 +295,7 @@ export default function ProjectDetailPage() {
     if (!webhookRepoUrl.trim()) return;
     setWebhookSaving(true);
     try {
-      const res = await fetch(`${API}/api/projects/${id}/github-webhook`, {
-        method: 'POST',
+      const res = await fetch(`${API}/api/projects/${id}/github-webhook`, { credentials: 'include', method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ repoUrl: webhookRepoUrl, branch: webhookBranch, autoDeployEnabled: true }),
       });
@@ -316,7 +312,7 @@ export default function ProjectDetailPage() {
   const handleRemoveWebhook = async () => {
     if (!confirm(t('confirmRemoveWebhook'))) return;
     try {
-      const res = await fetch(`${API}/api/projects/${id}/github-webhook`, { method: 'DELETE' });
+      const res = await fetch(`${API}/api/projects/${id}/github-webhook`, { credentials: 'include', method: 'DELETE' });
       if (!res.ok) throw new Error('Failed');
       setWebhookConfig({ configured: false });
       setWebhookNewSecret(null);
@@ -329,8 +325,7 @@ export default function ProjectDetailPage() {
   const handleToggleAutoDeploy = async () => {
     if (!webhookConfig?.configured) return;
     try {
-      const res = await fetch(`${API}/api/projects/${id}/github-webhook`, {
-        method: 'PATCH',
+      const res = await fetch(`${API}/api/projects/${id}/github-webhook`, { credentials: 'include', method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ autoDeployEnabled: !webhookConfig.autoDeployEnabled }),
       });
@@ -1375,7 +1370,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
 
   const loadEnvVars = () => {
     setLoadingEnv(true);
-    fetch(`${API}/api/projects/${projectId}/env-vars`)
+    fetch(`${API}/api/projects/${projectId}/env-vars`, { credentials: 'include' })
       .then(r => r.json())
       .then(d => {
         setEnvVars(d.envVars ?? []);
@@ -1439,8 +1434,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
     }
 
     try {
-      const res = await fetch(`${API}/api/projects/${projectId}/env-vars`, {
-        method: 'PATCH',
+      const res = await fetch(`${API}/api/projects/${projectId}/env-vars`, { credentials: 'include', method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ envVars: envVarsObj }),
       });
