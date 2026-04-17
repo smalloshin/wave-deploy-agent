@@ -4,6 +4,30 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-17（晚上）**
+
+- ✅ **RBAC 權限系統 Phase 1 上線**（permissive mode，見 `decisions/2026-04-17-rbac-auth-system.md`）
+  - 5 張新表：`roles`, `users`, `sessions`, `api_keys`, `auth_audit_log`
+  - 3 角色 seeded：admin（`*`）、reviewer（reviews:decide + 讀取）、viewer（全部唯讀）
+  - `auth-service.ts`：bcrypt (cost 12) + SHA-256 token hash + audit log
+  - `middleware/auth.ts`：onRequest hook + route→permission map，涵蓋 47 個端點
+  - `routes/auth.ts`：login/logout/me/users CRUD/api-keys CRUD/audit-log，login 5/min rate limit
+  - Web：`/login` 頁 + `AuthProvider` + Sidebar 顯示使用者 + 登出鈕
+  - AUTH_MODE=permissive（預設）：anonymous 被 log 但放行，零停機
+  - commit `34a8671`，已部署
+- ✅ Orphan cleanup：清掉 9 個 tarball + 1 AR package（107 MB）
+- ✅ Dashboard Design Review：15 項設計問題，完成 11 項修復
+  - Sidebar active state 高亮（藍色左邊框 + 背景 + 粗體白字）— 抽出 `sidebar.tsx` client component
+  - Deploys 頁加分頁（PAGE_SIZE=20）+ 專案名稱連結到 project detail
+  - Project detail 頁：語言/框架偵測用「—」取代 "Detecting..."、sourceType 顯示 "upload/git" 而非 server path、新增升版按鈕
+  - Review detail 頁：threat summary 從 raw text 改為 ReactMarkdown 渲染 + `.markdown-body` 樣式
+  - Settings 頁寬度限制 720px、input 欄位加寬到 560px
+  - Homepage：單服務群組名稱可直接點擊進 project detail、batch 操作加 window.confirm 確認、刪除按鈕 hover 紅色
+  - 新增 `.markdown-body` 完整 CSS（h1-h3, p, ul/ol, code, pre, hr）
+- ✅ 已部署上線（commit `bb9919c`，Cloud Build → prod 驗證 HTTP 200）
+- ⏭️ 跳過 4 項（#3 save 按鈕已存在、#4 infra 空白是 API 資料問題、#7/#10 需 API 端改動）
+- ⏸️ RBAC 權限系統計劃已批准（見 plan file），但使用者要求先處理 design review，尚未開始實作
+
 **2026-04-06**
 
 - ✅ DB Dump 上傳 + 自動匯入功能（整套 7 個檔案一次到位）
@@ -94,6 +118,12 @@
 - [ ] **遷移 prod Cloud Run 到 deploy-agent@ SA**：目前還用 default compute SA，遷完後把 services.tf.deferred + domains.tf.deferred 接管起來
 
 ### 中優先
+- [ ] **RBAC Phase 2/3**（Phase 1 已完成）：
+  - [ ] Cloud Run 加 env：`ADMIN_EMAIL`, `ADMIN_PASSWORD`（secret）, `SESSION_SECRET`（secret）→ bootstrap admin
+  - [ ] Login 進 dashboard → 建 Bot API key → Bot `api-client.ts` 加 `Authorization: Bearer`
+  - [ ] MCP 同樣建 API key 並更新
+  - [ ] 觀察 `auth_audit_log` 中 `action='anonymous_request'` 幾天
+  - [ ] 切 `AUTH_MODE=enforced`
 - [ ] Terraform for agent 自身 infra（目前是手動 gcloud deploy）
 - [ ] Dashboard i18n（next-intl 中英雙語）— design spec 已訂
 - [ ] MCP server 實作（`@modelcontextprotocol/sdk`）
