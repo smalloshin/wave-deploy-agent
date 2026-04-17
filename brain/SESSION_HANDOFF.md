@@ -4,6 +4,24 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-17（深夜）**
+
+- ✅ **Bot + MCP 加 Bearer auth 支援**（commit `e482d13`）
+  - `apps/bot/src/config.ts`：讀 `DEPLOY_AGENT_API_KEY` env var
+  - `apps/bot/src/api-client.ts`：所有 request 自動帶 `Authorization: Bearer`
+  - `skills/wave-deploy/SKILL.md`：所有 MCP curl 範例加 header
+  - 無 key 時只 warn 不 fail（Phase 1 permissive 仍正常）
+- ✅ **Dashboard i18n locale 切換器**（commit `ac24355`）
+  - `i18n/request.ts`：cookie (`NEXT_LOCALE`) > Accept-Language > `zh-TW` fallback
+  - 新 component：`lib/locale-switcher.tsx`（sidebar 底部）
+  - login page + sidebar 登出/登入按鈕改用 `next-intl`
+  - messages 新增 `auth.*` keys（zh-TW + en）
+- ✅ **3 份新 runbook**（`brain/runbooks/`）
+  - `rbac-phase-2-activation.md`：admin bootstrap → bot/mcp API key → enforced mode 完整步驟
+  - `cloud-build-trigger-restore.md`：CB trigger 遺失的 console 修復指南
+  - `terraform-cloudrun-import.md`：Cloud Run + CORS 安全 import 步驟（有 drift 風險，不能 headless apply）
+- ✅ 清掉 stale `terraform/services.tf.deferred`（內容比 active 舊，留著誤導）
+
 **2026-04-17（晚上）**
 
 - ✅ **RBAC 權限系統 Phase 1 上線**（permissive mode，見 `decisions/2026-04-17-rbac-auth-system.md`）
@@ -119,14 +137,18 @@
 - [ ] **遷移 prod Cloud Run 到 deploy-agent@ SA**：目前還用 default compute SA，遷完後把 services.tf.deferred + domains.tf.deferred 接管起來
 
 ### 中優先
-- [ ] **RBAC Phase 2/3**（Phase 1 已完成）：
+- [ ] **RBAC Phase 2/3**（Phase 1 已完成，Bot/MCP code 已備妥）：
+  - [ ] **依 `brain/runbooks/rbac-phase-2-activation.md` 執行**
   - [ ] Cloud Run 加 env：`ADMIN_EMAIL`, `ADMIN_PASSWORD`（secret）, `SESSION_SECRET`（secret）→ bootstrap admin
-  - [ ] Login 進 dashboard → 建 Bot API key → Bot `api-client.ts` 加 `Authorization: Bearer`
-  - [ ] MCP 同樣建 API key 並更新
-  - [ ] 觀察 `auth_audit_log` 中 `action='anonymous_request'` 幾天
+  - [ ] Login 進 dashboard → 建 Bot API key + MCP API key → 掛到對應 Cloud Run 的 `DEPLOY_AGENT_API_KEY`
+  - [ ] 觀察 `auth_audit_log` 中 `action='anonymous_request'` 48hr+
   - [ ] 切 `AUTH_MODE=enforced`
+- [ ] **Terraform Cloud Run + domains 接管**（依 `brain/runbooks/terraform-cloudrun-import.md`）：
+  - services.tf / domains.tf.deferred 已就位，但 state 沒 import；直接 apply 會破壞 prod（storage bucket CORS 被移除）
+  - 需要 user 手動跑 import + 補 storage.tf CORS
+- [ ] **Cloud Build trigger 重建**（依 `brain/runbooks/cloud-build-trigger-restore.md`）
 - [ ] Terraform for agent 自身 infra（目前是手動 gcloud deploy）
-- [ ] Dashboard i18n（next-intl 中英雙語）— design spec 已訂
+- [x] ~~Dashboard i18n（next-intl 中英雙語）~~（2026-04-17 完成 locale switcher + cookie detection + auth 翻譯）
 - [ ] MCP server 實作（`@modelcontextprotocol/sdk`）
 - [ ] OpenClaw skill（`skills/deploy-agent/SKILL.md`）
 
