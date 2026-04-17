@@ -4,6 +4,18 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-17（清晨 RBAC Phase 2 Step 1-3）**
+
+- ✅ **RBAC Phase 2 Step 1-3 完成**（admin 登入已通）
+  - `deploy-agent-session-secret`（32-byte hex）+ `deploy-agent-admin-password` 已建到 Secret Manager
+  - `deploy-agent@` SA 已授 `secretmanager.secretAccessor`
+  - `deploy-agent-api` 加 env `ADMIN_EMAIL=smalloshin@wavenet.com.tw` + 掛兩把 secret
+  - API 重啟後 bootstrap admin 成功（log：`[auth] Bootstrapped admin user`）
+  - 🔴 **踩坑**：`echo $PASSWORD | gcloud secrets create` 會加 trailing newline，bootstrap 把 `\n` 也算進 bcrypt hash，之後純密碼登入會 fail。已修 runbook 改用 `printf '%s'`
+  - 密碼已經透過 PATCH `/api/auth/users/:id` 重設成不含 newline 的版本（記錄在 1Password 或類似）
+  - `/api/auth/login` + `/api/auth/me` 都回 200，admin 完整登入 OK
+- ⏸️ **Step 4-7 暫不做**（user 要求只做到 Step 3 確認登入 OK）
+
 **2026-04-17（凌晨後續）**
 
 - ✅ **Admin 管理頁**（commit `a2e684d`，Cloud Build `5afcaf1b` 進行中）

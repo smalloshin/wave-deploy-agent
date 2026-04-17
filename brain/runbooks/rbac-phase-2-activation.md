@@ -18,15 +18,17 @@ curl -s https://wave-deploy-agent-api.punwave.com/health
 ```bash
 # 產生 session secret（32 bytes random hex）
 SESSION_SECRET=$(openssl rand -hex 32)
-echo "$SESSION_SECRET" | gcloud secrets create deploy-agent-session-secret \
+printf '%s' "$SESSION_SECRET" | gcloud secrets create deploy-agent-session-secret \
   --project=wave-deploy-agent \
   --data-file=- \
   --replication-policy=automatic
+# ⚠️ 用 printf 不是 echo — echo 會加 \n，password hash 會把 \n 算進去，
+# 之後登入時很容易弄錯
 
 # 產生 admin 初始密碼（請事後立刻改掉）
 ADMIN_PASSWORD=$(openssl rand -base64 24)
 echo "初始 admin 密碼（請記錄）：$ADMIN_PASSWORD"
-echo "$ADMIN_PASSWORD" | gcloud secrets create deploy-agent-admin-password \
+printf '%s' "$ADMIN_PASSWORD" | gcloud secrets create deploy-agent-admin-password \
   --project=wave-deploy-agent \
   --data-file=- \
   --replication-policy=automatic
