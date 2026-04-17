@@ -4,6 +4,17 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-17（凌晨後續）**
+
+- ✅ **Admin 管理頁**（commit `a2e684d`，Cloud Build `5afcaf1b` 進行中）
+  - `apps/web/app/admin/page.tsx`：3 個 tab 的管理後台（~570 行）
+    - **Users tab**：列表 / 建立 / 改角色 / 啟用停用 / 刪除，自我保護（不能改自己）
+    - **API Keys tab**：自己的 key 列表 + 建立（勾選權限，不能超過自己）+ 一次性顯示 raw_key banner + 撤銷
+    - **Audit Log tab**：最近 500 筆，以 action 分類按鈕篩選，login/failed/denied/anonymous 顏色不同
+  - `sidebar.tsx` 加 `requiresPermission` 欄位，Admin 連結只在 `hasPermission('users:manage')` 顯示
+  - messages 新增 `admin.*` + `nav.admin` keys（zh-TW + en）
+  - Users + Audit 需 `users:manage`；Keys tab 任何登入使用者都能用（self-service）
+
 **2026-04-17（深夜）**
 
 - ✅ **Bot + MCP 加 Bearer auth 支援**（commit `e482d13`）
