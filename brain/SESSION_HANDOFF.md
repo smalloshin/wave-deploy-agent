@@ -4,6 +4,16 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-17（清晨 credentials fix）**
+
+- ✅ **修 dashboard 全部 fetch() 加 credentials: 'include'**（commit `1e26dcb`）
+  - 7 個頁面、31 處 fetch call 漏了 `credentials: 'include'`，所以 session cookie 根本沒被送
+  - 發現方式：分析 Phase 1 audit log，發現 992/995 是 `anonymous_request` 打 `/api/project-groups`，from IP `169.254.169.126`（GCP LB 內部 IP，= 來自 dashboard）
+  - 意思：登入後的瀏覽器，所有非 auth 的 API call 都是 anonymous
+  - 這是 **Phase 2 enforced mode 的 blocker**——沒修 enforced 會立刻 401 整個 dashboard
+  - 修法：用 node 腳本 regex 批次改，只動 fetch options 不動其他邏輯。build 通過，commit + deploy 中
+- ✅ 確認 API CORS 設定：`credentials: true` 已開（`apps/api/src/index.ts:37`），跨域 cookie 可送
+
 **2026-04-17（清晨 RBAC Phase 2 Step 1-3）**
 
 - ✅ **RBAC Phase 2 Step 1-3 完成**（admin 登入已通）
