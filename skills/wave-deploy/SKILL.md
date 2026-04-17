@@ -17,6 +17,18 @@ description: |
 - **Custom Domain 格式**: `{subdomain}.punwave.com`
 - **Monorepo**: 自動偵測，frontend → `{domain}.punwave.com`，backend → `api.{domain}.punwave.com`
 
+## 🔑 認證（必讀）
+
+所有 API 呼叫都需要 Bearer token。使用者本機需設 env var：
+
+```bash
+export DEPLOY_AGENT_API_KEY="da_k_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+下方所有 curl 範例都預設會從 shell 讀 `$DEPLOY_AGENT_API_KEY`。如果呼叫回 `HTTP 401`，檢查 env var 是否有設且 export 到 subshell。
+
+在 `AUTH_MODE=permissive` 時漏掉 header 仍會通（但會被 audit log 當 anonymous）；切到 `enforced` 之後漏掉就 401。
+
 ---
 
 ## 完整流程
@@ -42,7 +54,7 @@ description: |
 tar -czf /tmp/PROJECT_NAME.tgz -C /path/to/project .
 
 # 上傳
-curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" \
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" \
   -F "name=PROJECT_NAME" \
   -F "customDomain=SUBDOMAIN" \
   -F "envVars[KEY1]=VALUE1" \
@@ -52,7 +64,7 @@ curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" 
 
 **來源是壓縮檔 (.tar.gz / .tgz / .zip)：**
 ```bash
-curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" \
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" \
   -F "name=PROJECT_NAME" \
   -F "customDomain=SUBDOMAIN" \
   -F "file=@/path/to/archive.tar.gz"
@@ -60,7 +72,7 @@ curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" 
 
 **來源是 Git URL：**
 ```bash
-curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" \
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" \
   -F "name=PROJECT_NAME" \
   -F "sourceType=git" \
   -F "gitUrl=https://github.com/owner/repo" \
@@ -76,7 +88,7 @@ curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/upload" 
 每 15 秒輪詢狀態，直到所有 project 都變成 `review_pending`（或 `failed`）：
 
 ```bash
-curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID" \
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); p=d['project']; print(f'{p[\"name\"]}: {p[\"status\"]}')"
 ```
 
@@ -87,13 +99,13 @@ curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID" \
 
 **如果掃描卡住超過 3 分鐘，使用 skip-scan：**
 ```bash
-curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/skip-scan"
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/skip-scan"
 ```
 
 ### Step 4: 查看掃描報告
 
 ```bash
-curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/detail" | python3 -m json.tool
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/detail" | python3 -m json.tool
 ```
 
 向使用者摘要：
@@ -111,7 +123,7 @@ curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/detai
 
 先查找待審查的 review ID：
 ```bash
-curl -s "https://wave-deploy-agent-api.punwave.com/api/reviews?status=pending" \
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" "https://wave-deploy-agent-api.punwave.com/api/reviews?status=pending" \
   | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
@@ -121,7 +133,7 @@ for r in d.get('reviews', []):
 
 詢問使用者是否通過。通過後：
 ```bash
-curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/reviews/REVIEW_ID/decide" \
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" -X POST "https://wave-deploy-agent-api.punwave.com/api/reviews/REVIEW_ID/decide" \
   -H "Content-Type: application/json" \
   -d '{"decision":"approved","reviewerEmail":"deploy@punwave.com","comments":"潮部署通過"}'
 ```
@@ -132,7 +144,7 @@ curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/reviews/REVIEW_ID
 
 每 15 秒輪詢，直到狀態變為 `live`、`ssl_provisioning`、或 `failed`：
 ```bash
-curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID" \
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); p=d['project']; print(f'{p[\"name\"]}: {p[\"status\"]}')"
 ```
 
@@ -147,7 +159,7 @@ curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID" \
 ### Step 7: 回報最終結果
 
 ```bash
-curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/detail" | python3 -c "
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/detail" | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
 p = d['project']
@@ -173,7 +185,7 @@ for dep in d.get('deployments', []):
 
 ### 查看所有專案
 ```bash
-curl -s "https://wave-deploy-agent-api.punwave.com/api/projects" | python3 -c "
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" "https://wave-deploy-agent-api.punwave.com/api/projects" | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
 for p in d.get('projects', []):
@@ -182,18 +194,18 @@ for p in d.get('projects', []):
 
 ### 重新部署（已上線的專案）
 ```bash
-curl -s -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/resubmit"
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" -X POST "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/resubmit"
 ```
 然後回到 Step 3 繼續流程。
 
 ### 下載安全掃描報告
 ```bash
-curl -s "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/scan/report" -o scan-report.md
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID/scan/report" -o scan-report.md
 ```
 
 ### 刪除專案（含 GCP 資源）
 ```bash
-curl -s -X DELETE "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID"
+curl -s -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" -X DELETE "https://wave-deploy-agent-api.punwave.com/api/projects/PROJECT_ID"
 ```
 
 ---
