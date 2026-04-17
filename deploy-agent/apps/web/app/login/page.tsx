@@ -40,7 +40,7 @@ export default function LoginPage() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: '#f5f7fa',
+      background: 'var(--bg-primary)',
     }}>
       <form onSubmit={handleSubmit} style={{
         background: 'white',
@@ -53,7 +53,7 @@ export default function LoginPage() {
         gap: 16,
       }}>
         <h1 style={{ margin: 0, fontSize: 24 }}>{t('title')}</h1>
-        <p style={{ margin: 0, color: '#666', fontSize: 14 }}>{t('subtitle')}</p>
+        <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 14 }}>{t('subtitle')}</p>
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span style={{ fontSize: 13 }}>{t('email')}</span>
@@ -66,7 +66,7 @@ export default function LoginPage() {
             autoFocus
             style={{
               padding: '8px 10px',
-              border: '1px solid #d0d7de',
+              border: '1px solid var(--border)',
               borderRadius: 4,
               fontSize: 14,
             }}
@@ -83,7 +83,7 @@ export default function LoginPage() {
             autoComplete="current-password"
             style={{
               padding: '8px 10px',
-              border: '1px solid #d0d7de',
+              border: '1px solid var(--border)',
               borderRadius: 4,
               fontSize: 14,
             }}
@@ -92,8 +92,8 @@ export default function LoginPage() {
 
         {error && (
           <div style={{
-            color: '#d1242f',
-            background: '#ffebe9',
+            color: 'var(--status-critical)',
+            background: 'var(--status-critical-bg)',
             padding: '8px 12px',
             borderRadius: 4,
             fontSize: 13,
@@ -107,7 +107,7 @@ export default function LoginPage() {
           disabled={submitting}
           style={{
             padding: '10px 16px',
-            background: submitting ? '#94a3b8' : '#0969da',
+            background: submitting ? 'var(--gray-400)' : 'var(--sea-500)',
             color: 'white',
             border: 'none',
             borderRadius: 4,

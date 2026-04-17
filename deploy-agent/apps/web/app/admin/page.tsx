@@ -179,7 +179,7 @@ function UsersSection() {
     }
   }
 
-  if (error) return <div style={{ color: '#d1242f' }}>{error}</div>;
+  if (error) return <div style={{ color: 'var(--status-critical)' }}>{error}</div>;
   if (!users) return <div>Loading...</div>;
 
   return (
@@ -237,7 +237,7 @@ function UsersSection() {
                   disabled={u.id === me?.id}
                   style={{
                     ...btnGhost,
-                    color: u.is_active ? '#1a7f37' : '#9a9a9a',
+                    color: u.is_active ? 'var(--status-success)' : 'var(--text-muted)',
                   }}
                 >
                   {u.is_active ? t('active') : t('inactive')}
@@ -301,7 +301,7 @@ function CreateUserForm({ onDone, onCancel }: { onDone: () => void; onCancel: ()
           <option value="admin">admin</option>
         </select>
       </div>
-      {error && <div style={{ color: '#d1242f', marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div style={{ color: 'var(--status-critical)', marginBottom: 12, fontSize: 13 }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button type="button" onClick={onCancel} style={btnGhost}>{t('cancel')}</button>
         <button type="submit" disabled={submitting} style={btnPrimary}>
@@ -343,13 +343,13 @@ function ApiKeysSection() {
     }
   }
 
-  if (error) return <div style={{ color: '#d1242f' }}>{error}</div>;
+  if (error) return <div style={{ color: 'var(--status-critical)' }}>{error}</div>;
   if (!keys) return <div>Loading...</div>;
 
   return (
     <div>
       {newKey && (
-        <div style={{ ...card, background: '#fff8c5', borderColor: '#d4a72c', marginBottom: 16 }}>
+        <div style={{ ...card, background: 'var(--status-warning-bg)', borderColor: 'var(--status-warning)', marginBottom: 16 }}>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>{t('keyCreated')}</div>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
             {t('keyCreatedWarning')}
@@ -421,7 +421,7 @@ function ApiKeysSection() {
               </td>
               <td style={td}>{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : '—'}</td>
               <td style={td}>
-                <span style={{ color: k.is_active ? '#1a7f37' : '#9a9a9a' }}>
+                <span style={{ color: k.is_active ? 'var(--status-success)' : 'var(--text-muted)' }}>
                   {k.is_active ? t('active') : t('revoked')}
                 </span>
               </td>
@@ -521,7 +521,7 @@ function CreateApiKeyForm({ onDone, onCancel }: { onDone: (rawKey: string) => vo
           );
         })}
       </div>
-      {error && <div style={{ color: '#d1242f', marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div style={{ color: 'var(--status-critical)', marginBottom: 12, fontSize: 13 }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button type="button" onClick={onCancel} style={btnGhost}>{t('cancel')}</button>
         <button type="submit" disabled={submitting} style={btnPrimary}>
@@ -552,7 +552,7 @@ function AuditLogSection() {
 
   useEffect(() => { refresh(); }, []);
 
-  if (error) return <div style={{ color: '#d1242f' }}>{error}</div>;
+  if (error) return <div style={{ color: 'var(--status-critical)' }}>{error}</div>;
   if (!entries) return <div>Loading...</div>;
 
   const shown = filter
@@ -605,11 +605,11 @@ function AuditLogSection() {
                 <span style={{
                   ...pillStyle,
                   background:
-                    e.action === 'login' ? '#dafbe1' :
-                    e.action === 'login_failed' ? '#ffebe9' :
-                    e.action === 'permission_denied' ? '#ffebe9' :
-                    e.action === 'anonymous_request' ? '#fff8c5' :
-                    '#ddf4ff',
+                    e.action === 'login' ? 'var(--status-success-bg)' :
+                    e.action === 'login_failed' ? 'var(--status-critical-bg)' :
+                    e.action === 'permission_denied' ? 'var(--status-critical-bg)' :
+                    e.action === 'anonymous_request' ? 'var(--status-warning-bg)' :
+                    'var(--accent-blue-bg)',
                 }}>
                   {e.action}
                 </span>
@@ -657,12 +657,13 @@ const selectStyle: React.CSSProperties = {
   border: '1px solid var(--border)',
   borderRadius: 4,
   fontSize: 12,
-  background: 'white',
+  background: 'var(--surface-raised)',
+  color: 'var(--text-primary)',
 };
 const btnPrimary: React.CSSProperties = {
   padding: '6px 14px',
-  background: 'var(--accent-blue, #0969da)',
-  color: 'white',
+  background: 'var(--accent-blue)',
+  color: 'var(--text-inverse)',
   border: 'none',
   borderRadius: 4,
   fontSize: 13,
@@ -680,7 +681,7 @@ const btnGhost: React.CSSProperties = {
 };
 const pillStyle: React.CSSProperties = {
   padding: '2px 8px',
-  background: '#ddf4ff',
+  background: 'var(--accent-blue-bg)',
   borderRadius: 10,
   fontSize: 11,
   fontFamily: 'monospace',
