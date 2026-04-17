@@ -278,11 +278,19 @@ curl -s -X DELETE "https://wave-deploy-agent-api.punwave.com/api/projects/PROJEC
 
 Wave Deploy 支援 Netlify 風格的不可變版本管理。每次部署會產生一個新版本（version），可隨時切換、回滾。
 
+> **認證（RBAC Phase 2+）**：當 `AUTH_MODE=enforced` 時，所有 `/mcp/tools/call` 請求必須帶 `Authorization: Bearer <api_key>`。
+> 使用 dashboard 建立 API key（需要 `mcp:access` 權限），並存到 `DEPLOY_AGENT_API_KEY` 環境變數：
+> ```bash
+> export DEPLOY_AGENT_API_KEY="da_k_xxxxxxxxxxxxxxxx"
+> # 範例中的 curl 用 -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY"
+> ```
+
 ### 查看版本歷史
 ```bash
 # 透過 MCP tool: get_versions
 curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" \
   -d '{"name":"get_versions","arguments":{"project_id":"PROJECT_ID"}}'
 ```
 列出所有部署版本，包含版本號、健康狀態、是否為目前發佈版本、部署時間、預覽 URL。
@@ -292,6 +300,7 @@ curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
 # 透過 MCP tool: publish_version
 curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" \
   -d '{"name":"publish_version","arguments":{"project_id":"PROJECT_ID","deployment_id":"DEPLOYMENT_ID"}}'
 ```
 將流量切換到指定版本的 Cloud Run revision。適用於需要回到特定版本的情況。
@@ -301,6 +310,7 @@ curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
 # 透過 MCP tool: rollback_version
 curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" \
   -d '{"name":"rollback_version","arguments":{"project_id":"PROJECT_ID"}}'
 ```
 自動找到前一個有 revision 的版本並切換流量。比 `publish_version` 更方便，不需要知道 deployment ID。
@@ -310,6 +320,7 @@ curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
 # 透過 MCP tool: toggle_deploy_lock
 curl -s -X POST "https://wave-deploy-agent-api.punwave.com/mcp/tools/call" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DEPLOY_AGENT_API_KEY" \
   -d '{"name":"toggle_deploy_lock","arguments":{"project_id":"PROJECT_ID","locked":true}}'
 ```
 鎖定後新的部署會被擋住，適合在生產環境穩定後避免意外更新。省略 `locked` 參數會自動 toggle 目前狀態。
