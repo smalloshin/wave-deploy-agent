@@ -130,3 +130,93 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_repo_url TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_webhook_secret TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_branch TEXT DEFAULT 'main';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_deploy BOOLEAN DEFAULT false;
+
+-- ═══════════════════════════════════════════════════════════════
+-- RBAC / Auth (Phase 1: permissive mode, zero-downtime migration)
+-- ═══════════════════════════════════════════════════════════════
+
+-- Roles
+CREATE TABLE IF NOT EXISTS roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(50) NOT NULL UNIQUE,
+  permissions TEXT[] NOT NULL DEFAULT '{}',
+  description TEXT,
+  is_system BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Users
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email VARCHAR(255) NOT NULL UNIQUE,
+  display_name VARCHAR(255),
+  password_hash VARCHAR(255) NOT NULL,
+  role_id UUID REFERENCES roles(id) NOT NULL,
+  is_active BOOLEAN DEFAULT true,
+  last_login_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- Sessions (httpOnly cookie)
+CREATE TABLE IF NOT EXISTS sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  token_hash VARCHAR(64) NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  ip_address INET,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+-- API Keys (Bot / MCP / CI)
+CREATE TABLE IF NOT EXISTS api_keys (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  key_hash VARCHAR(64) NOT NULL UNIQUE,
+  key_prefix VARCHAR(16) NOT NULL,
+  permissions TEXT[] NOT NULL DEFAULT '{}',
+  last_used_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+
+-- Auth audit log
+CREATE TABLE IF NOT EXISTS auth_audit_log (
+  id BIGSERIAL PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  action VARCHAR(50) NOT NULL,
+  resource VARCHAR(255),
+  ip_address INET,
+  metadata JSONB DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_audit_created ON auth_audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_user ON auth_audit_log(user_id);
+
+-- Seed system roles (idempotent via ON CONFLICT)
+INSERT INTO roles (name, permissions, description, is_system)
+VALUES
+  ('admin', ARRAY['*'], 'Full access to everything', true),
+  ('reviewer',
+    ARRAY['projects:read','reviews:read','reviews:decide','deploys:read','versions:read','mcp:access'],
+    'Security reviewer — can approve/reject deploys',
+    true),
+  ('viewer',
+    ARRAY['projects:read','reviews:read','deploys:read','versions:read','infra:read','settings:read'],
+    'Read-only monitoring',
+    true)
+ON CONFLICT (name) DO UPDATE
+  SET permissions = EXCLUDED.permissions,
+      description = EXCLUDED.description,
+      is_system = EXCLUDED.is_system;

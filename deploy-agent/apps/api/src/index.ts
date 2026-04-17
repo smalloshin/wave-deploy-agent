@@ -2,6 +2,8 @@ import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import cookie from '@fastify/cookie';
+import rateLimit from '@fastify/rate-limit';
 import { projectRoutes } from './routes/projects';
 import { reviewRoutes } from './routes/reviews';
 import { deployRoutes } from './routes/deploys';
@@ -11,6 +13,9 @@ import { projectGroupRoutes } from './routes/project-groups';
 import { infraRoutes } from './routes/infra';
 import { versioningRoutes } from './routes/versioning';
 import { webhookRoutes } from './routes/webhooks';
+import { authRoutes } from './routes/auth';
+import { registerAuthHook } from './middleware/auth';
+import { ensureAdmin } from './services/auth-service';
 import { startReconciler } from './services/reconciler';
 import { runMigrations } from './db/migrate';
 
@@ -24,23 +29,42 @@ const app = Fastify({
 });
 
 // CORS — support comma-separated origins (e.g. "https://a.com,https://b.com")
+// credentials:true required for session cookies to flow cross-origin.
 const corsOrigin = process.env.CORS_ORIGIN ?? '*';
 await app.register(cors, {
   origin: corsOrigin === '*' ? true : corsOrigin.split(',').map(s => s.trim()),
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  credentials: true,
 });
 
 // Multipart file upload (100MB limit)
 await app.register(multipart, { limits: { fileSize: 100 * 1024 * 1024 } });
+
+// Cookie (for session cookies)
+await app.register(cookie, {
+  secret: process.env.SESSION_SECRET ?? 'dev-secret-change-me',
+});
+
+// Global rate limit (100 req/min per IP); individual routes can override (login = 5/min)
+await app.register(rateLimit, {
+  global: true,
+  max: Number(process.env.RATE_LIMIT_MAX ?? 100),
+  timeWindow: '1 minute',
+});
+
+// Auth hook (runs before all routes; skips public routes internally)
+registerAuthHook(app);
 
 // Health check
 app.get('/health', async () => ({
   status: 'ok',
   timestamp: new Date().toISOString(),
   version: process.env.npm_package_version ?? '0.0.1',
+  auth_mode: process.env.AUTH_MODE ?? 'permissive',
 }));
 
 // Register routes
+await app.register(authRoutes);
 await app.register(projectRoutes);
 await app.register(reviewRoutes);
 await app.register(deployRoutes);
@@ -94,6 +118,19 @@ try {
     app.log.info('Database migrations completed');
   } catch (err) {
     app.log.error({ err }, 'Migration failed — continuing with existing schema');
+  }
+
+  // Bootstrap admin user if configured (only creates if no user with that email exists)
+  if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
+    try {
+      await ensureAdmin(
+        process.env.ADMIN_EMAIL,
+        process.env.ADMIN_PASSWORD,
+        process.env.ADMIN_DISPLAY_NAME,
+      );
+    } catch (err) {
+      app.log.error({ err }, 'Admin bootstrap failed');
+    }
   }
 
   await app.listen({ port, host });

@@ -1,6 +1,7 @@
 'use client';
 
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
+import { useAuth } from '../lib/auth';
 
 interface NavItem {
   href: string;
@@ -9,6 +10,13 @@ interface NavItem {
 
 export function Sidebar({ items }: { items: NavItem[] }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { user, loading, logout } = useAuth();
+
+  async function handleLogout() {
+    await logout();
+    router.push('/login');
+  }
 
   return (
     <nav style={{
@@ -47,6 +55,54 @@ export function Sidebar({ items }: { items: NavItem[] }) {
             </a>
           );
         })}
+      </div>
+
+      {/* User info / auth controls */}
+      <div style={{
+        padding: '12px 16px',
+        borderTop: '1px solid var(--border)',
+        fontSize: 13,
+      }}>
+        {loading ? (
+          <span style={{ color: 'var(--text-secondary)' }}>—</span>
+        ) : user ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div>
+              <div style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                {user.display_name ?? user.email}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                {user.role_name}
+              </div>
+            </div>
+            <button
+              onClick={handleLogout}
+              style={{
+                padding: '4px 8px',
+                background: 'transparent',
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                fontSize: 12,
+                textAlign: 'left',
+              }}
+            >
+              登出
+            </button>
+          </div>
+        ) : (
+          <a
+            href="/login"
+            style={{
+              color: 'var(--accent-blue, #58a6ff)',
+              textDecoration: 'none',
+              fontSize: 13,
+            }}
+          >
+            登入 →
+          </a>
+        )}
       </div>
     </nav>
   );
