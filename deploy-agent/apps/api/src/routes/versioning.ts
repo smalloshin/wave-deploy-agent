@@ -176,10 +176,13 @@ export async function versioningRoutes(app: FastifyInstance) {
         return reply.status(500).send({ error: `原始碼解壓失敗: ${(err as Error).message}` });
       }
 
-      // Update project source and config
+      // Update project source and config. Clear gcsFixedSourceUri so the new
+      // pipeline run produces a fresh post-fix snapshot instead of deploying
+      // the PREVIOUS version's fixed source.
       const updatedConfig = {
         ...(project.config ?? {}),
         gcsSourceUri: newGcsUri,
+        gcsFixedSourceUri: undefined,
         ...(body.envVars ? { envVars: { ...(project.config?.envVars ?? {}), ...body.envVars } } : {}),
       };
       await updateProjectConfig(project.id, updatedConfig);

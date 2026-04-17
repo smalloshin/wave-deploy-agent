@@ -75,7 +75,8 @@ export interface ProjectConfig {
   allowUnauthenticated: boolean;
   gcpProject?: string;
   gcpRegion?: string;
-  gcsSourceUri?: string;  // GCS URI for uploaded source (durable across Cloud Run revisions)
+  gcsSourceUri?: string;  // GCS URI for the ORIGINAL user upload (preserved for audit)
+  gcsFixedSourceUri?: string;  // GCS URI for post-fix projectDir (AI修補+生成的Dockerfile)，由 pipeline-worker 產出，deploy-worker 優先使用
   envVars?: Record<string, string>;  // User-provided env vars (merged with auto-detected)
   detectedPort?: number;             // Port detected during pipeline scan (fallback when source is gone)
   // Project grouping (always set; single-service projects are a group of 1)

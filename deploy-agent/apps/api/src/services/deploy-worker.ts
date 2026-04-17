@@ -39,7 +39,16 @@ export async function runDeployPipeline(
     const gcpProject = project.config?.gcpProject || process.env.GCP_PROJECT || '';
     const gcpRegion = project.config?.gcpRegion || process.env.GCP_REGION || 'asia-east1';
     const projectDir = project.sourceUrl ?? '';
-    const gcsSourceUri = project.config?.gcsSourceUri as string | undefined;
+    const gcsOriginalSourceUri = project.config?.gcsSourceUri as string | undefined;
+    // Prefer post-fix source (written by pipeline-worker Step 6a after AI fixes
+    // and Dockerfile generation); fall back to original upload if missing.
+    const gcsFixedSourceUri = project.config?.gcsFixedSourceUri as string | undefined;
+    const gcsSourceUri = gcsFixedSourceUri ?? gcsOriginalSourceUri;
+    if (gcsFixedSourceUri) {
+      console.log(`[Deploy]   Using fixed source (post AI-fix + generated Dockerfile): ${gcsFixedSourceUri}`);
+    } else if (gcsOriginalSourceUri) {
+      console.log(`[Deploy]   Using original source (no gcsFixedSourceUri yet): ${gcsOriginalSourceUri}`);
+    }
 
     if (!gcpProject) throw new Error('GCP project not configured');
     if (!projectDir && !gcsSourceUri) throw new Error('No source directory or GCS URI found for project');
@@ -86,8 +95,10 @@ export async function runDeployPipeline(
         } else if (detectedLanguage === 'go') {
           port = 8080;
         } else {
-          // Last resort: extract Dockerfile from GCS source to check EXPOSE
-          const gcsUri = project.config?.gcsSourceUri as string | undefined;
+          // Last resort: extract Dockerfile from GCS source to check EXPOSE.
+          // Prefer fixed source — that's where pipeline-worker wrote the generated Dockerfile.
+          const gcsUri = (project.config?.gcsFixedSourceUri as string | undefined)
+            ?? (project.config?.gcsSourceUri as string | undefined);
           if (gcsUri && gcsUri.startsWith('gs://')) {
             try {
               const withoutPrefix = gcsUri.slice(5);

@@ -253,6 +253,53 @@ export async function runPipeline(
       }
     }
 
+    // ─── Step 6a: Re-upload fixed projectDir to GCS (audit-safe) ───
+    // pipeline-worker modifies files in-place (Dockerfile + AI fixes); without this
+    // re-upload, deploy-engine would fetch the ORIGINAL gcsSourceUri and none of the
+    // fixes would land in the Docker image. We write to a separate `sources-fixed/`
+    // path and store the URI in project.config.gcsFixedSourceUri — the original
+    // gcsSourceUri is left intact for audit.
+    currentStep = 'Step 6a: Upload fixed source to GCS';
+    console.log(`[Pipeline] ${currentStep}...`);
+    try {
+      const project = await getProject(projectId);
+      const slug = project?.slug || projectId;
+      const gcpProject = process.env.GCP_PROJECT || 'wave-deploy-agent';
+      const bucket = `${gcpProject}_cloudbuild`;
+      const objectName = `sources-fixed/${slug}-${Date.now()}.tgz`;
+      const tarballPath = `/tmp/${slug}-fixed-${Date.now()}.tgz`;
+      execFileSync('tar', ['-czf', tarballPath, '-C', projectDir, '.'], { timeout: 60_000 });
+
+      const { readFileSync: rfs, unlinkSync: ufs, statSync: sfs } = await import('node:fs');
+      const tarball = rfs(tarballPath);
+      const bytes = sfs(tarballPath).size;
+
+      // Use the same auth path as deploy-engine (gcpFetch from gcp-auth)
+      const { gcpFetch } = await import('./gcp-auth');
+      const uploadUrl = `https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
+      const uploadRes = await gcpFetch(uploadUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/gzip' },
+        body: tarball,
+      });
+      try { ufs(tarballPath); } catch { /* ignore */ }
+      if (!uploadRes.ok) {
+        const err = await uploadRes.text();
+        throw new Error(`GCS upload failed (${uploadRes.status}): ${err}`);
+      }
+
+      const gcsFixedSourceUri = `gs://${bucket}/${objectName}`;
+      console.log(`[Pipeline]   Fixed source uploaded (${bytes} bytes): ${gcsFixedSourceUri}`);
+      // Merge into project.config (preserves other fields)
+      await dbQuery(
+        `UPDATE projects SET config = config || $1::jsonb, updated_at = NOW() WHERE id = $2`,
+        [JSON.stringify({ gcsFixedSourceUri }), projectId],
+      );
+    } catch (err) {
+      console.warn(`[Pipeline]   Fixed source re-upload failed (non-fatal): ${(err as Error).message}`);
+      console.warn(`[Pipeline]   Deploy will fall back to original gcsSourceUri (AI fixes will NOT be in Docker image)`);
+    }
+
     // ─── Step 6.5: Resource Plan Analysis (LLM) ───
     currentStep = 'Step 6.5: Resource Plan Analysis';
     console.log(`[Pipeline] ${currentStep}...`);
