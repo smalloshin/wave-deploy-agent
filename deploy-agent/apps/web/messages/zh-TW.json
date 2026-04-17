@@ -4,7 +4,8 @@
     "reviews": "審查",
     "deploys": "部署紀錄",
     "infra": "基礎設施",
-    "settings": "設定"
+    "settings": "設定",
+    "admin": "管理"
   },
   "common": {
     "loading": "載入中...",
@@ -292,5 +293,66 @@
     "signInLink": "登入 →",
     "invalidCredentials": "帳號或密碼錯誤",
     "loginFailed": "登入失敗"
+  },
+  "admin": {
+    "title": "管理",
+    "tabs": {
+      "users": "使用者",
+      "apiKeys": "API 金鑰",
+      "auditLog": "稽核日誌"
+    },
+    "users": {
+      "count": "共 {count} 位使用者",
+      "addUser": "新增使用者",
+      "confirmDelete": "確定要刪除這位使用者？此操作無法復原。",
+      "email": "Email",
+      "password": "密碼（至少 8 字）",
+      "displayName": "顯示名稱",
+      "role": "角色",
+      "status": "狀態",
+      "lastLogin": "最後登入",
+      "actions": "操作",
+      "you": "你",
+      "active": "啟用中",
+      "inactive": "已停用",
+      "delete": "刪除",
+      "cancel": "取消",
+      "creating": "建立中...",
+      "create": "建立"
+    },
+    "apiKeys": {
+      "count": "共 {count} 把 API 金鑰",
+      "newKey": "新增金鑰",
+      "keyCreated": "金鑰已建立",
+      "keyCreatedWarning": "這是你唯一一次看到完整金鑰，請立即複製並妥善保存。關閉後將無法再取得。",
+      "copy": "複製",
+      "dismiss": "我已保存",
+      "name": "名稱",
+      "prefix": "前綴",
+      "permissions": "權限",
+      "lastUsed": "最後使用",
+      "status": "狀態",
+      "actions": "操作",
+      "active": "啟用中",
+      "revoked": "已撤銷",
+      "revoke": "撤銷",
+      "confirmRevoke": "確定要撤銷這把金鑰？撤銷後無法復原，依賴這把金鑰的服務將立即失效。",
+      "keyNamePlaceholder": "名稱（例：Discord Bot、MCP Server、CI）",
+      "selectPerms": "選擇此金鑰擁有的權限（無法超過你自己的權限）：",
+      "errorNoPerms": "請至少選擇一項權限",
+      "cancel": "取消",
+      "creating": "建立中...",
+      "create": "建立金鑰"
+    },
+    "audit": {
+      "all": "全部",
+      "refresh": "重新整理",
+      "time": "時間",
+      "user": "使用者",
+      "action": "動作",
+      "resource": "資源",
+      "ip": "IP",
+      "metadata": "Metadata"
+    }
   }
 }

@@ -8,13 +8,18 @@ import { LocaleSwitcher } from '../lib/locale-switcher';
 interface NavItem {
   href: string;
   label: string;
+  requiresPermission?: string;
 }
 
 export function Sidebar({ items }: { items: NavItem[] }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, loading, logout } = useAuth();
+  const { user, loading, logout, hasPermission } = useAuth();
   const t = useTranslations('auth');
+
+  const visibleItems = items.filter(item =>
+    !item.requiresPermission || hasPermission(item.requiresPermission)
+  );
 
   async function handleLogout() {
     await logout();
@@ -34,7 +39,7 @@ export function Sidebar({ items }: { items: NavItem[] }) {
         <h1 style={{ fontSize: 16, fontWeight: 600 }}>Wave Deploy Agent</h1>
       </div>
       <div style={{ padding: '8px 0', flex: 1 }}>
-        {items.map((item) => {
+        {visibleItems.map((item) => {
           const active = item.href === '/'
             ? pathname === '/'
             : pathname.startsWith(item.href);

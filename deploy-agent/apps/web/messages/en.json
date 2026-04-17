@@ -4,7 +4,8 @@
     "reviews": "Reviews",
     "deploys": "Deploy History",
     "infra": "Infrastructure",
-    "settings": "Settings"
+    "settings": "Settings",
+    "admin": "Admin"
   },
   "common": {
     "loading": "Loading...",
@@ -292,5 +293,66 @@
     "signInLink": "Sign in →",
     "invalidCredentials": "Invalid email or password",
     "loginFailed": "Login failed"
+  },
+  "admin": {
+    "title": "Admin",
+    "tabs": {
+      "users": "Users",
+      "apiKeys": "API Keys",
+      "auditLog": "Audit Log"
+    },
+    "users": {
+      "count": "{count} users total",
+      "addUser": "Add User",
+      "confirmDelete": "Delete this user? This cannot be undone.",
+      "email": "Email",
+      "password": "Password (min 8 chars)",
+      "displayName": "Display Name",
+      "role": "Role",
+      "status": "Status",
+      "lastLogin": "Last Login",
+      "actions": "Actions",
+      "you": "you",
+      "active": "Active",
+      "inactive": "Inactive",
+      "delete": "Delete",
+      "cancel": "Cancel",
+      "creating": "Creating...",
+      "create": "Create"
+    },
+    "apiKeys": {
+      "count": "{count} API keys total",
+      "newKey": "New Key",
+      "keyCreated": "Key Created",
+      "keyCreatedWarning": "This is the only time you will see the full key. Copy it now and store it safely — it cannot be retrieved later.",
+      "copy": "Copy",
+      "dismiss": "I saved it",
+      "name": "Name",
+      "prefix": "Prefix",
+      "permissions": "Permissions",
+      "lastUsed": "Last Used",
+      "status": "Status",
+      "actions": "Actions",
+      "active": "Active",
+      "revoked": "Revoked",
+      "revoke": "Revoke",
+      "confirmRevoke": "Revoke this key? Services depending on it will stop working immediately. This cannot be undone.",
+      "keyNamePlaceholder": "Name (e.g. Discord Bot, MCP Server, CI)",
+      "selectPerms": "Select permissions for this key (cannot exceed your own):",
+      "errorNoPerms": "Select at least one permission",
+      "cancel": "Cancel",
+      "creating": "Creating...",
+      "create": "Create Key"
+    },
+    "audit": {
+      "all": "All",
+      "refresh": "Refresh",
+      "time": "Time",
+      "user": "User",
+      "action": "Action",
+      "resource": "Resource",
+      "ip": "IP",
+      "metadata": "Metadata"
+    }
   }
 }

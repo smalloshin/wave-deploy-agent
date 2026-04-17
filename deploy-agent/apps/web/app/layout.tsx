@@ -21,6 +21,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     { href: '/deploys', label: t('deploys') },
     { href: '/infra', label: t('infra') },
     { href: '/settings', label: t('settings') },
+    { href: '/admin', label: t('admin'), requiresPermission: 'users:manage' },
   ];
 
   return (
