@@ -108,6 +108,7 @@
 ## 待辦事項（TODO）
 
 ### 高優先
+- [ ] **Cloud Build trigger 遺失**：`gcloud beta builds triggers list` 回 0 項，push 不會自動 build。2026-04-17 這次是手動 `gcloud builds submit`。需要重建 GitHub → main → cloudbuild.yaml 的 trigger
 - [x] ~~**GCS lifecycle rule**：為 `gs://wave-deploy-agent_cloudbuild/sources/` 設 30 天自動刪除~~（2026-04-05 完成，見 `decisions/2026-04-05-gcs-sources-lifecycle-30d.md`）
 - [x] ~~**Artifact Registry cleanup**~~（2026-04-05 完成：keep 5 tagged + 清 7d untagged / 30d tagged，見 `decisions/2026-04-05-artifact-registry-cleanup.md`）
 - [x] ~~**Dashboard GCP 資源管理頁**~~（2026-04-05 完成：`/infra` 頁 + orphan cleanup 一鍵清理）
