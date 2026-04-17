@@ -4,6 +4,44 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-18 —— Deployed Source Capture（吐回部署版 Phase 1）**
+
+核心動機：使用者修完安全漏洞 + AI 幫他產 Dockerfile 後，這些成果只活在我們
+deploy-worker 的 `/tmp` 裡，deploy 完就被清掉。使用者本機還是原始有漏洞的版本，
+導致下次升版重走一樣的修補流程、看不到 AI 改了什麼、也拿不到自動生成的 Dockerfile。
+
+實作（端到端，typecheck 全過）：
+
+- ✅ **GCS bucket 建立**：`gs://wave-deploy-agent-deployed`（365 天 lifecycle），
+  `deploy-agent@` SA 有 `storage.objectAdmin`
+- ✅ **DB schema**：`deployments.deployed_source_gcs_uri TEXT`（`ADD COLUMN IF NOT EXISTS`
+  idempotent migration）
+- ✅ **shared types**：`Deployment.deployedSourceGcsUri: string | null`
+- ✅ **新 service `deployed-source-capture.ts`**：
+  - `captureDeployedSource(metadata, projectDir, gcsSourceUri)` — 優先 tar `projectDir`
+    （post-fix 版），fallback 抓 `gcsSourceUri`（原始上傳版）
+  - 自動注入 `DEPLOYMENT.md`：部署時間、Cloud Run URL、image、revision、修補數、
+    本地跑法、重新部署指令
+  - `generateDownloadSignedUrl()` — 先試 `gcloud storage sign-url`，失敗走 V4 signing
+    via IAM Credentials `signBlob`（Cloud Run 容器沒有 gcloud CLI 的 fallback）
+- ✅ **deploy-worker Step 4b**：deploy 成功 + DB 更新後呼叫 capture，**non-fatal**
+  包在 try/catch 裡，capture 失敗不影響 deploy
+- ✅ **新 endpoint**：`GET /api/projects/:id/versions/:deployId/download`
+  → 回傳 15 分鐘 signed URL + 檔名 + 過期時間
+- ✅ **權限**：`versions:read`（和 list versions 一致）
+- ✅ **Dashboard UI**：project detail 版本列表多「下載部署版」outline 按鈕，
+  只有 `deployedSourceGcsUri` 存在時才顯示；用 anchor `<a download>` 觸發瀏覽器下載
+- ✅ **i18n**：`downloadSource` + `downloadSourceHint` 加到 zh-TW 和 en
+- ✅ **commit 1681c7c**，Cloud Build 手動提交中（SHORT_SHA=$(date +%s) 繞過 Git trigger 缺失）
+- ✅ **決策檔**：`decisions/2026-04-18-deployed-source-capture.md`
+
+⚠️ **Latent bug 發現（未修，flag 到後續）**：
+pipeline-worker 套用 AI 修補到本機 `/tmp/projectDir`，但 **deploy-engine 拿的是
+原始 `gcsSourceUri`（Cloud Build 用它做 build context）**。意味著 AI 修補其實**沒有**
+進入 Docker image。目前 capture 優先用 `projectDir`（有修補），所以「使用者下載的」
+和「Cloud Build 實際建構的」不完全一致。Phase 2 要讓 pipeline-worker 修完後
+re-upload 覆蓋 gcsSourceUri，或直接改成 build 拿 projectDir。
+
 **2026-04-14（下午）—— 全部 TODO 完成 + QA**
 
 - ✅ **Cloud Build 0742969e 部署成功**（API + Web + Bot 全部更新）
@@ -259,6 +297,11 @@
 - [x] ~~**遷移 prod Cloud Run 到 deploy-agent@ SA**~~（已完成，API + Web 都用 `deploy-agent@` SA）
 
 ### 中優先
+- [x] ~~**Deployed Source Capture（吐回部署版）Phase 1**~~（2026-04-18 完成：GCS bucket 365d lifecycle + DEPLOYMENT.md + dashboard 下載按鈕 + signed URL endpoint）
+- [ ] **Deployed Source Capture Phase 2**：GitHub org 整合（per-project repo push + diff view）
+- [ ] **修 pipeline-worker → deploy-engine 的 fix 遺失 bug**（見 2026-04-18 進度）：
+      pipeline-worker 修完 projectDir 後沒回傳 GCS，deploy 時用的還是 gcsSourceUri 原版。
+      解法兩選一：(a) 修完覆蓋 gcsSourceUri；(b) deploy 直接打包 projectDir 走 Cloud Build
 - [x] ~~**Versioning Phase 2**：Preview URL per revision、版本保留策略（keep last N）、canary 失敗自動 rollback~~（2026-04-13 完成）
 - [x] ~~**Versioning Phase 3**：Git push auto-deploy（webhook）~~（2026-04-14 完成：GitHub webhook + 自動部署。Branch Deploy 待後續）
 - [ ] Terraform for agent 自身 infra（目前是手動 gcloud deploy）
@@ -303,6 +346,8 @@
 11. **Fastify plugin 超過 ~1500 行時，尾端 routes 可能不被註冊**（`tsx` 運行時 transpile 的特性）。解法：拆分大型 plugin 成多個檔案。（2026-04-13 踩坑：`projects.ts` 1615 行 → 拆出 `versioning.ts`）
 12. **Cloud Run v2 API traffic target 必須帶 `type`**：`type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION'`。不帶會 400 INVALID_ARGUMENT。
 13. **GitHub Webhook 需要 raw body 做 HMAC 驗證**。webhookRoutes 用 `addContentTypeParser('application/json', { parseAs: 'buffer' })` 覆蓋 JSON parser，Fastify plugin encapsulation 確保只影響 webhook 路由。
+14. **Cloud Run 容器沒有 gcloud CLI**。要做 GCS signed URL 的話，不能直接 `gcloud storage sign-url`（exec 會找不到）。正解：V4 signing 靠 IAM Credentials API 的 `signBlob`，SA 需要有 `iam.serviceAccountTokenCreator` on itself。`deployed-source-capture.ts` 的 `signUrlWithIamCredentials()` 是參考實作。
+15. **pipeline-worker 的 AI 修補沒有回流到 GCS**（2026-04-18 發現，未修）：pipeline-worker 套用 `applyAutoFixes()` 改 `/tmp/projectDir` 的檔案，但 deploy-engine 打包給 Cloud Build 的是 `gcsSourceUri`（原始上傳）。意味著 AI 修補**沒進 Docker image**。目前 Deployed Source Capture 用 `projectDir` 取快照（有修補），所以「dashboard 下載的」和「Cloud Run 實際跑的」可能不一致。修法二選一見 TODO 區。
 
 ### 使用者偏好（Boss 習慣）
 - 直接給結論、不要囉嗦
