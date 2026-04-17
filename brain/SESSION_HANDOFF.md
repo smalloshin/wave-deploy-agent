@@ -13,6 +13,12 @@
   - 這是 **Phase 2 enforced mode 的 blocker**——沒修 enforced 會立刻 401 整個 dashboard
   - 修法：用 node 腳本 regex 批次改，只動 fetch options 不動其他邏輯。build 通過，commit + deploy 中
 - ✅ 確認 API CORS 設定：`credentials: true` 已開（`apps/api/src/index.ts:37`），跨域 cookie 可送
+- ✅ **上線驗證通過**（Cloud Build `54c63631` SUCCESS，revision 已 rollout）
+  - A/B 測試：同一個 `/api/project-groups` 端點
+    - 3 次 with-cookie 呼叫 → audit log max_id delta **0**（認證通過不 log）
+    - 3 次 no-cookie 呼叫 → audit log max_id delta **+4**（全 `anonymous_request`）
+  - `/api/auth/me` 經由 session cookie 回傳完整 user + `via: 'session'`
+  - 🐛 **觀察陷阱**：auth middleware 設計上「成功認證不寫 audit log」，只 log anonymous/denied/login。驗證 fix 不能看「anonymous 數量是否不變」（limit=1000 會淘汰老條目讓總數恆定），要比對 max_id delta
 
 **2026-04-17（清晨 RBAC Phase 2 Step 1-3）**
 
