@@ -4,6 +4,26 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-18（晚上）—— 修 pipeline → deploy 的 fix 遺失 bug**
+
+Phase 1 上線後同一天把 flag 的 latent bug 修掉了。原問題：pipeline-worker 修的
+`projectDir`（AI 修補 + 生成的 Dockerfile）根本沒上傳回 GCS，deploy-engine
+用的還是原始 `gcsSourceUri`，所以修補從來沒進 Docker image。
+
+實作（commit `3c9d91b`）：
+
+- ✅ **pipeline-worker Step 6a**：Auto-Fix 完後 tar `projectDir` →
+  `gs://{bucket}/sources-fixed/{slug}-{ts}.tgz` → URI 寫到
+  `project.config.gcsFixedSourceUri`（jsonb merge）。非 fatal，上傳失敗 warn 不中斷
+- ✅ **deploy-worker**：`buildAndPushImage` 的 gcsSourceUri 變成
+  `gcsFixedSourceUri ?? gcsOriginalSourceUri`；port-detection fallback 同樣
+- ✅ **versioning new-version**：升版時 `gcsFixedSourceUri = undefined`
+  （JSON.stringify 會 drop 這個 key）避免用到舊的 fixed source
+- ✅ **ProjectConfig.gcsFixedSourceUri** 加到 shared types
+- ✅ 原始 `gcsSourceUri` 保留做 audit trail
+- ✅ Cloud Build 手動提交中
+- ✅ 決策檔補 Addendum 章節
+
 **2026-04-18 —— Deployed Source Capture（吐回部署版 Phase 1）**
 
 核心動機：使用者修完安全漏洞 + AI 幫他產 Dockerfile 後，這些成果只活在我們
@@ -298,10 +318,8 @@ re-upload 覆蓋 gcsSourceUri，或直接改成 build 拿 projectDir。
 
 ### 中優先
 - [x] ~~**Deployed Source Capture（吐回部署版）Phase 1**~~（2026-04-18 完成：GCS bucket 365d lifecycle + DEPLOYMENT.md + dashboard 下載按鈕 + signed URL endpoint）
+- [x] ~~**修 pipeline-worker → deploy-engine 的 fix 遺失 bug**~~（2026-04-18 同日修完：pipeline Step 6a re-upload 到 `sources-fixed/` + deploy-worker 優先用 `gcsFixedSourceUri`）
 - [ ] **Deployed Source Capture Phase 2**：GitHub org 整合（per-project repo push + diff view）
-- [ ] **修 pipeline-worker → deploy-engine 的 fix 遺失 bug**（見 2026-04-18 進度）：
-      pipeline-worker 修完 projectDir 後沒回傳 GCS，deploy 時用的還是 gcsSourceUri 原版。
-      解法兩選一：(a) 修完覆蓋 gcsSourceUri；(b) deploy 直接打包 projectDir 走 Cloud Build
 - [x] ~~**Versioning Phase 2**：Preview URL per revision、版本保留策略（keep last N）、canary 失敗自動 rollback~~（2026-04-13 完成）
 - [x] ~~**Versioning Phase 3**：Git push auto-deploy（webhook）~~（2026-04-14 完成：GitHub webhook + 自動部署。Branch Deploy 待後續）
 - [ ] Terraform for agent 自身 infra（目前是手動 gcloud deploy）
@@ -347,7 +365,7 @@ re-upload 覆蓋 gcsSourceUri，或直接改成 build 拿 projectDir。
 12. **Cloud Run v2 API traffic target 必須帶 `type`**：`type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION'`。不帶會 400 INVALID_ARGUMENT。
 13. **GitHub Webhook 需要 raw body 做 HMAC 驗證**。webhookRoutes 用 `addContentTypeParser('application/json', { parseAs: 'buffer' })` 覆蓋 JSON parser，Fastify plugin encapsulation 確保只影響 webhook 路由。
 14. **Cloud Run 容器沒有 gcloud CLI**。要做 GCS signed URL 的話，不能直接 `gcloud storage sign-url`（exec 會找不到）。正解：V4 signing 靠 IAM Credentials API 的 `signBlob`，SA 需要有 `iam.serviceAccountTokenCreator` on itself。`deployed-source-capture.ts` 的 `signUrlWithIamCredentials()` 是參考實作。
-15. **pipeline-worker 的 AI 修補沒有回流到 GCS**（2026-04-18 發現，未修）：pipeline-worker 套用 `applyAutoFixes()` 改 `/tmp/projectDir` 的檔案，但 deploy-engine 打包給 Cloud Build 的是 `gcsSourceUri`（原始上傳）。意味著 AI 修補**沒進 Docker image**。目前 Deployed Source Capture 用 `projectDir` 取快照（有修補），所以「dashboard 下載的」和「Cloud Run 實際跑的」可能不一致。修法二選一見 TODO 區。
+15. ~~**pipeline-worker 的 AI 修補沒有回流到 GCS**~~（2026-04-18 同日修完）：**分兩個 GCS URI**：`gcsSourceUri` 永遠存原始上傳做 audit；`gcsFixedSourceUri` 是 pipeline-worker Step 6a 上傳的 post-fix 版本，deploy-worker 優先使用。使用者走 `new-version` 升版時要記得清 `gcsFixedSourceUri`（已處理）。
 
 ### 使用者偏好（Boss 習慣）
 - 直接給結論、不要囉嗦
