@@ -280,5 +280,17 @@
     "saveSettingsFailed": "Failed to save settings.",
     "saving": "Saving...",
     "saveSettings": "Save Settings"
+  },
+  "auth": {
+    "title": "Wave Deploy Agent",
+    "subtitle": "Sign in to your account",
+    "email": "Email",
+    "password": "Password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in...",
+    "signOut": "Sign out",
+    "signInLink": "Sign in →",
+    "invalidCredentials": "Invalid email or password",
+    "loginFailed": "Login failed"
   }
 }

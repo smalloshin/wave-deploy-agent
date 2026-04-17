@@ -1,7 +1,9 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { useAuth } from '../lib/auth';
+import { LocaleSwitcher } from '../lib/locale-switcher';
 
 interface NavItem {
   href: string;
@@ -12,6 +14,7 @@ export function Sidebar({ items }: { items: NavItem[] }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, loading, logout } = useAuth();
+  const t = useTranslations('auth');
 
   async function handleLogout() {
     await logout();
@@ -57,6 +60,16 @@ export function Sidebar({ items }: { items: NavItem[] }) {
         })}
       </div>
 
+      {/* Locale switcher */}
+      <div style={{
+        padding: '8px 16px',
+        borderTop: '1px solid var(--border)',
+        display: 'flex',
+        justifyContent: 'flex-end',
+      }}>
+        <LocaleSwitcher />
+      </div>
+
       {/* User info / auth controls */}
       <div style={{
         padding: '12px 16px',
@@ -88,7 +101,7 @@ export function Sidebar({ items }: { items: NavItem[] }) {
                 textAlign: 'left',
               }}
             >
-              登出
+              {t('signOut')}
             </button>
           </div>
         ) : (
@@ -100,7 +113,7 @@ export function Sidebar({ items }: { items: NavItem[] }) {
               fontSize: 13,
             }}
           >
-            登入 →
+            {t('signInLink')}
           </a>
         )}
       </div>

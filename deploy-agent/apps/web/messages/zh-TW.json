@@ -280,5 +280,17 @@
     "saveSettingsFailed": "儲存設定失敗。",
     "saving": "儲存中...",
     "saveSettings": "儲存設定"
+  },
+  "auth": {
+    "title": "Wave Deploy Agent",
+    "subtitle": "登入帳號",
+    "email": "Email",
+    "password": "密碼",
+    "signIn": "登入",
+    "signingIn": "登入中...",
+    "signOut": "登出",
+    "signInLink": "登入 →",
+    "invalidCredentials": "帳號或密碼錯誤",
+    "loginFailed": "登入失敗"
   }
 }

@@ -2,11 +2,13 @@
 
 import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { useAuth } from '../../lib/auth';
 
 export default function LoginPage() {
   const { login, user, loading } = useAuth();
   const router = useRouter();
+  const t = useTranslations('auth');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +28,7 @@ export default function LoginPage() {
       await login(email, password);
       router.replace('/');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(err instanceof Error ? err.message : t('loginFailed'));
     } finally {
       setSubmitting(false);
     }
@@ -50,11 +52,11 @@ export default function LoginPage() {
         flexDirection: 'column',
         gap: 16,
       }}>
-        <h1 style={{ margin: 0, fontSize: 24 }}>Wave Deploy Agent</h1>
-        <p style={{ margin: 0, color: '#666', fontSize: 14 }}>登入帳號</p>
+        <h1 style={{ margin: 0, fontSize: 24 }}>{t('title')}</h1>
+        <p style={{ margin: 0, color: '#666', fontSize: 14 }}>{t('subtitle')}</p>
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>Email</span>
+          <span style={{ fontSize: 13 }}>{t('email')}</span>
           <input
             type="email"
             value={email}
@@ -72,7 +74,7 @@ export default function LoginPage() {
         </label>
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>密碼</span>
+          <span style={{ fontSize: 13 }}>{t('password')}</span>
           <input
             type="password"
             value={password}
@@ -114,7 +116,7 @@ export default function LoginPage() {
             fontWeight: 500,
           }}
         >
-          {submitting ? '登入中...' : '登入'}
+          {submitting ? t('signingIn') : t('signIn')}
         </button>
       </form>
     </div>
