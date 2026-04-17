@@ -321,6 +321,8 @@ export interface Deployment {
   previewUrl: string | null;
   isPublished: boolean;
   publishedAt: Date | null;
+  // Deployed source snapshot (post-fix code, gs://wave-deploy-agent-deployed/{slug}/v{n}.tgz)
+  deployedSourceGcsUri: string | null;
 }
 
 export interface CanaryResult {

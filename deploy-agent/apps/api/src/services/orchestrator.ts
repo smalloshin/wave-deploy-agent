@@ -211,6 +211,7 @@ export async function updateDeployment(
     previewUrl: string;
     isPublished: boolean;
     publishedAt: Date;
+    deployedSourceGcsUri: string;
   }>
 ): Promise<Deployment> {
   const sets: string[] = [];
@@ -231,6 +232,7 @@ export async function updateDeployment(
   if (updates.previewUrl !== undefined) { sets.push(`preview_url = $${idx++}`); params.push(updates.previewUrl); }
   if (updates.isPublished !== undefined) { sets.push(`is_published = $${idx++}`); params.push(updates.isPublished); }
   if (updates.publishedAt !== undefined) { sets.push(`published_at = $${idx++}`); params.push(updates.publishedAt); }
+  if (updates.deployedSourceGcsUri !== undefined) { sets.push(`deployed_source_gcs_uri = $${idx++}`); params.push(updates.deployedSourceGcsUri); }
 
   if (sets.length === 0) {
     const row = await getOne('SELECT * FROM deployments WHERE id = $1', [id]);
@@ -394,6 +396,7 @@ function rowToDeployment(row: Record<string, unknown>): Deployment {
     previewUrl: (row.preview_url as string) ?? null,
     isPublished: (row.is_published as boolean) ?? false,
     publishedAt: row.published_at ? new Date(row.published_at as string) : null,
+    deployedSourceGcsUri: (row.deployed_source_gcs_uri as string) ?? null,
   };
 }
 

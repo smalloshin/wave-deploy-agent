@@ -125,6 +125,7 @@ interface VersionInfo {
   publishedAt: string | null;
   deployedAt: string | null;
   createdAt: string;
+  deployedSourceGcsUri?: string | null;
 }
 
 interface ProjectDetail {
@@ -239,6 +240,27 @@ export default function ProjectDetailPage() {
       alert((err as Error).message);
     }
     setPublishing(null);
+  };
+
+  const handleDownload = async (deployId: string) => {
+    try {
+      const res = await fetch(`${API}/api/projects/${id}/versions/${deployId}/download`, { credentials: 'include' });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error ?? `HTTP ${res.status}`);
+      }
+      const { signedUrl, filename } = await res.json();
+      // Trigger download via a temporary anchor
+      const a = document.createElement('a');
+      a.href = signedUrl;
+      a.download = filename;
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err) {
+      alert((err as Error).message);
+    }
   };
 
   const handleToggleLock = async () => {
@@ -583,6 +605,19 @@ export default function ProjectDetailPage() {
                   )}
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
+                  {v.deployedSourceGcsUri && (
+                    <button
+                      onClick={() => handleDownload(v.id)}
+                      title={t('downloadSourceHint')}
+                      style={{
+                        fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                        background: 'transparent', color: 'var(--accent)',
+                        border: '1px solid var(--accent)', cursor: 'pointer',
+                      }}
+                    >
+                      {t('downloadSource')}
+                    </button>
+                  )}
                   {!v.isPublished && v.revisionName && (
                     <button
                       onClick={() => handlePublish(v.id)}

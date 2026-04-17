@@ -127,6 +127,8 @@
     "lockDeploy": "Lock Deploys",
     "publishing": "Publishing...",
     "publishVersion": "Publish This Version",
+    "downloadSource": "Download Deployed",
+    "downloadSourceHint": "Download the exact code that was deployed (with AI fixes + auto-generated Dockerfile), continue from a secure baseline",
     "githubAutoDeploy": "GitHub Auto-Deploy",
     "autoDeploy": "Auto-Deploy",
     "removeWebhook": "Remove Webhook Config",

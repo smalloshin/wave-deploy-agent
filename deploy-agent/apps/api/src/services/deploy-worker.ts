@@ -24,6 +24,7 @@ import { provisionProjectDatabase } from './db-provisioner';
 import { provisionProjectRedis } from './redis-provisioner';
 import { restoreDbDump } from './db-restore';
 import { notifyDeployComplete, notifyCanaryFailed, notifyDeployFailed } from './discord-notifier';
+import { captureDeployedSource } from './deployed-source-capture';
 
 export async function runDeployPipeline(
   projectId: string,
@@ -617,6 +618,35 @@ export async function runDeployPipeline(
       revisionName: deployResult.revisionName,
       previewUrl,
     });
+
+    // ── Step 4b: Capture deployed source (post-fix code + Dockerfile) ──
+    // 把實際部署的 code 存到長期 bucket，讓使用者能下載回去「從安全基準繼續開發」。
+    // 失敗不會中斷 deploy（只 log warning）。
+    try {
+      const latestScan = await getLatestScanReport(projectId);
+      const autoFixCount = Array.isArray(latestScan?.autoFixes)
+        ? (latestScan.autoFixes as Array<{ applied: boolean }>).filter((f) => f.applied).length
+        : 0;
+      const capture = await captureDeployedSource(
+        {
+          projectName: project.name,
+          projectSlug: project.slug,
+          version: deployVersion,
+          cloudRunUrl: deployResult.serviceUrl,
+          customDomain: null, // set later during SSL step if applicable
+          imageUri: deployResult.imageUri ?? buildResult.imageUri,
+          revisionName: deployResult.revisionName ?? null,
+          deployedAt: new Date(),
+          autoFixesApplied: autoFixCount,
+        },
+        projectDir,
+        gcsSourceUri,
+      );
+      await updateDeployment(deployment.id, { deployedSourceGcsUri: capture.gcsUri });
+      console.log(`[Deploy]   Captured deployed source: ${capture.gcsUri} (${capture.sourceBytes} bytes, from ${capture.capturedFrom})`);
+    } catch (captureErr) {
+      console.warn(`[Deploy]   Deployed-source capture failed (non-fatal): ${(captureErr as Error).message}`);
+    }
 
     // Cache last-deployed image so /start can restart the service without rebuilding
     try {

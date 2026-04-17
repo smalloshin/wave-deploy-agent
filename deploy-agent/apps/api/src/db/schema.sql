@@ -121,6 +121,12 @@ ALTER TABLE deployments ADD COLUMN IF NOT EXISTS preview_url TEXT;
 ALTER TABLE deployments ADD COLUMN IF NOT EXISTS is_published BOOLEAN DEFAULT false;
 ALTER TABLE deployments ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
 
+-- Deployed source snapshot — post-fix code (with generated Dockerfile) captured
+-- at the moment of successful deploy. Stored long-term so users can download
+-- the exact deployed version and continue development from a secure baseline.
+-- Lives in gs://wave-deploy-agent-deployed/{slug}/v{version}.tgz (365d lifecycle).
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS deployed_source_gcs_uri TEXT;
+
 -- Projects: deploy lock prevents auto-publish; published_deployment_id tracks active version
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS published_deployment_id UUID REFERENCES deployments(id);
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS deploy_locked BOOLEAN DEFAULT false;

@@ -22,6 +22,7 @@ import {
 } from '../services/orchestrator';
 import { runPipeline } from '../services/pipeline-worker';
 import { publishRevision, deleteRevision } from '../services/deploy-engine';
+import { generateDownloadSignedUrl } from '../services/deployed-source-capture';
 
 const execFileAsync = promisify(execFile);
 
@@ -50,6 +51,7 @@ export async function versioningRoutes(app: FastifyInstance) {
         publishedAt: d.publishedAt,
         deployedAt: d.deployedAt,
         createdAt: d.createdAt,
+        deployedSourceGcsUri: d.deployedSourceGcsUri,
       })),
       publishedDeploymentId: deployments.find(d => d.isPublished)?.id ?? null,
       deployLocked: project.config?.deployLocked === true,
@@ -263,5 +265,42 @@ export async function versioningRoutes(app: FastifyInstance) {
     }
   );
 
-  app.log.info('[versioning] 5 versioning routes registered successfully');
+  // Download the deployed source snapshot (post-fix code + generated Dockerfile)
+  // Returns a 15-minute signed URL pointing at gs://wave-deploy-agent-deployed/{slug}/v{n}.tgz
+  app.get<{ Params: { id: string; deployId: string } }>(
+    '/api/projects/:id/versions/:deployId/download',
+    async (request, reply) => {
+      const project = await getProject(request.params.id);
+      if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+      const deployments = await getDeploymentsByProject(project.id);
+      const target = deployments.find((d) => d.id === request.params.deployId);
+      if (!target) return reply.status(404).send({ error: 'Deployment not found' });
+
+      if (!target.deployedSourceGcsUri) {
+        return reply.status(404).send({
+          error: '本部署沒有留存 source 快照',
+          hint: '可能是舊版部署（2026-04-17 之前）或 capture 當時失敗。重新部署一次會自動建立快照。',
+        });
+      }
+
+      try {
+        const signedUrl = await generateDownloadSignedUrl(target.deployedSourceGcsUri, 15);
+        return {
+          signedUrl,
+          expiresInMinutes: 15,
+          gcsUri: target.deployedSourceGcsUri,
+          version: target.version,
+          filename: `${project.slug}-v${target.version}.tgz`,
+        };
+      } catch (err) {
+        app.log.error({ err }, 'Failed to generate signed URL');
+        return reply.status(500).send({
+          error: `產生下載連結失敗：${(err as Error).message}`,
+        });
+      }
+    }
+  );
+
+  app.log.info('[versioning] 6 versioning routes registered successfully');
 }

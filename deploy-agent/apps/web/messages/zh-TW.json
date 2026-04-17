@@ -127,6 +127,8 @@
     "lockDeploy": "鎖定部署",
     "publishing": "發佈中...",
     "publishVersion": "發佈此版本",
+    "downloadSource": "下載部署版",
+    "downloadSourceHint": "下載當時實際部署的 code（含 AI 修補與自動產生的 Dockerfile），從安全基準繼續開發",
     "githubAutoDeploy": "GitHub 自動部署",
     "autoDeploy": "自動部署",
     "removeWebhook": "移除 Webhook 設定",
