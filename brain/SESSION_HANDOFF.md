@@ -4,6 +4,24 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-17（中午 MCP key + SKILL.md Bearer）**
+
+- ✅ **Bot API key 已上線**（raw key: `da_k_ebe3...`，已掛到 `deploy-agent-bot` Cloud Run 的 `DEPLOY_AGENT_API_KEY`）
+  - Secret Manager: `deploy-agent-bot-api-key`（SA 已授權）
+  - Permissions: `projects:read`, `reviews:*`, `deploys:read`, `versions:*`, `projects:deploy`
+- ✅ **本機 MCP API key 建立**（admin 級別 `["*"]`）
+  - Key name: `MCP Local (smalloshin@macbook)`
+  - **Raw key**: `da_k_3eecdeef843b27a675b57aea638a80062aa14b284e189836`
+  - 用途：`skills/wave-deploy/SKILL.md` + `skills/deploy-agent/SKILL.md` 的 curl 呼叫
+  - 驗證 `/api/auth/users` 回 200（admin 權限通）
+  - ⚠️ 使用者還需在 `~/.zshrc` 加 `export DEPLOY_AGENT_API_KEY="da_k_3eecdeef..."`，這是手動步驟
+- ✅ **SKILL.md 全部 curl 加 Bearer header**（commit `74445cd`）
+  - `skills/wave-deploy/SKILL.md`：14 處 curl 加 `-H "Authorization: Bearer $DEPLOY_AGENT_API_KEY"`
+  - `skills/deploy-agent/SKILL.md`：15 處 curl 同步更新
+  - 兩份都加上 🔑 認證 preamble section 說明 env var 需求
+  - 這是 RBAC Phase 3（enforced mode）的 prereq——切 enforced 後沒帶 header 的 curl 全 401
+- 📝 **MCP server 的狀態澄清**：目前 wave-deploy-agent 的 MCP 是 HTTP endpoints `/api/mcp/tools/*`，不是 stdio SDK server。SKILL.md 寫的是 Claude Code 用 Bash 工具呼叫 curl 到 API，不是用 MCP client 協定。未來要做 stdio MCP server 才能讓 Claude Desktop 直接裝。
+
 **2026-04-17（清晨 credentials fix）**
 
 - ✅ **修 dashboard 全部 fetch() 加 credentials: 'include'**（commit `1e26dcb`）
