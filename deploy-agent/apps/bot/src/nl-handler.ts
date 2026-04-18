@@ -205,7 +205,7 @@ async function callLLM(
   if (!openai) throw new Error('沒有可用的 LLM API key');
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: process.env.OPENAI_MODEL ?? 'gpt-5.4',
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       ...messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),

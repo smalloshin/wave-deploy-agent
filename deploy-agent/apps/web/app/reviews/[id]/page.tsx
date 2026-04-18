@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import ReactMarkdown from 'react-markdown';
+import { useAuth } from '../../../lib/auth';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -41,6 +42,7 @@ interface ReviewData {
 export default function ReviewDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const { user } = useAuth();
   const id = params.id as string;
   const [review, setReview] = useState<ReviewData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -53,6 +55,11 @@ export default function ReviewDetailPage() {
   const [email, setEmail] = useState('');
   const [comments, setComments] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Pre-fill reviewer email from logged-in user
+  useEffect(() => {
+    if (user?.email && !email) setEmail(user.email);
+  }, [user, email]);
 
   useEffect(() => {
     fetch(`${API}/api/reviews/${id}`, { credentials: 'include' })

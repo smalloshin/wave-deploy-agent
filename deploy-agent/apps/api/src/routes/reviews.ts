@@ -10,7 +10,8 @@ import { runDeployPipeline } from '../services/deploy-worker';
 
 const reviewSchema = z.object({
   decision: z.enum(['approved', 'rejected']),
-  reviewerEmail: z.string().email(),
+  // reviewerEmail is optional — falls back to authenticated user's email when absent
+  reviewerEmail: z.string().email().optional(),
   comments: z.string().optional(),
 });
 
@@ -62,7 +63,20 @@ export async function reviewRoutes(app: FastifyInstance) {
 
   // Submit review decision
   app.post<{ Params: { id: string } }>('/api/reviews/:id/decide', async (request, reply) => {
-    const body = reviewSchema.parse(request.body);
+    const parsed = reviewSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: 'Invalid input',
+        details: parsed.error.flatten(),
+      });
+    }
+    const body = parsed.data;
+
+    // Resolve reviewer email: prefer authenticated user, fall back to body
+    const reviewerEmail = request.auth?.user?.email ?? body.reviewerEmail;
+    if (!reviewerEmail) {
+      return reply.status(400).send({ error: 'Reviewer email is required (log in or pass reviewerEmail)' });
+    }
 
     // Get the review and associated project
     const reviewResult = await query(
@@ -84,14 +98,14 @@ export async function reviewRoutes(app: FastifyInstance) {
     const review = await submitReview(
       request.params.id,
       body.decision,
-      body.reviewerEmail,
+      reviewerEmail,
       body.comments
     );
 
     // Transition project state
     const projectId = reviewRow.project_id as string;
     if (body.decision === 'approved') {
-      await transitionProject(projectId, 'approved', body.reviewerEmail, {
+      await transitionProject(projectId, 'approved', reviewerEmail, {
         reviewId: request.params.id,
         comments: body.comments,
       });
@@ -101,7 +115,7 @@ export async function reviewRoutes(app: FastifyInstance) {
         console.error(`[Deploy] Async dispatch failed for ${projectId}:`, (err as Error).message);
       });
     } else {
-      await transitionProject(projectId, 'rejected', body.reviewerEmail, {
+      await transitionProject(projectId, 'rejected', reviewerEmail, {
         reviewId: request.params.id,
         reason: body.comments,
       });

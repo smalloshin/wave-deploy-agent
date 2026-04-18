@@ -137,6 +137,7 @@ function UsersSection() {
   const [users, setUsers] = useState<User[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [passwordUser, setPasswordUser] = useState<User | null>(null);
 
   async function refresh() {
     try {
@@ -248,6 +249,12 @@ function UsersSection() {
               </td>
               <td style={td}>
                 <button
+                  onClick={() => setPasswordUser(u)}
+                  style={{ ...btnGhost, marginRight: 4 }}
+                >
+                  {t('changePassword')}
+                </button>
+                <button
                   onClick={() => handleDelete(u.id)}
                   disabled={u.id === me?.id}
                   className="btn-delete"
@@ -260,6 +267,71 @@ function UsersSection() {
           ))}
         </tbody>
       </table>
+
+      {passwordUser && (
+        <ChangePasswordModal
+          user={passwordUser}
+          onClose={() => setPasswordUser(null)}
+          onDone={() => { setPasswordUser(null); refresh(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChangePasswordModal({ user, onClose, onDone }: { user: User; onClose: () => void; onDone: () => void }) {
+  const t = useTranslations('admin.users');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (password !== confirm) { setError(t('passwordMismatch')); return; }
+    if (password.length < 8) { setError(t('passwordTooShort')); return; }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await apiSend(`/api/auth/users/${user.id}`, 'PATCH', { password });
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Update failed');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+    }} onClick={onClose}>
+      <form
+        onSubmit={handleSubmit}
+        onClick={e => e.stopPropagation()}
+        style={{ ...card, width: 400, background: 'var(--surface-raised)' }}
+      >
+        <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>{t('changePasswordTitle')}</h3>
+        <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>{user.email}</div>
+        <input
+          required type="password" placeholder={t('newPassword')}
+          value={password} onChange={e => setPassword(e.target.value)}
+          style={{ ...inputStyle, marginBottom: 8 }} minLength={8} autoFocus
+        />
+        <input
+          required type="password" placeholder={t('confirmPassword')}
+          value={confirm} onChange={e => setConfirm(e.target.value)}
+          style={{ ...inputStyle, marginBottom: 12 }} minLength={8}
+        />
+        {error && <div style={{ color: 'var(--status-critical)', marginBottom: 12, fontSize: 13 }}>{error}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onClose} style={btnGhost}>{t('cancel')}</button>
+          <button type="submit" disabled={submitting} style={btnPrimary}>
+            {submitting ? t('saving') : t('save')}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

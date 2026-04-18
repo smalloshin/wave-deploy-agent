@@ -320,7 +320,15 @@
       "delete": "Delete",
       "cancel": "Cancel",
       "creating": "Creating...",
-      "create": "Create"
+      "create": "Create",
+      "changePassword": "Change Password",
+      "changePasswordTitle": "Change Password",
+      "newPassword": "New password (min 8 chars)",
+      "confirmPassword": "Confirm new password",
+      "passwordMismatch": "Passwords do not match",
+      "passwordTooShort": "Password must be at least 8 characters",
+      "saving": "Saving...",
+      "save": "Save"
     },
     "apiKeys": {
       "count": "{count} API keys total",

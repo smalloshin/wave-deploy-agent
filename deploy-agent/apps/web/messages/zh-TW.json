@@ -320,7 +320,15 @@
       "delete": "刪除",
       "cancel": "取消",
       "creating": "建立中...",
-      "create": "建立"
+      "create": "建立",
+      "changePassword": "改密碼",
+      "changePasswordTitle": "變更密碼",
+      "newPassword": "新密碼（至少 8 字）",
+      "confirmPassword": "再次輸入新密碼",
+      "passwordMismatch": "兩次輸入的密碼不一致",
+      "passwordTooShort": "密碼至少需要 8 個字元",
+      "saving": "儲存中...",
+      "save": "儲存"
     },
     "apiKeys": {
       "count": "共 {count} 把 API 金鑰",
