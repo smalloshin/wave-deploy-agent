@@ -4,6 +4,37 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-19（晚上）—— 部署失敗分析加「使用者面向／管理員面向」雙面向（commit `27ba13b`）**
+
+使用者明確指出目前的錯誤訊息是管理員面向的（IAM、bucket、SA 等術語），
+但使用者面向的訊息才應該是主要顯示內容。需求：
+> 「可能是 code 錯，或是我們的 code 錯。我必須要能夠讓使用者與管理員看到
+> 到底是誰的錯，誰需要修正，修正哪裡」
+
+**`BuildFailureAnalysis` 型別擴充**：
+- `ownership: 'user' | 'platform' | 'environment' | 'unknown'` — **最重要的新欄位**
+- `userFacingMessage` — 使用者面向，禁用 infra 術語
+- `adminFacingMessage` — 管理員面向，技術細節
+- `userActionable` / `platformActionable` — 誰要行動
+
+**LLM prompt 明確要求拆兩面向**：
+- User 語氣像朋友說話，告訴他「你的 X 第 Y 行改成 Z」
+- Platform 問題明確告訴使用者「這不是你的錯」
+- 沒給 ownership 時靠 category auto-infer
+  （user_code/dep/config/runtime→user / infra→platform / network→environment）
+
+**Dashboard UI 重寫**：
+- Ownership pill 最醒目（👤 你的程式碼需要修正 / 🔧 平台問題，管理員處理中 /
+  🌐 環境問題 / ❓ 判斷不出來）用不同色調
+- 使用者面向訊息放最上、用 ownership 色調 highlight
+- **管理員技術細節**折疊在 `isAdmin && showAdminDetail` 區塊，非 admin 完全看不到
+- admin 區內含 adminFacingMessage / rootCause / actionable 狀態 / raw error / stack
+- `useAuth()` → `role_name === 'admin' || permissions.includes('*')` 判斷
+
+**寫入點都更新**：deploy-worker（第一次失敗）+ reanalyze-failure endpoint（回填舊失敗）
+
+---
+
 **2026-04-19（傍晚）—— Reanalyze 拿不到 log 的踩雷 + 自有 bucket 修法**
 
 使用者測試第一版 reanalyze 對 gam-publisher 沒效，LLM 產出「未知 / 一堆通用排查清單」。
