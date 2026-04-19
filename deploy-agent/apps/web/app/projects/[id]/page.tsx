@@ -143,6 +143,7 @@ export default function ProjectDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryingDomain, setRetryingDomain] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
   const [showEnvEditor, setShowEnvEditor] = useState(false);
   const [versions, setVersions] = useState<VersionInfo[]>([]);
   const [deployLocked, setDeployLocked] = useState(false);
@@ -227,6 +228,19 @@ export default function ProjectDetailPage() {
       alert((err as Error).message);
     }
     setRetryingDomain(false);
+  };
+
+  const handleReanalyze = async () => {
+    setReanalyzing(true);
+    try {
+      const res = await fetch(`${API}/api/projects/${id}/reanalyze-failure`, { credentials: 'include', method: 'POST' });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
+      await loadDetail();
+    } catch (err) {
+      alert((err as Error).message);
+    }
+    setReanalyzing(false);
   };
 
   const handlePublish = async (deployId: string) => {
@@ -540,11 +554,30 @@ export default function ProjectDetailPage() {
                 ) : null}
               </div>
             ) : (
-              // Fallback：沒有 LLM 診斷（舊資料或 LLM 失敗）時秀原始錯誤
+              // Fallback：沒有 LLM 診斷（舊資料或 LLM 失敗）時秀原始錯誤 + 提供 reanalyze 按鈕
               <>
                 {meta.error ? (
                   <div style={codeBlockStyle}>{String(meta.error)}</div>
                 ) : null}
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn"
+                    onClick={handleReanalyze}
+                    disabled={reanalyzing}
+                    style={{
+                      background: 'rgba(88,166,255,0.12)',
+                      border: '1px solid rgba(88,166,255,0.35)',
+                      color: 'var(--accent-blue, #58a6ff)',
+                      fontSize: 12,
+                      padding: '6px 12px',
+                    }}
+                  >
+                    {reanalyzing ? '分析中…' : '🤖 用 AI 重新分析失敗原因'}
+                  </button>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                    抓取 Cloud Build log 並用 Claude/GPT 產出診斷報告
+                  </span>
+                </div>
               </>
             )}
 

@@ -24,6 +24,7 @@ export const ROUTE_PERMISSIONS: Array<[string, Permission]> = [
   ['POST:/api/projects/:id/new-version', 'projects:deploy'],
   ['POST:/api/projects/:id/deploy-lock', 'projects:deploy'],
   ['POST:/api/projects/:id/versions/cleanup', 'projects:deploy'],
+  ['POST:/api/projects/:id/reanalyze-failure', 'projects:deploy'],
   ['POST:/api/projects/:id/versions/:did/publish', 'versions:publish'],
   ['GET:/api/projects/:id/versions', 'versions:read'],
   ['GET:/api/projects/:id/versions/:did/download', 'versions:read'],

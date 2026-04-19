@@ -1081,6 +1081,89 @@ export async function projectRoutes(app: FastifyInstance) {
     };
   });
 
+  // Re-run LLM analysis on the latest failed transition (backfill for old failures that predate the LLM path)
+  app.post<{ Params: { id: string } }>('/api/projects/:id/reanalyze-failure', async (request, reply) => {
+    const project = await getProject(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    const { query: dbQuery } = await import('../db/index');
+    const latestFailed = await dbQuery(
+      `SELECT * FROM state_transitions
+       WHERE project_id = $1 AND to_state = 'failed'
+       ORDER BY created_at DESC LIMIT 1`,
+      [project.id],
+    );
+    if (latestFailed.rows.length === 0) {
+      return reply.status(404).send({ error: 'No failed transition found for this project' });
+    }
+
+    const transition = latestFailed.rows[0] as { id: string; metadata: Record<string, unknown> };
+    const meta = transition.metadata ?? {};
+    const errorMessage = typeof meta.error === 'string' ? meta.error : 'Unknown error';
+    const failedStep = typeof meta.failedStep === 'string' ? meta.failedStep : 'Unknown step';
+
+    // Extract Cloud Build ID from error string (if any) and re-fetch log
+    let buildLog = '';
+    const buildIdMatch = errorMessage.match(/builds\/([a-f0-9-]{36})/i);
+    if (buildIdMatch) {
+      const buildId = buildIdMatch[1];
+      const gcpProject = process.env.GCP_PROJECT ?? 'wave-deploy-agent';
+      try {
+        const metaUrl = `https://cloudbuild.googleapis.com/v1/projects/${gcpProject}/builds/${buildId}`;
+        const metaRes = await gcpFetch(metaUrl);
+        if (metaRes.ok) {
+          const metaJson = await metaRes.json() as { logsBucket?: string };
+          if (metaJson.logsBucket) {
+            const bucket = metaJson.logsBucket.replace('gs://', '');
+            const logUrl = `https://storage.googleapis.com/storage/v1/b/${bucket}/o/${encodeURIComponent(`log-${buildId}.txt`)}?alt=media`;
+            const logRes = await gcpFetch(logUrl);
+            if (logRes.ok) {
+              buildLog = await logRes.text();
+              console.log(`[Reanalyze] Fetched build log: ${buildLog.length} chars for build ${buildId}`);
+            } else {
+              console.warn(`[Reanalyze] Build log fetch returned HTTP ${logRes.status}`);
+            }
+          }
+        } else {
+          console.warn(`[Reanalyze] Build metadata HTTP ${metaRes.status} for ${buildId}`);
+        }
+      } catch (err) {
+        console.warn(`[Reanalyze] Build log fetch threw: ${(err as Error).message}`);
+      }
+    }
+
+    // Run LLM analysis
+    const { analyzeDeployFailure } = await import('../services/llm-analyzer');
+    const diagnosis = await analyzeDeployFailure(failedStep, errorMessage, buildLog, project.name);
+    console.log(`[Reanalyze] Diagnosis: [${diagnosis.category}] ${diagnosis.summary} (provider=${diagnosis.provider})`);
+
+    // Merge buildDiagnosis into the existing transition's metadata
+    await dbQuery(
+      `UPDATE state_transitions
+         SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
+       WHERE id = $2`,
+      [
+        JSON.stringify({
+          buildDiagnosis: {
+            category: diagnosis.category,
+            summary: diagnosis.summary,
+            rootCause: diagnosis.rootCause,
+            suggestedFix: diagnosis.suggestedFix,
+            errorLocation: diagnosis.errorLocation,
+            errorSnippet: diagnosis.errorSnippet,
+            extraObservations: diagnosis.extraObservations,
+            step: diagnosis.step,
+            provider: diagnosis.provider,
+            reanalyzedAt: new Date().toISOString(),
+          },
+        }),
+        transition.id,
+      ],
+    );
+
+    return { diagnosis };
+  });
+
   // Resubmit/retry project (from needs_revision or failed) — re-triggers pipeline
   app.post<{ Params: { id: string } }>('/api/projects/:id/resubmit', async (request, reply) => {
     const project = await getProject(request.params.id);
