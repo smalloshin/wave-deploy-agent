@@ -141,22 +141,20 @@ export async function buildAndPushImage(
         return { success: true, imageUri, error: null };
       }
       if (status.status === 'FAILURE' || status.status === 'INTERNAL_ERROR' || status.status === 'TIMEOUT' || status.status === 'CANCELLED') {
-        // Try to fetch build log for detailed error
+        // Try to fetch build log for detailed error — failures here must NOT be silent,
+        // because the downstream LLM analyzer depends on buildLog being populated.
         let detailMsg = status.statusDetail ?? 'no details';
         let fullBuildLog = '';
         try {
           const logUrl = `https://cloudbuild.googleapis.com/v1/projects/${config.gcpProject}/builds/${buildId}`;
           const logRes = await gcpFetch(logUrl);
-          if (logRes.ok) {
+          if (!logRes.ok) {
+            console.warn(`[Deploy]   Cloud Build metadata fetch failed: HTTP ${logRes.status}`);
+          } else {
             const logData = await logRes.json() as { logUrl?: string; logsBucket?: string; failureInfo?: { detail?: string; type?: string }; statusDetail?: string };
-            if (logData.failureInfo?.detail) {
-              detailMsg = logData.failureInfo.detail;
-            } else if (logData.statusDetail) {
-              detailMsg = logData.statusDetail;
-            }
-            if (logData.logUrl) {
-              detailMsg += ` | Logs: ${logData.logUrl}`;
-            }
+            if (logData.failureInfo?.detail) detailMsg = logData.failureInfo.detail;
+            else if (logData.statusDetail) detailMsg = logData.statusDetail;
+            if (logData.logUrl) detailMsg += ` | Logs: ${logData.logUrl}`;
             // Fetch full build log from GCS (Cloud Build stores logs as log-{buildId}.txt)
             if (logData.logsBucket) {
               try {
@@ -165,13 +163,22 @@ export async function buildAndPushImage(
                 const logTextRes = await gcpFetch(logObjUrl);
                 if (logTextRes.ok) {
                   fullBuildLog = await logTextRes.text();
-                  console.log(`[Deploy]   Fetched build log: ${fullBuildLog.length} chars`);
+                  console.log(`[Deploy]   Fetched build log: ${fullBuildLog.length} chars (${bucket})`);
+                } else {
+                  console.warn(`[Deploy]   Build log fetch failed: HTTP ${logTextRes.status} on ${bucket}/log-${buildId}.txt`);
                 }
-              } catch { /* ignore log text fetch errors */ }
+              } catch (logErr) {
+                console.warn(`[Deploy]   Build log fetch threw: ${(logErr as Error).message}`);
+              }
+            } else {
+              console.warn(`[Deploy]   Cloud Build returned no logsBucket for build ${buildId}`);
             }
           }
-        } catch { /* ignore log fetch errors */ }
-        // Attach build log to error for LLM analysis
+        } catch (metaErr) {
+          console.warn(`[Deploy]   Cloud Build metadata fetch threw: ${(metaErr as Error).message}`);
+        }
+        // Attach build log to error for LLM analysis. Even when buildLog is empty,
+        // detailMsg alone is useful — LLM can still reason about the Cloud Build API response.
         const err = new Error(`Cloud Build ${status.status}: ${detailMsg}`);
         (err as Error & { buildLog?: string }).buildLog = fullBuildLog;
         throw err;

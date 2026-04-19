@@ -209,11 +209,11 @@ Respond with JSON:
   }
 }
 
-// ─── Build Failure Analysis (LLM-powered) ───
+// ─── Deploy Failure Analysis (LLM-powered) ───
 
 export interface BuildFailureAnalysis {
-  /** 'user_code' = 使用者程式碼問題, 'infra' = 基礎設施/設定問題, 'unknown' = 無法判斷 */
-  category: 'user_code' | 'infra' | 'dependency' | 'config' | 'unknown';
+  /** 問題分類 */
+  category: 'user_code' | 'infra' | 'dependency' | 'config' | 'runtime' | 'network' | 'unknown';
   /** 一句話摘要（繁體中文） */
   summary: string;
   /** 錯誤的根本原因 */
@@ -222,94 +222,126 @@ export interface BuildFailureAnalysis {
   suggestedFix: string;
   /** 出問題的檔案和行號（如果能從 log 判斷） */
   errorLocation: string | null;
+  /** 錯誤原始片段（code/log 擷取，給 UI 用 <pre> 顯示） */
+  errorSnippet: string | null;
+  /** 附加觀察（非主要原因，但值得注意的警告或副作用） */
+  extraObservations: string | null;
+  /** 失敗發生在哪個步驟（Step 3 Build / Step 4 Deploy / ...） */
+  step: string | null;
   /** LLM provider */
   provider: 'claude' | 'gpt' | 'fallback';
 }
 
+function fallbackAnalysis(
+  errorMessage: string,
+  step: string | null,
+  note: string,
+): BuildFailureAnalysis {
+  return {
+    category: 'unknown',
+    summary: `${step ?? '部署'} 失敗：${errorMessage.slice(0, 100)}`,
+    rootCause: errorMessage,
+    suggestedFix: note,
+    errorLocation: null,
+    errorSnippet: null,
+    extraObservations: null,
+    step,
+    provider: 'fallback',
+  };
+}
+
 /**
- * 用 LLM 分析 Docker build / Cloud Build 失敗的 log，
- * 判斷是使用者程式碼問題還是基礎設施問題，
- * 回傳友善的錯誤訊息和修復建議。
+ * 用 LLM 分析部署 pipeline 任一 step 的失敗原因。
+ * 支援：Docker build、Cloud Run deploy、provisioning、DB restore 等所有步驟。
+ *
+ * @param step 失敗的步驟（e.g. "Step 3: Build Docker image (Cloud Build)"）
+ * @param errorMessage 拋出的 error message
+ * @param logs 相關 log（build log、stderr、API response 等，可為空字串）
+ * @param projectName 專案名稱
+ */
+export async function analyzeDeployFailure(
+  step: string,
+  errorMessage: string,
+  logs: string,
+  projectName: string,
+): Promise<BuildFailureAnalysis> {
+  if (!anthropic && !openai) {
+    return fallbackAnalysis(errorMessage, step, 'LLM 不可用，請查看 Cloud Build / Cloud Run log');
+  }
+
+  // 取 log 的最後 8000 字元（錯誤通常在尾端）
+  const logTail = logs.length > 8000 ? logs.slice(-8000) : logs;
+  const hasLog = logTail.trim().length > 0;
+
+  const system = `你是一位資深 DevOps 工程師，專門協助使用者排查雲端部署 pipeline 的失敗。
+你會看到某個部署步驟的錯誤訊息（以及如果有的話，build log 或 stderr），
+請根據資訊判斷根本原因，並給使用者可直接操作的修復建議。
+
+判斷原則：
+- user_code：使用者程式碼編譯/執行錯誤（TypeScript type error、ESLint、runtime exception、missing import 等）
+- dependency：套件安裝/版本相關（npm install 失敗、peer dependency conflict、lock file 問題）
+- config：Dockerfile / next.config.js / env 設定錯誤、port 不對、starter command 錯誤
+- runtime：container 啟動後 crash（missing env var、DB connection 失敗、port binding）
+- network：DNS、outbound 連線、TLS、SSL cert 等
+- infra：GCP quota、Cloud Build/Run 本身故障、IAM 權限、GCS 存取
+- unknown：資訊不足以判斷
+
+**errorLocation**：如果 log 裡有 "檔案:行號"（e.g. "src/app/foo.ts:47" 或 "route.ts:47:67"）請填在這裡，否則 null
+**errorSnippet**：從 log 擷取最能說明問題的 3-8 行原文（含檔名/行號/錯誤訊息/周邊程式碼），保留原始格式，用於 UI 直接顯示給使用者。沒有就 null
+**extraObservations**：log 裡看到但不是本次失敗主因的警告或副作用（e.g. Next.js deprecation warnings、config 過時），沒有就 null
+**suggestedFix**：直接寫給使用者看的 actionable 步驟，要具體到「打開哪個檔案第幾行，把 X 改成 Y」，可以條列。
+
+用繁體中文回答，語氣直接明確，不要寒暄。
+
+回應格式（僅 JSON，不要 markdown fence）：
+{"category":"...","summary":"一句話摘要","rootCause":"根本原因詳細說明","suggestedFix":"具體修復步驟","errorLocation":"檔案:行號 或 null","errorSnippet":"log 原文擷取或 null","extraObservations":"附加觀察或 null"}`;
+
+  const userMessage = `專案名稱：${projectName}
+失敗步驟：${step}
+錯誤訊息：${errorMessage}
+
+${hasLog ? `相關 log（最後部分）：\n\`\`\`\n${logTail}\n\`\`\`` : '（沒有可用的 log，請僅根據錯誤訊息推理）'}`;
+
+  try {
+    const result = await callLLM(system, userMessage, 2000);
+    const jsonMatch = result.text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      console.warn('[LLM-Deploy] No JSON in response');
+      return {
+        ...fallbackAnalysis(errorMessage, step, '請查看 Cloud Build / Cloud Run log 了解詳情'),
+        provider: result.provider,
+      };
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as Partial<BuildFailureAnalysis>;
+    const validCategories = ['user_code', 'dependency', 'config', 'runtime', 'network', 'infra', 'unknown'];
+    return {
+      category: validCategories.includes(parsed.category as string) ? (parsed.category as BuildFailureAnalysis['category']) : 'unknown',
+      summary: parsed.summary || `${step} 失敗：${errorMessage.slice(0, 80)}`,
+      rootCause: parsed.rootCause || errorMessage,
+      suggestedFix: parsed.suggestedFix || '請查看 Cloud Build / Cloud Run log 了解詳情',
+      errorLocation: parsed.errorLocation || null,
+      errorSnippet: parsed.errorSnippet || null,
+      extraObservations: parsed.extraObservations || null,
+      step,
+      provider: result.provider,
+    };
+  } catch (err) {
+    console.warn(`[LLM-Deploy] Analysis failed: ${(err as Error).message}`);
+    return fallbackAnalysis(errorMessage, step, '請查看 Cloud Build / Cloud Run log 了解詳情');
+  }
+}
+
+/**
+ * 向下相容：舊的 analyzeBuildFailure() 包裝為 analyzeDeployFailure()。
+ * 新程式碼請直接用 analyzeDeployFailure()。
  */
 export async function analyzeBuildFailure(
   buildLog: string,
   errorMessage: string,
   projectName: string,
 ): Promise<BuildFailureAnalysis> {
-  if (!anthropic && !openai) {
-    return {
-      category: 'unknown',
-      summary: 'LLM 不可用，無法分析 build 失敗原因',
-      rootCause: errorMessage,
-      suggestedFix: '請查看 Cloud Build log 了解詳情',
-      errorLocation: null,
-      provider: 'fallback',
-    };
-  }
-
-  // 取 log 的最後 6000 字元（錯誤通常在尾端）
-  const logTail = buildLog.length > 6000 ? buildLog.slice(-6000) : buildLog;
-
-  const system = `你是一位資深 DevOps 工程師，專門分析 Docker build 和 Cloud Build 的失敗原因。
-
-你的任務：
-1. 從 build log 判斷失敗的根本原因
-2. 分類問題類型：user_code（使用者程式碼錯誤）、dependency（套件/依賴問題）、config（Dockerfile/設定問題）、infra（GCP/Cloud Build 基礎設施問題）
-3. 給出具體的修復建議，要具體到檔案名和行號（如果 log 有提供）
-4. 用繁體中文回答，語氣直接明確
-
-常見的 user_code 問題：TypeScript 編譯錯誤、ESLint 錯誤、missing import、type error
-常見的 dependency 問題：npm install 失敗、版本衝突、missing peer dependency
-常見的 config 問題：Dockerfile 語法錯誤、missing Dockerfile、錯誤的 build 指令
-常見的 infra 問題：GCS 存取失敗、Cloud Build quota、網路錯誤、auth 問題
-
-回應格式（僅 JSON）：
-{"category":"user_code|dependency|config|infra|unknown","summary":"一句話摘要","rootCause":"根本原因的詳細說明","suggestedFix":"具體的修復步驟","errorLocation":"檔案:行號 或 null"}`;
-
-  const userMessage = `專案名稱：${projectName}
-錯誤訊息：${errorMessage}
-
-Build Log（最後部分）：
-\`\`\`
-${logTail}
-\`\`\``;
-
-  try {
-    const result = await callLLM(system, userMessage, 1500);
-    const jsonMatch = result.text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.warn('[LLM-Build] No JSON in response');
-      return {
-        category: 'unknown',
-        summary: `Build 失敗：${errorMessage.slice(0, 100)}`,
-        rootCause: errorMessage,
-        suggestedFix: '請查看 Cloud Build log 了解詳情',
-        errorLocation: null,
-        provider: result.provider,
-      };
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as BuildFailureAnalysis;
-    const validCategories = ['user_code', 'dependency', 'config', 'infra', 'unknown'];
-    return {
-      category: validCategories.includes(parsed.category) ? parsed.category : 'unknown',
-      summary: parsed.summary || `Build 失敗：${errorMessage.slice(0, 80)}`,
-      rootCause: parsed.rootCause || errorMessage,
-      suggestedFix: parsed.suggestedFix || '請查看 Cloud Build log 了解詳情',
-      errorLocation: parsed.errorLocation || null,
-      provider: result.provider,
-    };
-  } catch (err) {
-    console.warn(`[LLM-Build] Analysis failed: ${(err as Error).message}`);
-    return {
-      category: 'unknown',
-      summary: `Build 失敗：${errorMessage.slice(0, 100)}`,
-      rootCause: errorMessage,
-      suggestedFix: '請查看 Cloud Build log 了解詳情',
-      errorLocation: null,
-      provider: 'fallback',
-    };
-  }
+  return analyzeDeployFailure('Step 3: Build Docker image (Cloud Build)', errorMessage, buildLog, projectName);
 }
 
 // ─── Env Var Placeholder Detection (LLM-powered) ───

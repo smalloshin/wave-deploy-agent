@@ -99,6 +99,9 @@ export async function notifyDeployFailed(
     rootCause: string;
     suggestedFix: string;
     errorLocation: string | null;
+    errorSnippet?: string | null;
+    extraObservations?: string | null;
+    step?: string | null;
     provider: string;
   },
 ): Promise<void> {
@@ -111,6 +114,8 @@ export async function notifyDeployFailed(
       user_code: '🔧 程式碼錯誤',
       dependency: '📦 套件/依賴問題',
       config: '⚙️ 設定問題',
+      runtime: '🚀 Runtime 錯誤',
+      network: '🌐 網路/連線',
       infra: '☁️ 基礎設施問題',
       unknown: '❓ 未知',
     };
@@ -119,7 +124,13 @@ export async function notifyDeployFailed(
     if (buildDiagnosis.errorLocation) {
       fields.push({ name: '錯誤位置', value: `\`${buildDiagnosis.errorLocation}\``, inline: true });
     }
+    if (buildDiagnosis.errorSnippet) {
+      fields.push({ name: '錯誤片段', value: `\`\`\`\n${buildDiagnosis.errorSnippet.slice(0, 800)}\n\`\`\`` });
+    }
     fields.push({ name: '💡 修復建議', value: buildDiagnosis.suggestedFix.slice(0, 500) });
+    if (buildDiagnosis.extraObservations) {
+      fields.push({ name: '附加觀察', value: buildDiagnosis.extraObservations.slice(0, 400) });
+    }
     fields.push({ name: 'AI 分析', value: `by ${buildDiagnosis.provider}`, inline: true });
   } else {
     fields.push({ name: '錯誤', value: `\`\`\`\n${error.slice(0, 900)}\n\`\`\`` });

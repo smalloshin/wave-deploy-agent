@@ -424,41 +424,134 @@ export default function ProjectDetailPage() {
         {project.sourceType} &middot; slug: {project.slug} &middot; created {new Date(project.createdAt).toLocaleString()}
       </p>
 
-      {/* Failure Banner */}
+      {/* Failure Banner with AI Diagnosis */}
       {project.status === 'failed' && (() => {
         const failEvent = [...timeline].reverse().find((t) => t.toState === 'failed');
         if (!failEvent) return null;
-        const meta = failEvent.metadata ?? {};
+        const meta = (failEvent.metadata ?? {}) as Record<string, unknown>;
+        const diag = meta.buildDiagnosis as {
+          category?: string;
+          summary?: string;
+          rootCause?: string;
+          suggestedFix?: string;
+          errorLocation?: string | null;
+          errorSnippet?: string | null;
+          extraObservations?: string | null;
+          step?: string | null;
+          provider?: string;
+        } | undefined;
+
+        const categoryLabels: Record<string, string> = {
+          user_code: '🔧 程式碼錯誤',
+          dependency: '📦 套件／依賴問題',
+          config: '⚙️ 設定問題',
+          runtime: '🚀 Runtime 錯誤',
+          network: '🌐 網路／連線',
+          infra: '☁️ 基礎設施問題',
+          unknown: '❓ 未知',
+        };
+
+        const codeBlockStyle: React.CSSProperties = {
+          padding: '10px 12px', background: 'rgba(0,0,0,0.28)', borderRadius: 6,
+          fontFamily: 'var(--font-mono, monospace)', fontSize: 12,
+          color: 'var(--text-primary)', lineHeight: 1.55,
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          border: '1px solid rgba(255,255,255,0.06)',
+        };
+
         return (
           <div style={{
             marginTop: 12, padding: 16, background: 'rgba(248,81,73,0.08)',
             borderRadius: 8, border: '1px solid rgba(248,81,73,0.3)',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 16 }}>&#x26A0;&#xFE0F;</span>
               <strong style={{ color: 'var(--status-critical)', fontSize: 14 }}>
-                Pipeline Failed{meta.failedStep ? ` at ${meta.failedStep}` : ''}
+                {project.name} 部署失敗{meta.failedStep ? ` — ${String(meta.failedStep)}` : ''}
               </strong>
+              {diag?.category && (
+                <span className="pill" style={{ background: 'var(--status-critical-bg)', color: 'var(--status-critical)', fontSize: 11 }}>
+                  {categoryLabels[diag.category] ?? diag.category}
+                </span>
+              )}
+              {diag?.provider && (
+                <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>AI by {diag.provider}</span>
+              )}
             </div>
-            {meta.error ? (
-              <div style={{
-                padding: '8px 12px', background: 'rgba(0,0,0,0.2)', borderRadius: 4,
-                fontFamily: 'monospace', fontSize: 13, color: 'var(--status-critical)',
-                lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-              }}>
-                {String(meta.error)}
+
+            {/* AI 診斷（有的話先秀） */}
+            {diag ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {diag.summary && (
+                  <div style={{ color: 'var(--text-primary)', fontSize: 14, fontWeight: 500 }}>
+                    {diag.summary}
+                  </div>
+                )}
+                {diag.errorLocation && (
+                  <div style={{ fontSize: 13 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>錯誤地點：</span>
+                    <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3, color: 'var(--status-critical)' }}>
+                      {diag.errorLocation}
+                    </code>
+                  </div>
+                )}
+                {diag.errorSnippet && (
+                  <div>
+                    <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 4 }}>錯誤片段：</div>
+                    <div style={codeBlockStyle}>{diag.errorSnippet}</div>
+                  </div>
+                )}
+                {diag.rootCause && (
+                  <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+                    <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 4 }}>根本原因：</div>
+                    <div style={{ color: 'var(--text-primary)' }}>{diag.rootCause}</div>
+                  </div>
+                )}
+                {diag.suggestedFix && (
+                  <div style={{
+                    padding: '10px 12px', background: 'rgba(88,166,255,0.08)',
+                    borderRadius: 6, border: '1px solid rgba(88,166,255,0.25)',
+                    fontSize: 13, lineHeight: 1.6,
+                  }}>
+                    <div style={{ color: 'var(--accent-blue, #58a6ff)', fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
+                      💡 修復建議
+                    </div>
+                    <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>{diag.suggestedFix}</div>
+                  </div>
+                )}
+                {diag.extraObservations && (
+                  <div style={{
+                    padding: '8px 12px', background: 'rgba(255,200,87,0.06)',
+                    borderRadius: 6, border: '1px solid rgba(255,200,87,0.25)',
+                    fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)',
+                  }}>
+                    <strong style={{ color: 'var(--status-warning, #9a5700)' }}>附加觀察：</strong> {diag.extraObservations}
+                  </div>
+                )}
+                {meta.error ? (
+                  <details>
+                    <summary style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
+                      原始錯誤訊息
+                    </summary>
+                    <div style={{ ...codeBlockStyle, fontSize: 11, marginTop: 6, color: 'var(--status-critical)' }}>
+                      {String(meta.error)}
+                    </div>
+                  </details>
+                ) : null}
               </div>
-            ) : null}
+            ) : (
+              // Fallback：沒有 LLM 診斷（舊資料或 LLM 失敗）時秀原始錯誤
+              <>
+                {meta.error ? (
+                  <div style={codeBlockStyle}>{String(meta.error)}</div>
+                ) : null}
+              </>
+            )}
+
             {meta.stack ? (
-              <details style={{ marginTop: 8 }}>
-                <summary style={{ color: 'var(--text-secondary)', fontSize: 12, cursor: 'pointer' }}>
-                  Stack Trace
-                </summary>
-                <div style={{
-                  marginTop: 4, padding: '8px 12px', background: 'rgba(0,0,0,0.2)', borderRadius: 4,
-                  fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)',
-                  lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                }}>
+              <details style={{ marginTop: 10 }}>
+                <summary style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>Stack Trace</summary>
+                <div style={{ ...codeBlockStyle, fontSize: 11, marginTop: 4, color: 'var(--text-secondary)' }}>
                   {String(meta.stack)}
                 </div>
               </details>

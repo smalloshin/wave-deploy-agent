@@ -19,7 +19,7 @@ import { monitorSsl } from './ssl-monitor';
 import { runCanaryChecks } from './canary-monitor';
 import { detectProject } from './project-detector';
 import { detectEnvVars, mergeEnvVars } from './env-detector';
-import { classifyEnvWithLLM, analyzeBuildFailure, type EnvClassificationContext } from './llm-analyzer';
+import { classifyEnvWithLLM, analyzeDeployFailure, type EnvClassificationContext } from './llm-analyzer';
 import { provisionProjectDatabase } from './db-provisioner';
 import { provisionProjectRedis } from './redis-provisioner';
 import { restoreDbDump } from './db-restore';
@@ -546,23 +546,25 @@ export async function runDeployPipeline(
     }, gcsSourceUri);
 
     if (!buildResult.success) {
-      // LLM 分析 build 失敗原因
-      let buildDiagnosis: Awaited<ReturnType<typeof analyzeBuildFailure>> | null = null;
-      if (buildResult.buildLog) {
-        try {
-          console.log(`[Deploy]   Analyzing build failure with LLM (${buildResult.buildLog.length} chars log)...`);
-          buildDiagnosis = await analyzeBuildFailure(
-            buildResult.buildLog,
-            buildResult.error ?? 'Unknown build error',
-            project.name,
-          );
-          console.log(`[Deploy]   Build diagnosis: [${buildDiagnosis.category}] ${buildDiagnosis.summary}`);
-        } catch (llmErr) {
-          console.warn(`[Deploy]   LLM build analysis failed: ${(llmErr as Error).message}`);
-        }
+      // LLM 分析 build 失敗原因。無論 buildLog 有沒有拿到，都呼叫 LLM —
+      // 就算只有 error message，LLM 仍能從 Cloud Build API 的文字中判斷大方向。
+      let buildDiagnosis: Awaited<ReturnType<typeof analyzeDeployFailure>> | null = null;
+      try {
+        const logLen = buildResult.buildLog?.length ?? 0;
+        console.log(`[Deploy]   Analyzing build failure with LLM (${logLen} chars log)...`);
+        buildDiagnosis = await analyzeDeployFailure(
+          'Step 3: Build Docker image (Cloud Build)',
+          buildResult.error ?? 'Unknown build error',
+          buildResult.buildLog ?? '',
+          project.name,
+        );
+        console.log(`[Deploy]   Build diagnosis: [${buildDiagnosis.category}] ${buildDiagnosis.summary}`);
+      } catch (llmErr) {
+        console.warn(`[Deploy]   LLM build analysis failed: ${(llmErr as Error).message}`);
       }
       const err = new Error(`Docker build failed: ${buildResult.error}`);
       (err as Error & { buildDiagnosis?: typeof buildDiagnosis }).buildDiagnosis = buildDiagnosis;
+      (err as Error & { buildLog?: string }).buildLog = buildResult.buildLog;
       throw err;
     }
     console.log(`[Deploy]   Image: ${buildResult.imageUri}`);
@@ -1019,7 +1021,26 @@ export async function runDeployPipeline(
 
   } catch (err) {
     const error = err as Error;
-    const buildDiagnosis = (error as Error & { buildDiagnosis?: Awaited<ReturnType<typeof analyzeBuildFailure>> }).buildDiagnosis;
+    // 優先用已附著的 buildDiagnosis（Step 3 build 失敗路徑會帶），否則現場呼叫 LLM
+    let buildDiagnosis = (error as Error & { buildDiagnosis?: Awaited<ReturnType<typeof analyzeDeployFailure>> }).buildDiagnosis ?? null;
+    const attachedLog = (error as Error & { buildLog?: string }).buildLog ?? '';
+
+    if (!buildDiagnosis) {
+      try {
+        console.log(`[Deploy]   Analyzing failure with LLM at ${currentStep}...`);
+        const projectName = (await getProject(projectId))?.name ?? 'unknown';
+        buildDiagnosis = await analyzeDeployFailure(
+          currentStep,
+          error.message,
+          attachedLog,
+          projectName,
+        );
+        console.log(`[Deploy]   Diagnosis: [${buildDiagnosis.category}] ${buildDiagnosis.summary}`);
+      } catch (llmErr) {
+        console.warn(`[Deploy]   LLM failure analysis failed: ${(llmErr as Error).message}`);
+      }
+    }
+
     console.error(`[Deploy] ✗ Failed for project ${projectId} at ${currentStep}:\n${error.message}`);
     if (buildDiagnosis) {
       console.error(`[Deploy]   Diagnosis: [${buildDiagnosis.category}] ${buildDiagnosis.rootCause}`);
@@ -1037,6 +1058,9 @@ export async function runDeployPipeline(
             rootCause: buildDiagnosis.rootCause,
             suggestedFix: buildDiagnosis.suggestedFix,
             errorLocation: buildDiagnosis.errorLocation,
+            errorSnippet: buildDiagnosis.errorSnippet,
+            extraObservations: buildDiagnosis.extraObservations,
+            step: buildDiagnosis.step,
             provider: buildDiagnosis.provider,
           },
         } : {}),
