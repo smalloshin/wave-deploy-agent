@@ -4,6 +4,52 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-19（下午）—— 部署失敗 LLM 診斷 + 舊失敗 reanalyze 回填**
+
+重大修繕（2 commit 連續上線，解決「部署失敗根本沒跑 LLM」的陳年 bug）：
+
+1. **`b98bac2` — 部署失敗時自動跑 LLM 診斷 + dashboard 完整顯示**
+   - 根因：之前 `deploy-engine.ts` 有 silent catch（`catch { /* ignore */ }`），
+     讓 `buildLog` 永遠是空字串；`deploy-worker.ts` Step 3 裡 `if (buildResult.buildLog)`
+     guard 直接 skip LLM call → 所以 LLM 根本沒跑過
+   - 修法：
+     - `deploy-engine.ts` silent catch 改成 `console.warn` 吐原因
+     - `deploy-worker.ts` 拔掉 `if (buildLog)` guard，build failure 一定跑 LLM
+     - main catch 擴充：其他 step（deploy/domain/ssl）失敗也跑
+       `analyzeDeployFailure`（llm-analyzer 新的一般化 API）
+     - `llm-analyzer.ts` 擴欄位：`errorSnippet` / `extraObservations` / `step`，
+       category 加 `runtime` / `network`
+     - `discord-notifier.ts` 對齊新欄位
+     - `apps/web/app/projects/[id]/page.tsx` 失敗 banner 完整 render：
+       `summary` → `errorLocation`（code tag）→ `errorSnippet`（pre block）
+       → `rootCause` → 💡 修復建議（藍色 accent box）→ 附加觀察（黃色 warning）
+       → 原始錯誤訊息（collapsed details）
+   - 部署：Cloud Run `deploy-agent-api-00117-b4h` ✅
+
+2. **`7058175` — POST /api/projects/:id/reanalyze-failure（舊失敗回填）**
+   - 背景：現存 `failed` transition 的 metadata 不會自動回填，
+     像 gam-publisher 這種在 LLM 上線前就失敗的專案需要手動觸發
+   - 端點行為：
+     - 讀取最新 `to_state='failed'` transition metadata
+     - Regex `/builds\/([a-f0-9-]{36})/i` 從 error 字串抽 Cloud Build ID
+     - 重抓 Cloud Build metadata → GCS `log-{buildId}.txt`
+     - 呼叫 `analyzeDeployFailure`
+     - `UPDATE state_transitions SET metadata = metadata || $1::jsonb`（jsonb merge）
+   - Dashboard UI：失敗 banner 在 `!diag` 分支多一顆
+     「🤖 用 AI 重新分析失敗原因」按鈕 → 點一下打 API → 成功後 `loadDetail()`
+     頁面自動刷新出完整診斷
+   - 權限：`projects:deploy`
+   - 部署：Cloud Build 手動提交中（bfr1u4lzj）
+
+**驗證路徑**（部署完後對 gam-publisher 跑）：
+`curl -X POST -b cookies 'https://.../api/projects/{gam-publisher-id}/reanalyze-failure'`
+預期應該回 `{ diagnosis: { category: 'user_code', errorLocation: 'src/app/api/cron/sync/route.ts:47',
+errorSnippet: 'await ReportProcessorService.processAndStore(dateStr, rawCSV);',
+rootCause: 'processAndStore 只接受 1 個參數，但程式碼傳了 2 個', ... } }`
+（來源：f53e4bf6 build log 顯示的 TS error）
+
+---
+
 **2026-04-19 —— Review decide 500 修正 + GPT fallback 統一 + admin 改密碼 UI**
 
 三件小修繕（commit `a6dd8aa`，Cloud Build `e664734d` 8M27S SUCCESS，
