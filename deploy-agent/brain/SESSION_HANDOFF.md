@@ -4,6 +4,39 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-19（傍晚）—— Reanalyze 拿不到 log 的踩雷 + 自有 bucket 修法**
+
+使用者測試第一版 reanalyze 對 gam-publisher 沒效，LLM 產出「未知 / 一堆通用排查清單」。
+追查發現 `[Reanalyze] Build log fetch returned HTTP 403`。
+
+**根因（重要踩雷）**：
+Cloud Build legacy logging 模式把 log 寫到
+`gs://{PROJECT_NUMBER}.cloudbuild-logs.googleusercontent.com`
+這 bucket 是 **Google 內部管理**的，**連 project owner 都看不到 IAM policy**，
+deploy-agent SA 無法被授權讀取 → HTTP 403 → buildLog = '' → LLM 在「僅根據錯誤
+訊息推理」模式下幻覺產通用建議。
+
+**commit `b5e9916` 三層修法**：
+
+1. **`deploy-engine.ts`** — 新 build 加 `options.logsBucket: gs://{ourBucket}` +
+   `logging: 'GCS_ONLY'`，未來所有 build log 寫進我們自有的
+   `wave-deploy-agent_cloudbuild`（已有完整 admin）
+2. **`llm-analyzer.ts analyzeDeployFailure`** — log 為空時**直接不叫 LLM**，
+   回結構化 fallback（說明拿不到 log 的真正原因 + Cloud Build console 連結 +
+   建議重試）。避免幻覺
+3. **`routes/projects.ts reanalyze-failure`** — 嘗試兩種 log 路徑
+   （`log-{id}.txt` / `{id}.log`）；把 log fetch 失敗原因（HTTP 403 / 沒 logsBucket
+   / regex miss）放進 response body（`logFetched`, `logBytes`, `logFetchNote`）
+   方便 debug
+
+**部署**：Cloud Build `4662cdf4` SUCCESS，Cloud Run `deploy-agent-api-00119-g64` 上線
+
+**對 gam-publisher 的結論**：舊 build log 永遠拿不到。使用者需要「升版部署 / 重試流程」
+跑一次新 build（會用新 bucket），**新失敗之後**再點 reanalyze 才會出正常診斷
+（預期指向 `src/app/api/cron/sync/route.ts:47` `processAndStore` 多傳一個參數）。
+
+---
+
 **2026-04-19（下午）—— 部署失敗 LLM 診斷 + 舊失敗 reanalyze 回填**
 
 重大修繕（2 commit 連續上線，解決「部署失敗根本沒跑 LLM」的陳年 bug）：
@@ -442,6 +475,8 @@ re-upload 覆蓋 gcsSourceUri，或直接改成 build 拿 projectDir。
 13. **GitHub Webhook 需要 raw body 做 HMAC 驗證**。webhookRoutes 用 `addContentTypeParser('application/json', { parseAs: 'buffer' })` 覆蓋 JSON parser，Fastify plugin encapsulation 確保只影響 webhook 路由。
 14. **Cloud Run 容器沒有 gcloud CLI**。要做 GCS signed URL 的話，不能直接 `gcloud storage sign-url`（exec 會找不到）。正解：V4 signing 靠 IAM Credentials API 的 `signBlob`，SA 需要有 `iam.serviceAccountTokenCreator` on itself。`deployed-source-capture.ts` 的 `signUrlWithIamCredentials()` 是參考實作。
 15. ~~**pipeline-worker 的 AI 修補沒有回流到 GCS**~~（2026-04-18 同日修完）：**分兩個 GCS URI**：`gcsSourceUri` 永遠存原始上傳做 audit；`gcsFixedSourceUri` 是 pipeline-worker Step 6a 上傳的 post-fix 版本，deploy-worker 優先使用。使用者走 `new-version` 升版時要記得清 `gcsFixedSourceUri`（已處理）。
+16. **Cloud Build 預設 legacy logs bucket 讀不到**（2026-04-19 踩雷）：未指定 `options.logsBucket` 時，log 寫到 `gs://{PROJECT_NUMBER}.cloudbuild-logs.googleusercontent.com`，這是 Google 內部管理的 bucket，**連 project owner 都看不到 IAM policy**，不能被授權。解法：建 build 時永遠指定 `options: { logging: 'GCS_ONLY', logsBucket: 'gs://{自有bucket}' }`，日後 deploy-agent 才讀得到。參考 `deploy-engine.ts buildRequest.options`。
+17. **LLM 沒 log 就別亂叫**（2026-04-19）：`analyzeDeployFailure` log 為空時不要呼叫 LLM，會產「推理式」幻覺給使用者一堆無用通用建議。直接回 structured fallback（`provider: 'fallback'`）說明實情並附 Cloud Build console 連結比較誠實。
 
 ### 使用者偏好（Boss 習慣）
 - 直接給結論、不要囉嗦
