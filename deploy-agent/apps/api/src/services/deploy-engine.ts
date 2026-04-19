@@ -107,6 +107,12 @@ export async function buildAndPushImage(
       ],
       images: [imageUri],
       timeout: '600s',
+      // Write logs to our own bucket so deploy-agent SA can read them.
+      // Default cloudbuild-logs bucket is Google-managed and our SA can't be granted access.
+      options: {
+        logging: 'GCS_ONLY',
+        logsBucket: `gs://${gcsBucket}`,
+      },
     };
 
     const buildUrl = `https://cloudbuild.googleapis.com/v1/projects/${config.gcpProject}/builds`;

@@ -1104,6 +1104,7 @@ export async function projectRoutes(app: FastifyInstance) {
 
     // Extract Cloud Build ID from error string (if any) and re-fetch log
     let buildLog = '';
+    let logFetchNote: string | null = null;
     const buildIdMatch = errorMessage.match(/builds\/([a-f0-9-]{36})/i);
     if (buildIdMatch) {
       const buildId = buildIdMatch[1];
@@ -1115,21 +1116,37 @@ export async function projectRoutes(app: FastifyInstance) {
           const metaJson = await metaRes.json() as { logsBucket?: string };
           if (metaJson.logsBucket) {
             const bucket = metaJson.logsBucket.replace('gs://', '');
-            const logUrl = `https://storage.googleapis.com/storage/v1/b/${bucket}/o/${encodeURIComponent(`log-${buildId}.txt`)}?alt=media`;
-            const logRes = await gcpFetch(logUrl);
-            if (logRes.ok) {
-              buildLog = await logRes.text();
-              console.log(`[Reanalyze] Fetched build log: ${buildLog.length} chars for build ${buildId}`);
-            } else {
-              console.warn(`[Reanalyze] Build log fetch returned HTTP ${logRes.status}`);
+            // Try standard path first
+            const tryPaths = [`log-${buildId}.txt`, `${buildId}.log`];
+            for (const objPath of tryPaths) {
+              const logUrl = `https://storage.googleapis.com/storage/v1/b/${bucket}/o/${encodeURIComponent(objPath)}?alt=media`;
+              const logRes = await gcpFetch(logUrl);
+              if (logRes.ok) {
+                buildLog = await logRes.text();
+                console.log(`[Reanalyze] Fetched build log: ${buildLog.length} chars (${bucket}/${objPath})`);
+                break;
+              }
+              if (logRes.status === 403) {
+                logFetchNote = `bucket ${bucket} 拒絕讀取（HTTP 403）— 這是 Google managed cloudbuild-logs bucket，部署 agent 沒有讀權限`;
+                console.warn(`[Reanalyze] ${logFetchNote}`);
+                break;
+              }
+              console.warn(`[Reanalyze] Build log fetch returned HTTP ${logRes.status} for ${objPath}`);
+              logFetchNote = `log fetch HTTP ${logRes.status}`;
             }
+          } else {
+            logFetchNote = 'Cloud Build metadata 沒有 logsBucket 欄位';
           }
         } else {
+          logFetchNote = `Cloud Build metadata HTTP ${metaRes.status}`;
           console.warn(`[Reanalyze] Build metadata HTTP ${metaRes.status} for ${buildId}`);
         }
       } catch (err) {
+        logFetchNote = `log fetch 例外：${(err as Error).message}`;
         console.warn(`[Reanalyze] Build log fetch threw: ${(err as Error).message}`);
       }
+    } else {
+      logFetchNote = 'error 訊息中找不到 Cloud Build ID（不是 build step 失敗 / 格式不符）';
     }
 
     // Run LLM analysis
@@ -1161,7 +1178,7 @@ export async function projectRoutes(app: FastifyInstance) {
       ],
     );
 
-    return { diagnosis };
+    return { diagnosis, logFetched: buildLog.length > 0, logBytes: buildLog.length, logFetchNote };
   });
 
   // Resubmit/retry project (from needs_revision or failed) — re-triggers pipeline

@@ -273,6 +273,24 @@ export async function analyzeDeployFailure(
   const logTail = logs.length > 8000 ? logs.slice(-8000) : logs;
   const hasLog = logTail.trim().length > 0;
 
+  // 沒 log 就不騙人 — 用結構化訊息告訴使用者實情，不要叫 LLM 瞎猜
+  if (!hasLog) {
+    const buildUrlMatch = errorMessage.match(/https:\/\/console\.cloud\.google\.com\/cloud-build\/builds\/[a-f0-9-]+\?project=\d+/);
+    return {
+      category: 'unknown',
+      summary: `${step} 失敗，但抓不到 build log（可能是早期失敗的 build，log 存在 Google managed bucket，部署 agent 沒有讀權限）`,
+      rootCause: '原始 build log 不在我們可讀的 bucket 內，無法做有意義的根因分析。歷史 build 預設把 log 寫到 `gs://{PROJECT_NUMBER}.cloudbuild-logs.googleusercontent.com`，這個 bucket 是 Google 管理的，連專案 owner 都看不到 IAM。新版部署已改為寫到我們自己的 cloudbuild bucket，未來的失敗就能正確分析。',
+      suggestedFix: buildUrlMatch
+        ? `1. 直接打開 Cloud Build console 看 log：${buildUrlMatch[0]}\n2. 或重新觸發一次部署，新的失敗 log 會寫到可讀 bucket，再點「用 AI 重新分析」就會出正常診斷。`
+        : '直接到 GCP Console → Cloud Build → History 看這次失敗的詳細 log。',
+      errorLocation: null,
+      errorSnippet: null,
+      extraObservations: null,
+      step,
+      provider: 'fallback',
+    };
+  }
+
   const system = `你是一位資深 DevOps 工程師，專門協助使用者排查雲端部署 pipeline 的失敗。
 你會看到某個部署步驟的錯誤訊息（以及如果有的話，build log 或 stderr），
 請根據資訊判斷根本原因，並給使用者可直接操作的修復建議。
