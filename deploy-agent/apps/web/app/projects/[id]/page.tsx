@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '../../../lib/auth';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -138,7 +139,10 @@ interface ProjectDetail {
 export default function ProjectDetailPage() {
   const params = useParams();
   const id = params.id as string;
+  const { user: currentUser } = useAuth();
+  const isAdmin = (currentUser?.role_name === 'admin') || (currentUser?.permissions?.includes('*') ?? false);
   const [data, setData] = useState<ProjectDetail | null>(null);
+  const [showAdminDetail, setShowAdminDetail] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
@@ -445,7 +449,12 @@ export default function ProjectDetailPage() {
         const meta = (failEvent.metadata ?? {}) as Record<string, unknown>;
         const diag = meta.buildDiagnosis as {
           category?: string;
+          ownership?: 'user' | 'platform' | 'environment' | 'unknown';
           summary?: string;
+          userFacingMessage?: string;
+          adminFacingMessage?: string;
+          userActionable?: boolean;
+          platformActionable?: boolean;
           rootCause?: string;
           suggestedFix?: string;
           errorLocation?: string | null;
@@ -465,6 +474,14 @@ export default function ProjectDetailPage() {
           unknown: '❓ 未知',
         };
 
+        const ownershipLabels: Record<string, { label: string; color: string; bg: string; hint: string }> = {
+          user: { label: '👤 你的程式碼需要修正', color: '#d29922', bg: 'rgba(210,153,34,0.1)', hint: '請依下方建議修改並重新部署' },
+          platform: { label: '🔧 平台問題，管理員處理中', color: '#58a6ff', bg: 'rgba(88,166,255,0.1)', hint: '這不是你的錯，平台正在排查' },
+          environment: { label: '🌐 環境／外部問題', color: '#8957e5', bg: 'rgba(137,87,229,0.1)', hint: '通常重試即可（GCP/網路暫時性問題）' },
+          unknown: { label: '❓ 判斷不出來', color: '#8b949e', bg: 'rgba(139,148,158,0.1)', hint: '需要更多資訊才能判斷' },
+        };
+        const ownershipInfo = ownershipLabels[diag?.ownership ?? 'unknown'];
+
         const codeBlockStyle: React.CSSProperties = {
           padding: '10px 12px', background: 'rgba(0,0,0,0.28)', borderRadius: 6,
           fontFamily: 'var(--font-mono, monospace)', fontSize: 12,
@@ -478,11 +495,23 @@ export default function ProjectDetailPage() {
             marginTop: 12, padding: 16, background: 'rgba(248,81,73,0.08)',
             borderRadius: 8, border: '1px solid rgba(248,81,73,0.3)',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 16 }}>&#x26A0;&#xFE0F;</span>
               <strong style={{ color: 'var(--status-critical)', fontSize: 14 }}>
                 {project.name} 部署失敗{meta.failedStep ? ` — ${String(meta.failedStep)}` : ''}
               </strong>
+              {diag && (
+                <span className="pill" style={{
+                  background: ownershipInfo.bg,
+                  color: ownershipInfo.color,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: '3px 10px',
+                  border: `1px solid ${ownershipInfo.color}44`,
+                }}>
+                  {ownershipInfo.label}
+                </span>
+              )}
               {diag?.category && (
                 <span className="pill" style={{ background: 'var(--status-critical-bg)', color: 'var(--status-critical)', fontSize: 11 }}>
                   {categoryLabels[diag.category] ?? diag.category}
@@ -495,12 +524,32 @@ export default function ProjectDetailPage() {
 
             {/* AI 診斷（有的話先秀） */}
             {diag ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {diag.summary && (
-                  <div style={{ color: 'var(--text-primary)', fontSize: 14, fontWeight: 500 }}>
-                    {diag.summary}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {/* ─── 使用者面向 ─── */}
+                {diag.userFacingMessage && (
+                  <div style={{
+                    padding: '14px 16px',
+                    background: ownershipInfo.bg,
+                    borderRadius: 8,
+                    border: `1px solid ${ownershipInfo.color}55`,
+                    fontSize: 14,
+                    lineHeight: 1.7,
+                  }}>
+                    <div style={{
+                      color: ownershipInfo.color,
+                      fontWeight: 600,
+                      fontSize: 12,
+                      marginBottom: 6,
+                      textTransform: 'uppercase',
+                      letterSpacing: 0.5,
+                    }}>
+                      給使用者的建議 · {ownershipInfo.hint}
+                    </div>
+                    <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>{diag.userFacingMessage}</div>
                   </div>
                 )}
+
+                {/* 錯誤地點 + 片段 —— 使用者修 code 時最需要看的 */}
                 {diag.errorLocation && (
                   <div style={{ fontSize: 13 }}>
                     <span style={{ color: 'var(--text-secondary)' }}>錯誤地點：</span>
@@ -515,24 +564,6 @@ export default function ProjectDetailPage() {
                     <div style={codeBlockStyle}>{diag.errorSnippet}</div>
                   </div>
                 )}
-                {diag.rootCause && (
-                  <div style={{ fontSize: 13, lineHeight: 1.6 }}>
-                    <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 4 }}>根本原因：</div>
-                    <div style={{ color: 'var(--text-primary)' }}>{diag.rootCause}</div>
-                  </div>
-                )}
-                {diag.suggestedFix && (
-                  <div style={{
-                    padding: '10px 12px', background: 'rgba(88,166,255,0.08)',
-                    borderRadius: 6, border: '1px solid rgba(88,166,255,0.25)',
-                    fontSize: 13, lineHeight: 1.6,
-                  }}>
-                    <div style={{ color: 'var(--accent-blue, #58a6ff)', fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
-                      💡 修復建議
-                    </div>
-                    <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>{diag.suggestedFix}</div>
-                  </div>
-                )}
                 {diag.extraObservations && (
                   <div style={{
                     padding: '8px 12px', background: 'rgba(255,200,87,0.06)',
@@ -542,16 +573,56 @@ export default function ProjectDetailPage() {
                     <strong style={{ color: 'var(--status-warning, #9a5700)' }}>附加觀察：</strong> {diag.extraObservations}
                   </div>
                 )}
-                {meta.error ? (
-                  <details>
-                    <summary style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
-                      原始錯誤訊息
-                    </summary>
-                    <div style={{ ...codeBlockStyle, fontSize: 11, marginTop: 6, color: 'var(--status-critical)' }}>
-                      {String(meta.error)}
-                    </div>
-                  </details>
-                ) : null}
+
+                {/* ─── 管理員面向（只給 admin 看）─── */}
+                {isAdmin && (diag.adminFacingMessage || diag.rootCause) && (
+                  <div style={{
+                    padding: '10px 12px',
+                    background: 'rgba(139,148,158,0.08)',
+                    borderRadius: 6,
+                    border: '1px dashed rgba(139,148,158,0.4)',
+                  }}>
+                    <button
+                      onClick={() => setShowAdminDetail((v) => !v)}
+                      style={{
+                        background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                        color: 'var(--text-secondary)', fontSize: 12, fontWeight: 600,
+                        display: 'flex', alignItems: 'center', gap: 6,
+                      }}
+                    >
+                      {showAdminDetail ? '▼' : '▶'} 🔧 管理員技術細節（只有 admin 看得到）
+                    </button>
+                    {showAdminDetail && (
+                      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {diag.adminFacingMessage && (
+                          <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
+                            <strong style={{ color: 'var(--text-secondary)' }}>平台層分析：</strong><br />
+                            {diag.adminFacingMessage}
+                          </div>
+                        )}
+                        {diag.rootCause && diag.rootCause !== diag.adminFacingMessage && (
+                          <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+                            <strong>根本原因：</strong> {diag.rootCause}
+                          </div>
+                        )}
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 10 }}>
+                          <span>userActionable: {diag.userActionable === undefined ? 'n/a' : String(diag.userActionable)}</span>
+                          <span>platformActionable: {diag.platformActionable === undefined ? 'n/a' : String(diag.platformActionable)}</span>
+                        </div>
+                        {meta.error ? (
+                          <details>
+                            <summary style={{ color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                              原始錯誤訊息（raw）
+                            </summary>
+                            <div style={{ ...codeBlockStyle, fontSize: 11, marginTop: 6, color: 'var(--status-critical)' }}>
+                              {String(meta.error)}
+                            </div>
+                          </details>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               // Fallback：沒有 LLM 診斷（舊資料或 LLM 失敗）時秀原始錯誤 + 提供 reanalyze 按鈕
@@ -581,9 +652,9 @@ export default function ProjectDetailPage() {
               </>
             )}
 
-            {meta.stack ? (
+            {isAdmin && meta.stack ? (
               <details style={{ marginTop: 10 }}>
-                <summary style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>Stack Trace</summary>
+                <summary style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>Stack Trace（admin）</summary>
                 <div style={{ ...codeBlockStyle, fontSize: 11, marginTop: 4, color: 'var(--text-secondary)' }}>
                   {String(meta.stack)}
                 </div>

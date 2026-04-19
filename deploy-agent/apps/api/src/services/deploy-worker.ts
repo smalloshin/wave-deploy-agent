@@ -1054,7 +1054,12 @@ export async function runDeployPipeline(
         ...(buildDiagnosis ? {
           buildDiagnosis: {
             category: buildDiagnosis.category,
+            ownership: buildDiagnosis.ownership,
             summary: buildDiagnosis.summary,
+            userFacingMessage: buildDiagnosis.userFacingMessage,
+            adminFacingMessage: buildDiagnosis.adminFacingMessage,
+            userActionable: buildDiagnosis.userActionable,
+            platformActionable: buildDiagnosis.platformActionable,
             rootCause: buildDiagnosis.rootCause,
             suggestedFix: buildDiagnosis.suggestedFix,
             errorLocation: buildDiagnosis.errorLocation,

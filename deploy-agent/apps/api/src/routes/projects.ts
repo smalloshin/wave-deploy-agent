@@ -1163,7 +1163,12 @@ export async function projectRoutes(app: FastifyInstance) {
         JSON.stringify({
           buildDiagnosis: {
             category: diagnosis.category,
+            ownership: diagnosis.ownership,
             summary: diagnosis.summary,
+            userFacingMessage: diagnosis.userFacingMessage,
+            adminFacingMessage: diagnosis.adminFacingMessage,
+            userActionable: diagnosis.userActionable,
+            platformActionable: diagnosis.platformActionable,
             rootCause: diagnosis.rootCause,
             suggestedFix: diagnosis.suggestedFix,
             errorLocation: diagnosis.errorLocation,
