@@ -4,6 +4,31 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-19 —— Review decide 500 修正 + GPT fallback 統一 + admin 改密碼 UI**
+
+三件小修繕（commit `a6dd8aa`，Cloud Build `e664734d` 8M27S SUCCESS，
+API 切到 `deploy-agent-api-00116-4hp`）：
+
+1. **`/api/reviews/:id/decide` 500 Internal Server Error**
+   - 根因：`reviewSchema.parse()` 在 email 不合法時拋 `ZodError`，Fastify 沒 catch → 500
+   - 修法：改用 `safeParse`，失敗回 400 + flatten details。
+   - 同時 `reviewerEmail` 變 optional，**優先用 `request.auth.user.email`**（登入後自動帶）
+   - 前端 `apps/web/app/reviews/[id]/page.tsx` 用 `useAuth()` 預填 email 欄位
+   - 驗證：curl 帶壞 email → 400（修前是 500）✅
+
+2. **OpenAI fallback model 統一 gpt-5.4**
+   - `apps/bot/src/nl-handler.ts:208` 從硬寫 `'gpt-4o-mini'` 改為
+     `process.env.OPENAI_MODEL ?? 'gpt-5.4'`
+   - API（`llm-analyzer.ts` / `resource-analyzer.ts`）本來就是 gpt-5.4，現在 Bot 也對齊
+
+3. **Admin 改密碼 UI**
+   - `apps/web/app/admin/page.tsx` user 列表 actions 欄多一顆「改密碼」按鈕
+   - 點擊彈出 modal（新密碼 + 確認），打既有的 `PATCH /api/auth/users/:id`
+   - 補 7 個 i18n key：`changePassword`, `changePasswordTitle`, `newPassword`,
+     `confirmPassword`, `passwordMismatch`, `passwordTooShort`, `saving`, `save`
+
+---
+
 **2026-04-18（晚上）—— 修 pipeline → deploy 的 fix 遺失 bug**
 
 Phase 1 上線後同一天把 flag 的 latent bug 修掉了。原問題：pipeline-worker 修的
@@ -307,6 +332,11 @@ re-upload 覆蓋 gcsSourceUri，或直接改成 build 拿 projectDir。
 ## 待辦事項（TODO）
 
 ### 高優先
+- [ ] **RBAC 系統實作（plan 已定）**：見 `~/.claude/plans/lively-petting-sifakis.md`。
+      47 個 API 端點目前裸露，規劃加入 users/roles/sessions/api_keys/auth_audit_log 5 張表 +
+      Fastify onRequest hook + 3-phase migration（PERMISSIVE → 更新消費者 → ENFORCED）。
+      目前已有基礎（`/api/auth/*` routes + `middleware/auth.ts` + `auth-service.ts`），
+      需全面串 route → permission map + 消費者（Bot / MCP / Web）都吃 credentials
 - [x] ~~**GCS lifecycle rule**：為 `gs://wave-deploy-agent_cloudbuild/sources/` 設 30 天自動刪除~~（2026-04-05 完成，見 `decisions/2026-04-05-gcs-sources-lifecycle-30d.md`）
 - [x] ~~**Artifact Registry cleanup**~~（2026-04-05 完成：keep 5 tagged + 清 7d untagged / 30d tagged，見 `decisions/2026-04-05-artifact-registry-cleanup.md`）
 - [x] ~~**Dashboard GCP 資源管理頁**~~（2026-04-05 完成：`/infra` 頁 + orphan cleanup 一鍵清理）
