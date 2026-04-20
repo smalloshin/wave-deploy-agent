@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import crypto from 'node:crypto';
 import type { ScanFinding, AutoFixResult, EnvVarVerdict, EnvClassificationResult } from '@deploy-agent/shared';
+import { type SourceContext, formatSourceContextForPrompt } from './source-reader';
 
 // Primary: Claude | Fallback: GPT-5.4
 const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
@@ -273,12 +274,15 @@ function fallbackAnalysis(
  * @param errorMessage 拋出的 error message
  * @param logs 相關 log（build log、stderr、API response 等，可為空字串）
  * @param projectName 專案名稱
+ * @param sourceContext （可選）使用者程式碼 context（package.json、tsconfig、錯誤檔案片段等），
+ *                       讓 LLM 能給出精確到行號的修法，而不是只能從 log 瞎猜
  */
 export async function analyzeDeployFailure(
   step: string,
   errorMessage: string,
   logs: string,
   projectName: string,
+  sourceContext?: SourceContext | null,
 ): Promise<BuildFailureAnalysis> {
   if (!anthropic && !openai) {
     return fallbackAnalysis(errorMessage, step, 'LLM 不可用，請查看 Cloud Build / Cloud Run log');
@@ -287,9 +291,11 @@ export async function analyzeDeployFailure(
   // 取 log 的最後 8000 字元（錯誤通常在尾端）
   const logTail = logs.length > 8000 ? logs.slice(-8000) : logs;
   const hasLog = logTail.trim().length > 0;
+  const sourceBlock = formatSourceContextForPrompt(sourceContext ?? null);
+  const hasSource = sourceBlock.length > 0;
 
-  // 沒 log 就不騙人 — 平台問題，使用者不是主責
-  if (!hasLog) {
+  // 沒 log 也沒 source 就不騙人 — 平台問題，使用者不是主責
+  if (!hasLog && !hasSource) {
     return {
       category: 'unknown',
       ownership: 'platform',
@@ -358,7 +364,9 @@ export async function analyzeDeployFailure(
 失敗步驟：${step}
 錯誤訊息：${errorMessage}
 
-${hasLog ? `相關 log（最後部分）：\n\`\`\`\n${logTail}\n\`\`\`` : '（沒有可用的 log，請僅根據錯誤訊息推理）'}`;
+${hasLog ? `相關 log（最後部分）：\n\`\`\`\n${logTail}\n\`\`\`` : '（沒有可用的 log，請僅根據錯誤訊息 + 專案設定檔推理）'}
+
+${hasSource ? `\n使用者專案 context（package.json/tsconfig/錯誤檔案片段等 —— 請優先用這些判斷 root cause、指出 user 具體要改哪一行）：\n\`\`\`\n${sourceBlock}\n\`\`\`` : ''}`;
 
   try {
     const result = await callLLM(system, userMessage, 2000);

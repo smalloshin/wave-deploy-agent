@@ -1149,9 +1149,20 @@ export async function projectRoutes(app: FastifyInstance) {
       logFetchNote = 'error 訊息中找不到 Cloud Build ID（不是 build step 失敗 / 格式不符）';
     }
 
+    // Try to read source context (from tarball in GCS since projectDir is long gone by now)
+    const { readSourceContextFromGcs } = await import('../services/source-reader');
+    const gcsUriForCtx = (project.config?.gcsFixedSourceUri as string | undefined)
+      ?? (project.config?.gcsSourceUri as string | undefined);
+    const sourceContext = await readSourceContextFromGcs(gcsUriForCtx, buildLog);
+    if (sourceContext) {
+      console.log(`[Reanalyze] Source context: ${sourceContext.stats.filesReadNearError} snippets + ${sourceContext.stats.fingerprintFiles} fingerprint files`);
+    } else {
+      console.log('[Reanalyze] No source context available (no GCS tarball or fetch failed)');
+    }
+
     // Run LLM analysis
     const { analyzeDeployFailure } = await import('../services/llm-analyzer');
-    const diagnosis = await analyzeDeployFailure(failedStep, errorMessage, buildLog, project.name);
+    const diagnosis = await analyzeDeployFailure(failedStep, errorMessage, buildLog, project.name, sourceContext);
     console.log(`[Reanalyze] Diagnosis: [${diagnosis.category}] ${diagnosis.summary} (provider=${diagnosis.provider})`);
 
     // Merge buildDiagnosis into the existing transition's metadata

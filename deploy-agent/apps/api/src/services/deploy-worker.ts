@@ -20,6 +20,7 @@ import { runCanaryChecks } from './canary-monitor';
 import { detectProject } from './project-detector';
 import { detectEnvVars, mergeEnvVars } from './env-detector';
 import { classifyEnvWithLLM, analyzeDeployFailure, type EnvClassificationContext } from './llm-analyzer';
+import { readSourceContextFromDir, readSourceContextFromGcs } from './source-reader';
 import { provisionProjectDatabase } from './db-provisioner';
 import { provisionProjectRedis } from './redis-provisioner';
 import { restoreDbDump } from './db-restore';
@@ -551,12 +552,15 @@ export async function runDeployPipeline(
       let buildDiagnosis: Awaited<ReturnType<typeof analyzeDeployFailure>> | null = null;
       try {
         const logLen = buildResult.buildLog?.length ?? 0;
-        console.log(`[Deploy]   Analyzing build failure with LLM (${logLen} chars log)...`);
+        // 讀使用者 source code 的 fingerprint + 錯誤行附近片段，讓 LLM 能給精確修法
+        const sourceContext = await readSourceContextFromDir(projectDir, buildResult.buildLog ?? '');
+        console.log(`[Deploy]   Analyzing build failure with LLM (log=${logLen} chars, source snippets=${sourceContext.stats.filesReadNearError}, fingerprint=${sourceContext.stats.fingerprintFiles})...`);
         buildDiagnosis = await analyzeDeployFailure(
           'Step 3: Build Docker image (Cloud Build)',
           buildResult.error ?? 'Unknown build error',
           buildResult.buildLog ?? '',
           project.name,
+          sourceContext,
         );
         console.log(`[Deploy]   Build diagnosis: [${buildDiagnosis.category}] ${buildDiagnosis.summary}`);
       } catch (llmErr) {
@@ -1028,12 +1032,21 @@ export async function runDeployPipeline(
     if (!buildDiagnosis) {
       try {
         console.log(`[Deploy]   Analyzing failure with LLM at ${currentStep}...`);
-        const projectName = (await getProject(projectId))?.name ?? 'unknown';
+        const proj = await getProject(projectId);
+        const projectName = proj?.name ?? 'unknown';
+        // 試著讀 source context —— 本機 projectDir 優先，失敗就從 GCS 拉
+        const projDirForCtx = proj?.sourceUrl ?? '';
+        const fallbackGcsUri = (proj?.config?.gcsFixedSourceUri as string | undefined)
+          ?? (proj?.config?.gcsSourceUri as string | undefined);
+        const sourceContext = projDirForCtx
+          ? await readSourceContextFromDir(projDirForCtx, attachedLog)
+          : await readSourceContextFromGcs(fallbackGcsUri, attachedLog);
         buildDiagnosis = await analyzeDeployFailure(
           currentStep,
           error.message,
           attachedLog,
           projectName,
+          sourceContext,
         );
         console.log(`[Deploy]   Diagnosis: [${buildDiagnosis.category}] ${buildDiagnosis.summary}`);
       } catch (llmErr) {
