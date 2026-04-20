@@ -4,6 +4,31 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-19（深夜 QA）—— 雙面向診斷 UI 的舊資料坑（commit `8310032`）**
+
+跑 `/qa` 對 prod dashboard 做 diff-aware 測試，發現**雙面向診斷 UI 對舊資料完全失效**：
+
+- gam-publisher 的 `buildDiagnosis` 是 04-18 產的舊格式（只有 category / summary / rootCause / extraObservations...）
+- 新欄位 `ownership` / `userFacingMessage` / `adminFacingMessage` **都是 undefined**
+- UI 邏輯是 `{diag ? <rich> : <fallback-with-reanalyze-btn>}` —— 舊 diag 走 rich 分支但渲染不出任何使用者面向內容
+- **最慘：reanalyze 按鈕藏在 else 分支，admin 也點不到**
+
+修法（`deploy-agent/apps/web/app/projects/[id]/page.tsx`）：
+1. `diag` 存在但缺 `userFacingMessage` → 秀灰色虛線框提示「這是舊版診斷格式…管理員可重新分析」
+2. Reanalyze 按鈕搬出三元式，改 `isAdmin && (...)` 永遠秀，文字動態：
+   - 有 diag：「🤖 重新分析（刷新診斷）」
+   - 沒 diag：「🤖 用 AI 重新分析失敗原因」
+3. 順手 `e73be6e` 加 `*.tsbuildinfo` 到 gitignore（每次 build 都 dirty）
+
+**QA report**：`.gstack/qa-reports/qa-report-deploy-agent-web-2026-04-19.md`
+**待 push + Cloud Build 重新部署 web app 才能在 prod 驗證**
+
+Pitfall 學到（#18）：**diag schema 加欄位要想好 migration**。老資料不會自動補欄位，
+UI 渲染邏輯必須同時處理「新格式」和「缺欄位的舊格式」兩種狀態，不能只靠
+`{diag ? ... : ...}` 就以為搞定。未來 schema 升級直接寫一次 batch reanalyze 回填。
+
+---
+
 **2026-04-19（晚上）—— 部署失敗分析加「使用者面向／管理員面向」雙面向（commit `27ba13b`）**
 
 使用者明確指出目前的錯誤訊息是管理員面向的（IAM、bucket、SA 等術語），
