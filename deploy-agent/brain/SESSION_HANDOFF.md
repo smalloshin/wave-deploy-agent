@@ -4,6 +4,71 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-20 —— LLM 診斷升級：餵 source code + Cloud Build pre-flight（commits `677162b`, `1dd6a3b`）**
+
+使用者觀察到：Claude 在對話時能指出「好像有個 ts 檔出錯」，但 UI 的 LLM 診斷只會說
+「判斷不出來 / 未知」。差距的根因：**UI LLM 完全沒看到 user source code**，只吃
+Cloud Build 的高階錯誤文字（而且舊 log bucket 讀不到 → 空 log fallback）。
+
+使用者明確要求「讓 UI 做到跟你一樣的事情」。方案兩層：
+
+**Layer 1 — 餵 source code 給 LLM（commit `677162b`）**
+
+新檔 `apps/api/src/services/source-reader.ts`：
+- `extractErrorLocations(buildLog)` — 從 log 尾端 regex 出 `file.ts:47:5` 這種
+  「檔名:行號」，自動過濾 node_modules/.next/dist
+- `readSourceContextFromDir(projectDir, buildLog)` — 本機 fs 讀
+  （deploy-worker hot path 最快）
+- `readSourceContextFromGcs(gcsUri, buildLog)` — 事後 reanalyze 從 GCS tarball
+  拉到 /tmp 解壓（gcpFetch + shell tar，codebase 風格一致，零 npm lib）
+- 每個 fingerprint 檔 cap 4KB、每個 snippet cap 3KB、最多 5 個 error-adjacent 檔
+
+三條路徑都接上：
+- deploy-worker Step 3 build 失敗 → projectDir 讀
+- deploy-worker 其他 step 失敗 → projectDir 優先，不在就 GCS tarball
+- reanalyze-failure endpoint → GCS tarball（pipeline 早結束）
+
+`llm-analyzer.analyzeDeployFailure` 新增 optional `sourceContext?: SourceContext | null`
+參數，format 成純文字區塊注入 user prompt：「【專案設定檔】package.json / tsconfig /
+next.config ... 【錯誤位置附近的程式碼】src/app/foo.ts:47 …」。
+「沒 log」fallback 也考慮 hasSource，只要有 source 就給 LLM 試一次。
+
+**Layer 2 — Cloud Build pre-flight（commit `1dd6a3b`）**
+
+TS 專案在 docker build 前先跑 `tsc --noEmit`，錯誤以乾淨 stderr fail fast，
+不用等 `next build` 在 docker 裡跑 5 分鐘才發現：
+
+```
+steps:
+  - name: node:22-alpine  (或 oven/bun:1 / corepack pnpm|yarn)
+    entrypoint: sh
+    args: -c 'install + npx --no-install tsc --noEmit'
+    id: preflight-tsc
+  - name: gcr.io/cloud-builders/docker
+    args: build ...
+```
+
+啟用條件：
+- `detectedLanguage === 'typescript'` + projectDir 有 tsconfig.json + 偵測到 pkgMgr
+- env `DEPLOY_PREFLIGHT` 不等於 '0'（預設開）
+
+Trade-off：happy path 多 60-90s install（跑兩次），fail 時省 3-5min docker build +
+拿到最乾淨的「檔名:行號: TSxxxx: ...」stderr → 直接餵 Layer 1 的 source-reader +
+LLM → 預期從「判斷不出來」升級到「`src/app/foo.ts` 第 47 行的 `foo.qux()` 少
+import，改成 `import foo from 'bar'`」這種精確修法。
+
+**驗證計劃**：
+1. push + 重新部署 API（deploy-agent Cloud Run）
+2. 找一個會 TS 錯誤的測試專案部署，確認 pre-flight 在 docker 前就 fail
+3. 檢查 build log bucket 拿到 tsc 乾淨輸出
+4. 確認 dashboard 失敗面板秀出具體檔名:行號 + 修法
+
+**Pitfall 記（#19）**：LLM 診斷品質 = context 品質。給它 log 尾端 8KB 不夠，
+package.json + tsconfig + 錯誤行 ±50 行程式碼才是關鍵。這跟「人類開發者」排
+錯流程一樣 —— 看報錯訊息先定位檔案，再打開看程式碼判斷怎麼改。
+
+---
+
 **2026-04-19（深夜 QA）—— 雙面向診斷 UI 的舊資料坑（commit `8310032`）**
 
 跑 `/qa` 對 prod dashboard 做 diff-aware 測試，發現**雙面向診斷 UI 對舊資料完全失效**：
