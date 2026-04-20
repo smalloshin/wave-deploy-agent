@@ -45,11 +45,14 @@ await app.register(cookie, {
   secret: process.env.SESSION_SECRET ?? 'dev-secret-change-me',
 });
 
-// Global rate limit (100 req/min per IP); individual routes can override (login = 5/min)
+// Global rate limit (600 req/min per IP — ~10/sec); individual routes override (login = 5/min).
+// 600 because 4 pages poll at 5s interval across tabs; behind shared NAT a whole team shares one IP.
+// /health excluded so Cloud Run probe doesn't burn the budget.
 await app.register(rateLimit, {
   global: true,
-  max: Number(process.env.RATE_LIMIT_MAX ?? 100),
+  max: Number(process.env.RATE_LIMIT_MAX ?? 600),
   timeWindow: '1 minute',
+  allowList: (req) => req.url === '/health',
 });
 
 // Auth hook (runs before all routes; skips public routes internally)

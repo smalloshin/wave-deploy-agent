@@ -21,7 +21,10 @@ export default function ReviewsPage() {
 
   useEffect(() => {
     loadReviews();
-    const interval = setInterval(() => loadReviews(true), 5000);
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      loadReviews(true);
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 

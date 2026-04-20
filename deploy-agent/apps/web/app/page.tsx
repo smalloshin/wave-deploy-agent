@@ -146,7 +146,10 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     loadGroups();
-    const interval = setInterval(() => loadGroups(true), 5000);
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      loadGroups(true);
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 

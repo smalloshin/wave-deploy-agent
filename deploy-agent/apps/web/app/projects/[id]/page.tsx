@@ -205,7 +205,11 @@ export default function ProjectDetailPage() {
     loadDetail();
     loadVersions();
     loadWebhookConfig();
-    const interval = setInterval(() => { loadDetail(true); loadVersions(); }, 5000);
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      loadDetail(true);
+      loadVersions();
+    }, 5000);
     return () => clearInterval(interval);
   }, [id]);
 

@@ -23,7 +23,10 @@ export default function DeploysPage() {
 
   useEffect(() => {
     loadDeployments();
-    const interval = setInterval(() => loadDeployments(true), 5000);
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      loadDeployments(true);
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 

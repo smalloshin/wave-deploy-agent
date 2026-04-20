@@ -4,6 +4,60 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-20（下半場）—— UI `--status-live` 通過按鈕消失 + Cloud Build logsBucket 400（commits `56dbf46`, `54794e4`）**
+
+連發兩個坑，都從一張 screenshot 抓到：
+
+**Bug #1：通過按鈕按下去整個不見（`56dbf46`）**
+
+reviews/[id]/page.tsx 的 approve/reject 按鈕用 `var(--status-live)` / `var(--status-live-bg)`
+做底色，但 `globals.css` 的 brand palette refactor（`b0bef0d`）把 token 改成
+`--status-success` / `--status-success-bg`，沒留 alias —— 結果 `var(--status-live)`
+undefined，CSS fallback 成 initial（transparent），按鈕底色消失、白字在白底 → 看不見。
+全站 20+ 處 JSX 都還在用 `--status-live`。
+
+修法兩層：
+1. `globals.css` 加 legacy alias `--status-live: var(--status-success)` —— 所有 20+
+   處 JSX 一次救活，不用逐一改。
+2. approve/reject 兩顆按鈕用 inline style 明確指定 `background: var(--status-success)` /
+   `var(--status-critical)` + `color: var(--text-inverse)`，保證白字 + 綠/紅底，不再
+   靠 CSS token 間接跳轉。
+
+**Bug #2：新專案部署全部 400（`54794e4`）**
+
+上一個 commit（`b5e9916`）把 `logsBucket` 放進 Cloud Build request 的 `options` 物件裡，
+Google REST API 回 `INVALID_ARGUMENT: Unknown name "logsBucket" at "build.options"`。
+效果：deploy-worker 呼叫 Cloud Build submit 直接 400 → 沒 build ID → 沒 log →
+走「no log」fallback → dashboard 秀「平台問題」。
+
+修法：`deploy-engine.ts` 把 `logsBucket` 移到 Build top-level：
+
+```ts
+// 錯：
+options: { logging: 'GCS_ONLY', logsBucket: `gs://${gcsBucket}` }
+// 對：
+logsBucket: `gs://${gcsBucket}`,
+options: { logging: 'GCS_ONLY' }
+```
+
+**Pitfall 記（#20）**：Cloud Build REST API `logsBucket` 是 Build 物件的**頂層**欄位，
+不是 `options` 內層。文件和 `gcloud builds submit --gcs-log-dir` flag 都很容易讓人
+以為是 options 的 sub-field。submit-time 直接 400，但如果沒盯 dashboard 的「新建專案
+全部走 no-log fallback」現象，會以為是別的問題。
+
+**Pitfall 記（#21）**：`gcloud builds submit --config cloudbuild.yaml .`（不經 trigger）
+`$SHORT_SHA` 是空字串，會炸 `invalid reference format: docker tag ends with ':'`。
+手動 submit 必須帶 `--substitutions=SHORT_SHA=<sha>`，或改 yaml 加 default value。
+trigger 驅動的 build 才會自動塞真 commit sha。
+
+**部署狀態**：
+- `da0cce7a` SUCCESS（`56dbf46` —— UI 綠色按鈕 + `--status-live` alias + Layer 1 source
+  context + Layer 2 pre-flight 全部到 prod）
+- `cc5ac9de` SUCCESS（`54794e4` —— logsBucket top-level 修）
+- API + Web health 200 ✓
+
+---
+
 **2026-04-20 —— LLM 診斷升級：餵 source code + Cloud Build pre-flight（commits `677162b`, `1dd6a3b`）**
 
 使用者觀察到：Claude 在對話時能指出「好像有個 ts 檔出錯」，但 UI 的 LLM 診斷只會說
