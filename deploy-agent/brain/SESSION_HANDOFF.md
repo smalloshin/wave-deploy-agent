@@ -54,7 +54,36 @@ trigger 驅動的 build 才會自動塞真 commit sha。
 - `da0cce7a` SUCCESS（`56dbf46` —— UI 綠色按鈕 + `--status-live` alias + Layer 1 source
   context + Layer 2 pre-flight 全部到 prod）
 - `cc5ac9de` SUCCESS（`54794e4` —— logsBucket top-level 修）
+- `e9ec21aa` SUCCESS（`425b978` —— HTTP 429 分頁停久就跳的修法）
 - API + Web health 200 ✓
+
+---
+
+**2026-04-20（延伸）—— HTTP 429「Failed to load project」停久就跳（commit `425b978`）**
+
+使用者回報「三不五時會出現這個錯誤？特別是在一個網頁停得夠久的時候」—— screenshot
+秀 429。根因兩層疊：
+
+1. **API rate limit 太緊**：`apps/api/src/index.ts:51` 預設 `RATE_LIMIT_MAX=100` req/min
+   per IP。公司/家裡 NAT 把所有同事的 request 當同一個 IP 算，多人共用很快爆。
+2. **Web 每頁 polling 不管前景背景**：
+   - `projects/[id]/page.tsx` 每 5s 打 **2 個** endpoint（`loadDetail` + `loadVersions`）= 24 req/min
+   - `page.tsx` (project list) + `reviews/page.tsx` + `deploys/page.tsx` 各 12 req/min
+   - 分頁丟在背景，setInterval 還在偷打 API
+   - 疊 2-3 個 idle 分頁 2 分鐘 → 100 滿 → 切回來或導航時 429
+
+修法兩邊一起：
+- **API**：預設 `RATE_LIMIT_MAX=600` req/min（10/sec，有足夠餘裕）；`/health` 進 `allowList`
+  不吃額度（Cloud Run probe 不該跟 user 爭 quota）；env 可壓可放。
+- **Web**：4 個 setInterval 每輪先 `if (document.hidden) return;` 跳過。背景分頁零成本。
+
+**Pitfall 記（#22）**：`@fastify/rate-limit` v10 的 `allowList` 是 **IP/key 清單**，
+字串元素會跟 request key 比對，**不是**路徑清單。要 skip 路徑必須傳 function
+`(req) => req.url === '/health'`。一開始以為可以直接 `allowList: ['/health']` 是錯的。
+
+**Pitfall 記（#23）**：SPA polling 預設 5s + 不管 document.hidden 非常燒額度。在背景
+分頁累積一下午可以打爆 rate limit。長久一點的設計：visibility API + exponential backoff，
+或乾脆換 WebSocket / SSE 才是對的。
 
 ---
 
