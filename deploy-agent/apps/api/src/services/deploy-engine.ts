@@ -21,6 +21,17 @@ export interface DeployConfig {
     subnet: string;    // e.g. "default"
     egress?: 'ALL_TRAFFIC' | 'PRIVATE_RANGES_ONLY';
   };
+  /**
+   * Optional pre-flight check. When set, Cloud Build runs a lightweight
+   * language-specific check (tsc --noEmit for TS projects) BEFORE the Docker
+   * build step. TypeScript errors surface with clean stderr instead of being
+   * hidden inside `next build` output, so LLM diagnosis can name the bad line.
+   */
+  preflight?: {
+    language: 'typescript' | 'javascript';
+    packageManager: 'npm' | 'yarn' | 'pnpm' | 'bun';
+    hasTypescript: boolean;
+  };
 }
 
 export interface DeployResult {
@@ -84,6 +95,12 @@ export async function buildAndPushImage(
       try { unlinkSync(tarballPath); } catch { /* ignore */ }
     }
 
+    // Build Cloud Build steps: optional pre-flight (tsc --noEmit) + docker build
+    const preflightSteps = buildPreflightSteps(config.preflight);
+    if (preflightSteps.length > 0) {
+      console.log(`[Deploy]   Pre-flight enabled: ${config.preflight?.packageManager} + tsc --noEmit`);
+    }
+
     // Trigger Cloud Build with GCS source
     const buildRequest = {
       source: {
@@ -93,6 +110,7 @@ export async function buildAndPushImage(
         },
       },
       steps: [
+        ...preflightSteps,
         {
           name: 'gcr.io/cloud-builders/docker',
           args: [
@@ -916,4 +934,61 @@ export async function getServiceImage(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ─── Pre-flight check builder ───
+//
+// 回傳要塞在 docker build 之前的 Cloud Build step。目的是「TS 錯誤 fail fast」：
+// 跑 tsc --noEmit，錯誤就只是幾行 stderr 丟進 log bucket，比塞在 next build 裡
+// 乾淨得多。LLM + source-reader 拿到乾淨 stderr 就能直接指出「src/app/x.ts:47」
+// 具體哪一行要改。
+//
+// 只對 TS 專案啟用，且必須確認 `typescript` 是專案 dep（免得 npx 去遠端拉）。
+// 不是 TS 專案或 preflight 未設定就回 empty array，等於沒事發生。
+function buildPreflightSteps(
+  preflight?: DeployConfig['preflight'],
+): Array<Record<string, unknown>> {
+  if (!preflight || preflight.language !== 'typescript' || !preflight.hasTypescript) {
+    return [];
+  }
+
+  // Pick install command by package manager. Use frozen-lockfile equivalents
+  // so the pre-flight doesn't accidentally drift from docker build's lockfile.
+  let installCmd: string;
+  let image: string;
+  switch (preflight.packageManager) {
+    case 'bun':
+      image = 'oven/bun:1';
+      installCmd = 'bun install --frozen-lockfile';
+      break;
+    case 'pnpm':
+      image = 'node:22-alpine';
+      // pnpm isn't in the base node image; enable via corepack
+      installCmd = 'corepack enable && pnpm install --frozen-lockfile';
+      break;
+    case 'yarn':
+      image = 'node:22-alpine';
+      installCmd = 'corepack enable && yarn install --frozen-lockfile';
+      break;
+    case 'npm':
+    default:
+      image = 'node:22-alpine';
+      installCmd = 'npm ci --prefer-offline --no-audit --loglevel=error';
+      break;
+  }
+
+  // Use `npx --no-install tsc` so if typescript isn't installed it fails
+  // loudly rather than silently fetching from npm.
+  const tscCmd = preflight.packageManager === 'bun'
+    ? 'bun x --bun tsc --noEmit'
+    : 'npx --no-install tsc --noEmit';
+
+  return [
+    {
+      name: image,
+      entrypoint: 'sh',
+      args: ['-c', `set -e; echo "── wave-deploy-agent pre-flight: install + tsc ──"; ${installCmd}; echo "── tsc --noEmit ──"; ${tscCmd}`],
+      id: 'preflight-tsc',
+    },
+  ];
 }

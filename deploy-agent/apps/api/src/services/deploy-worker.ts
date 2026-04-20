@@ -70,12 +70,14 @@ export async function runDeployPipeline(
     let port = 3000;
     let detectedFramework: string | null = project.detectedFramework ?? null;
     let detectedLanguage = project.detectedLanguage ?? 'unknown';
+    let detectedPackageManager: 'npm' | 'yarn' | 'pnpm' | 'bun' | null = null;
     try {
       const detection = detectProject(projectDir);
       port = detection.port;
       detectedFramework = detection.framework;
       detectedLanguage = detection.language;
-      console.log(`[Deploy]   Detected: ${detectedLanguage}/${detectedFramework ?? 'none'}, port: ${port}`);
+      detectedPackageManager = (detection.packageManager as typeof detectedPackageManager) ?? null;
+      console.log(`[Deploy]   Detected: ${detectedLanguage}/${detectedFramework ?? 'none'}, port: ${port}, pkgMgr: ${detectedPackageManager ?? 'none'}`);
     } catch {
       // projectDir may not exist (ephemeral /tmp after revision change)
       // Fall back to DB-stored detection + port saved during pipeline scan
@@ -536,6 +538,24 @@ export async function runDeployPipeline(
     // ─── Step 3: Build and push Docker image ───
     currentStep = 'Step 3: Build Docker image (Cloud Build)';
     console.log(`[Deploy] ${currentStep}...`);
+
+    // Pre-flight: 對 TS 專案跑 tsc --noEmit，讓 TS 錯誤以乾淨 stderr fail fast，
+    // 不要塞在 next build 的輸出裡讓 LLM 難解析。預設開啟，env DEPLOY_PREFLIGHT=0 可關掉。
+    const preflightEnabled = process.env.DEPLOY_PREFLIGHT !== '0';
+    const hasTsConfig = (() => {
+      try {
+        const { existsSync: efs } = require('node:fs');
+        return projectDir ? efs(`${projectDir}/tsconfig.json`) : false;
+      } catch { return false; }
+    })();
+    const preflight = (preflightEnabled && detectedLanguage === 'typescript' && hasTsConfig && detectedPackageManager)
+      ? {
+          language: 'typescript' as const,
+          packageManager: detectedPackageManager,
+          hasTypescript: true,
+        }
+      : undefined;
+
     const buildResult = await buildAndPushImage(projectDir, {
       projectSlug: project.slug,
       gcpProject,
@@ -544,6 +564,7 @@ export async function runDeployPipeline(
       imageTag: `v${Date.now()}`,
       envVars: finalEnvVars,
       port,
+      preflight,
     }, gcsSourceUri);
 
     if (!buildResult.success) {
