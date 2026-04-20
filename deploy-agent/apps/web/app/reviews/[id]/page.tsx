@@ -245,7 +245,11 @@ export default function ReviewDetailPage() {
               onClick={() => setDecision('approved')}
               style={{
                 flex: 1, padding: '10px', fontSize: 14,
-                ...(decision === 'approved' ? { background: 'var(--status-live)', borderColor: 'var(--status-live)' } : {}),
+                ...(decision === 'approved' ? {
+                  background: 'var(--status-success)',
+                  borderColor: 'var(--status-success)',
+                  color: 'var(--text-inverse)',
+                } : {}),
               }}
             >
               {t('approve')}
@@ -256,7 +260,11 @@ export default function ReviewDetailPage() {
               onClick={() => setDecision('rejected')}
               style={{
                 flex: 1, padding: '10px', fontSize: 14,
-                ...(decision === 'rejected' ? { background: 'var(--status-critical)', borderColor: 'var(--status-critical)' } : {}),
+                ...(decision === 'rejected' ? {
+                  background: 'var(--status-critical)',
+                  borderColor: 'var(--status-critical)',
+                  color: 'var(--text-inverse)',
+                } : {}),
               }}
             >
               {t('reject')}

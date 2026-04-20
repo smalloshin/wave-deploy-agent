@@ -40,6 +40,11 @@
   --status-success: #1a7f37;     --status-success-bg: #dafbe1;
   --status-warning: #9a5700;     --status-warning-bg: #fff3c2;
   --status-info: var(--sea-500); --status-info-bg: var(--sea-100);
+
+  /* Legacy aliases — brand palette refactor renamed these but many JSX files
+     still reference --status-live. Alias keeps them working. */
+  --status-live: var(--status-success);
+  --status-live-bg: var(--status-success-bg);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
