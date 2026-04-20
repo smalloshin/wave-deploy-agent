@@ -127,9 +127,11 @@ export async function buildAndPushImage(
       timeout: '600s',
       // Write logs to our own bucket so deploy-agent SA can read them.
       // Default cloudbuild-logs bucket is Google-managed and our SA can't be granted access.
+      // NOTE: logsBucket is a TOP-LEVEL Build field in REST API, NOT nested in options.
+      // Putting it under options makes Cloud Build return 400 "Unknown name logsBucket".
+      logsBucket: `gs://${gcsBucket}`,
       options: {
         logging: 'GCS_ONLY',
-        logsBucket: `gs://${gcsBucket}`,
       },
     };
 
