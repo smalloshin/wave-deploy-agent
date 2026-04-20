@@ -526,7 +526,7 @@ export default function ProjectDetailPage() {
             {diag ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {/* ─── 使用者面向 ─── */}
-                {diag.userFacingMessage && (
+                {diag.userFacingMessage ? (
                   <div style={{
                     padding: '14px 16px',
                     background: ownershipInfo.bg,
@@ -546,6 +546,20 @@ export default function ProjectDetailPage() {
                       給使用者的建議 · {ownershipInfo.hint}
                     </div>
                     <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>{diag.userFacingMessage}</div>
+                  </div>
+                ) : (
+                  // 舊版診斷（無 userFacingMessage）—— 提示使用者 / 管理員可重新分析
+                  <div style={{
+                    padding: '10px 12px',
+                    background: 'rgba(139,148,158,0.08)',
+                    borderRadius: 6,
+                    border: '1px dashed rgba(139,148,158,0.35)',
+                    fontSize: 12,
+                    color: 'var(--text-secondary)',
+                    lineHeight: 1.6,
+                  }}>
+                    這是舊版診斷格式，尚未產生使用者面向摘要。
+                    {isAdmin ? '請按下方「🤖 重新分析」取得最新的使用者／管理員雙面向診斷。' : '請聯絡管理員點擊「重新分析」以取得使用者面向的建議。'}
                   </div>
                 )}
 
@@ -625,31 +639,33 @@ export default function ProjectDetailPage() {
                 )}
               </div>
             ) : (
-              // Fallback：沒有 LLM 診斷（舊資料或 LLM 失敗）時秀原始錯誤 + 提供 reanalyze 按鈕
-              <>
-                {meta.error ? (
-                  <div style={codeBlockStyle}>{String(meta.error)}</div>
-                ) : null}
-                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <button
-                    className="btn"
-                    onClick={handleReanalyze}
-                    disabled={reanalyzing}
-                    style={{
-                      background: 'rgba(88,166,255,0.12)',
-                      border: '1px solid rgba(88,166,255,0.35)',
-                      color: 'var(--accent-blue, #58a6ff)',
-                      fontSize: 12,
-                      padding: '6px 12px',
-                    }}
-                  >
-                    {reanalyzing ? '分析中…' : '🤖 用 AI 重新分析失敗原因'}
-                  </button>
-                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-                    抓取 Cloud Build log 並用 Claude/GPT 產出診斷報告
-                  </span>
-                </div>
-              </>
+              // Fallback：完全沒有 LLM 診斷（舊資料或 LLM 失敗）時只秀原始錯誤；reanalyze 按鈕移到下方 admin-only 區塊
+              meta.error ? (
+                <div style={codeBlockStyle}>{String(meta.error)}</div>
+              ) : null
+            )}
+
+            {/* Reanalyze 按鈕 —— admin only，永遠可觸發（新／舊／空診斷都能刷新）*/}
+            {isAdmin && (
+              <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="btn"
+                  onClick={handleReanalyze}
+                  disabled={reanalyzing}
+                  style={{
+                    background: 'rgba(88,166,255,0.12)',
+                    border: '1px solid rgba(88,166,255,0.35)',
+                    color: 'var(--accent-blue, #58a6ff)',
+                    fontSize: 12,
+                    padding: '6px 12px',
+                  }}
+                >
+                  {reanalyzing ? '分析中…' : diag ? '🤖 重新分析（刷新診斷）' : '🤖 用 AI 重新分析失敗原因'}
+                </button>
+                <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                  抓取 Cloud Build log 並用 Claude/GPT 產出 使用者／管理員 雙面向診斷
+                </span>
+              </div>
             )}
 
             {isAdmin && meta.stack ? (
