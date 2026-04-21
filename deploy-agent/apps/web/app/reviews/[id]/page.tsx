@@ -211,9 +211,10 @@ export default function ReviewDetailPage() {
                     </td>
                     <td style={{ padding: '8px' }}>
                       <span style={{
-                        fontSize: 11, padding: '2px 6px', borderRadius: 4,
-                        background: f.action === 'auto_fix' ? 'rgba(63,185,80,0.15)' : 'rgba(255,255,255,0.05)',
-                        color: f.action === 'auto_fix' ? 'var(--status-live)' : 'var(--text-secondary)',
+                        fontSize: 'var(--fs-xs)', padding: '2px 6px', borderRadius: 'var(--r-sm)',
+                        background: f.action === 'auto_fix' ? 'var(--ok-bg)' : 'var(--ink-100)',
+                        color: f.action === 'auto_fix' ? 'var(--ok)' : 'var(--ink-500)',
+                        fontWeight: 600,
                       }}>
                         {f.action === 'auto_fix' ? t('autoFixApplied') : tc('pending')}
                       </span>
@@ -240,9 +241,10 @@ export default function ReviewDetailPage() {
               </div>
               {fix.diff && (
                 <pre style={{
-                  fontSize: 11, fontFamily: 'monospace', color: 'var(--text-secondary)',
+                  fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono, monospace)', color: 'var(--ink-700)',
                   whiteSpace: 'pre-wrap', margin: 0, marginTop: 4,
-                  padding: 8, background: 'rgba(0,0,0,0.15)', borderRadius: 4,
+                  padding: 'var(--sp-3)', background: 'var(--ink-50)', borderRadius: 'var(--r-sm)',
+                  border: '1px solid var(--ink-100)',
                 }}>
                   {fix.diff}
                 </pre>

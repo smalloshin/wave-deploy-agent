@@ -24,7 +24,7 @@ export function LocaleSwitcher() {
   }
 
   return (
-    <div style={{ display: 'flex', gap: 4, fontSize: 12 }}>
+    <div style={{ display: 'flex', gap: 4 }}>
       {LOCALES.map(l => {
         const active = l.code === current;
         return (
@@ -33,14 +33,15 @@ export function LocaleSwitcher() {
             onClick={() => !active && setLocale(l.code)}
             disabled={isPending || active}
             style={{
-              padding: '2px 8px',
-              background: active ? 'var(--accent-blue, #58a6ff)' : 'transparent',
-              color: active ? 'white' : 'var(--text-secondary)',
+              padding: '4px 10px',
+              background: active ? 'var(--sea-500)' : 'transparent',
+              color: active ? 'var(--text-inverse)' : 'var(--ink-500)',
               border: '1px solid var(--border)',
-              borderRadius: 4,
+              borderRadius: 'var(--r-sm)',
               cursor: active ? 'default' : 'pointer',
-              fontSize: 11,
-              fontWeight: active ? 600 : 400,
+              fontSize: 'var(--fs-xs)',
+              fontWeight: 600,
+              fontFamily: 'inherit',
             }}
           >
             {l.label}

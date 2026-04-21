@@ -67,6 +67,35 @@
 - item padding `--sp-3 --sp-4`、字 `--fs-md`、weight 500/600
 - login link / logout button 全換 token
 
+**DS 4.0 polish batch（commit `0ad8939` 後 + 本批）**：
+- 8 頁完整 port：/, /login, /reviews, /deploys, /infra, /settings, /admin, /reviews/[id]
+- 全換 heroStyle（`--fs-2xl` 36 + weight 700 + -0.02em letter-spacing）
+- Table-in-card pattern：外包 `--r-lg` card，thead `--ink-50` + weight 600
+- 所有 messages/banners 改 canonical `--ok-bg/--warn-bg/--danger-bg/--info-bg`
+
+**DS 4.0 polish batch 2（本次）**：
+- `projects/[id]/page.tsx` 清掉所有 hardcoded 色：
+  - `#58a6ff` / `rgba(88,166,255,*)` → `--sea-500` / `--sea-50` / `--info`
+  - `rgba(248,81,73,*)` (5 variants) → `--danger` / `--danger-bg`
+  - `rgba(63,185,80,*)` (6 variants) → `--ok` / `--ok-bg`
+  - `rgba(210,153,34,*)` / `rgba(255,200,87,*)` → `--warn` / `--warn-bg`
+  - `rgba(139,148,158,*)` → `--ink-*` scale
+  - `#f85149` / `#3fb950` / `#d29922` / `#8b949e` / `#db6d28` → tokens
+  - `codeBlockStyle`：dark-mode 殘留的 `rgba(0,0,0,0.28)` + white border → `--ink-50` + `--ink-100` border
+  - `SEVERITY_COLORS` + `strategyLabel` map → 全換 tokens
+  - Modal 背景 `rgba(0,0,0,0.6)` → `rgba(11,14,20,0.5)`（DS 4.0 標準）
+  - 唯一保留：`#8957e5` 紫色（environment/external，DS 沒紫色 token）
+- `page.tsx` 三個 modal 全部 port：
+  - `SubmitModal`：body `--surface-1` + `--r-lg` + `--sp-6` + `--shadow-md`，所有 `fontSize: 13/14` → tokens，drag zone `--ok`/`--sea-500` 邊框
+  - `DomainConflictModal`：`--warn` 邊框 + `.btn-danger` confirm
+  - `DeleteModal`：body + log area 全 token，confirm 換 `.btn-danger`
+  - `ModalField`：label 500 + 6px margin + `--r-md` input + `--fs-md`
+- `reviews/[id]/page.tsx` 補兩處：auto-fix badge `rgba(63,185,80,0.15)` → `--ok-bg`，diff pre `rgba(0,0,0,0.15)` → `--ink-50` + `--ink-100` border
+- `admin/page.tsx`：modal backdrop `rgba(0,0,0,0.4)` → `rgba(11,14,20,0.5)`
+- `lib/locale-switcher.tsx`：active 背景 `var(--accent-blue, #58a6ff)` → `--sea-500`，fontSize 11/12 → `--fs-xs`，borderRadius 4 → `--r-sm`
+- TypeScript `npx tsc --noEmit` exit 0
+- 尚未 push，等使用者確認再一次推 prod
+
 **2026-04-20（下半場）—— UI `--status-live` 通過按鈕消失 + Cloud Build logsBucket 400（commits `56dbf46`, `54794e4`）**
 
 連發兩個坑，都從一張 screenshot 抓到：

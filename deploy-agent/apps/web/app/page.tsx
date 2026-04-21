@@ -457,35 +457,39 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+      position: 'fixed', inset: 0, background: 'rgba(11,14,20,0.5)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
     }} onClick={onClose}>
       <div style={{
-        background: 'var(--bg-secondary)', borderRadius: 12, padding: 24,
-        width: 520, maxWidth: '90vw', border: '1px solid var(--border)',
+        background: 'var(--surface-1)', borderRadius: 'var(--r-lg)', padding: 'var(--sp-6)',
+        width: 560, maxWidth: '90vw', border: '1px solid var(--border)',
+        boxShadow: 'var(--shadow-md)',
       }} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>{t('title')}</h3>
+        <h3 style={{
+          fontSize: 'var(--fs-lg)', fontWeight: 600, marginBottom: 'var(--sp-4)',
+          color: 'var(--ink-900)', letterSpacing: '-0.01em',
+        }}>{t('title')}</h3>
 
         <ModalField label={t('projectName')} value={name} onChange={setName} placeholder="my-awesome-app" />
 
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
+        <div style={{ marginBottom: 'var(--sp-3)' }}>
+          <label style={{ display: 'block', fontSize: 'var(--fs-sm)', fontWeight: 500, marginBottom: 6, color: 'var(--ink-700)' }}>
             {t('sourceType')}
           </label>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
             <button
               type="button"
-              className={`btn ${sourceType === 'upload' ? 'btn-primary' : ''}`}
+              className={`btn btn-sm ${sourceType === 'upload' ? 'btn-primary' : ''}`}
               onClick={() => setSourceType('upload')}
-              style={{ flex: 1, fontSize: 13, padding: '8px 12px' }}
+              style={{ flex: 1, justifyContent: 'center' }}
             >
               {t('uploadArchive')}
             </button>
             <button
               type="button"
-              className={`btn ${sourceType === 'git' ? 'btn-primary' : ''}`}
+              className={`btn btn-sm ${sourceType === 'git' ? 'btn-primary' : ''}`}
               onClick={() => setSourceType('git')}
-              style={{ flex: 1, fontSize: 13, padding: '8px 12px' }}
+              style={{ flex: 1, justifyContent: 'center' }}
             >
               {t('gitRepo')}
             </button>
@@ -493,8 +497,8 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         </div>
 
         {sourceType === 'upload' ? (
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
+          <div style={{ marginBottom: 'var(--sp-3)' }}>
+            <label style={{ display: 'block', fontSize: 'var(--fs-sm)', fontWeight: 500, marginBottom: 6, color: 'var(--ink-700)' }}>
               {t('projectFiles')}
             </label>
             <div
@@ -517,9 +521,9 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
                 input.click();
               }}
               style={{
-                border: `2px dashed ${dragOver ? 'var(--accent)' : file ? 'var(--status-live)' : 'var(--border)'}`,
-                borderRadius: 8,
-                padding: file ? '16px' : '32px 16px',
+                border: `2px dashed ${dragOver ? 'var(--sea-500)' : file ? 'var(--ok)' : 'var(--border)'}`,
+                borderRadius: 'var(--r-md)',
+                padding: file ? 'var(--sp-4)' : 'var(--sp-6) var(--sp-4)',
                 textAlign: 'center',
                 cursor: 'pointer',
                 background: dragOver ? 'var(--sea-50)' : 'var(--ink-50)',
@@ -530,8 +534,8 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
                   <span style={{ fontSize: 20 }}>{'\uD83D\uDCC2'}</span>
                   <div style={{ textAlign: 'left' }}>
-                    <div style={{ fontWeight: 500, fontSize: 14, color: 'var(--text-primary)' }}>{file.name}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    <div style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--ink-900)' }}>{file.name}</div>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-500)' }}>
                       {t('replaceHint', { size: (file.size / 1024 / 1024).toFixed(1) })}
                     </div>
                   </div>
@@ -539,10 +543,10 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
               ) : (
                 <>
                   <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.5 }}>{'\uD83D\uDCC1'}</div>
-                  <div style={{ color: 'var(--text-secondary)', fontSize: 14, marginBottom: 4 }}>
+                  <div style={{ color: 'var(--ink-700)', fontSize: 'var(--fs-md)', marginBottom: 4 }}>
                     {t('dragHint')}
                   </div>
-                  <div style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                  <div style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-xs)' }}>
                     {t('browseHint')}
                   </div>
                 </>
@@ -566,8 +570,8 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         />
 
         {/* DB Dump upload (optional) */}
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
+        <div style={{ marginBottom: 'var(--sp-3)' }}>
+          <label style={{ display: 'block', fontSize: 'var(--fs-sm)', fontWeight: 500, marginBottom: 6, color: 'var(--ink-700)' }}>
             {t('dbDump')}
           </label>
           <div
@@ -582,23 +586,23 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
               input.click();
             }}
             style={{
-              border: `1px solid ${dbDumpFile ? 'var(--status-live)' : 'var(--border)'}`,
-              borderRadius: 6,
-              padding: '8px 12px',
+              border: `1px solid ${dbDumpFile ? 'var(--ok)' : 'var(--border)'}`,
+              borderRadius: 'var(--r-md)',
+              padding: '10px var(--sp-3)',
               cursor: 'pointer',
-              background: 'var(--bg-primary)',
+              background: 'var(--ink-50)',
               display: 'flex',
               alignItems: 'center',
-              gap: 8,
-              fontSize: 13,
+              gap: 'var(--sp-2)',
+              fontSize: 'var(--fs-sm)',
             }}
           >
             {dbDumpFile ? (
               <>
                 <span style={{ fontSize: 16 }}>{'\uD83D\uDDC3\uFE0F'}</span>
                 <div style={{ flex: 1 }}>
-                  <span style={{ color: 'var(--text-primary)' }}>{dbDumpFile.name}</span>
-                  <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>
+                  <span style={{ color: 'var(--ink-900)', fontWeight: 500 }}>{dbDumpFile.name}</span>
+                  <span style={{ color: 'var(--ink-500)', marginLeft: 8 }}>
                     ({(dbDumpFile.size / 1024 / 1024).toFixed(1)} MB)
                   </span>
                 </div>
@@ -606,7 +610,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
                   type="button"
                   onClick={(e) => { e.stopPropagation(); setDbDumpFile(null); }}
                   style={{
-                    background: 'none', border: 'none', color: 'var(--text-secondary)',
+                    background: 'none', border: 'none', color: 'var(--ink-500)',
                     cursor: 'pointer', fontSize: 16, padding: '0 4px',
                   }}
                 >
@@ -614,25 +618,25 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
                 </button>
               </>
             ) : (
-              <span style={{ color: 'var(--text-secondary)' }}>
+              <span style={{ color: 'var(--ink-500)' }}>
                 {t('dbDumpHint')}
               </span>
             )}
           </div>
         </div>
 
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 'var(--sp-4)' }}>
           <button
             type="button"
-            className="btn"
+            className="btn btn-sm"
             onClick={() => setShowEnvVars(!showEnvVars)}
-            style={{ fontSize: 12, padding: '4px 10px', color: 'var(--text-secondary)' }}
+            style={{ color: 'var(--ink-500)' }}
           >
             {showEnvVars ? t('hideEnvVars') : t('showEnvVars')}
           </button>
           {showEnvVars && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+            <div style={{ marginTop: 'var(--sp-2)' }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-500)', marginBottom: 6 }}>
                 {t('envVarsHint')}
               </div>
               <textarea
@@ -641,9 +645,9 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
                 placeholder={'DATABASE_URL=postgres://...\nAPI_KEY=sk-...'}
                 rows={4}
                 style={{
-                  width: '100%', padding: '8px 12px',
-                  background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                  borderRadius: 6, color: 'var(--text-primary)', fontSize: 13,
+                  width: '100%', padding: '10px var(--sp-3)',
+                  background: 'var(--surface-1)', border: '1px solid var(--border)',
+                  borderRadius: 'var(--r-md)', color: 'var(--ink-900)', fontSize: 'var(--fs-sm)',
                   fontFamily: 'var(--font-mono)', resize: 'vertical',
                 }}
               />
@@ -652,12 +656,20 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         </div>
 
         {error && (
-          <div style={{ padding: 8, marginBottom: 12, background: 'rgba(248,81,73,0.1)', borderRadius: 6, color: 'var(--status-critical)', fontSize: 13 }}>
+          <div style={{
+            padding: 'var(--sp-3)',
+            marginBottom: 'var(--sp-3)',
+            background: 'var(--danger-bg)',
+            border: '1px solid var(--danger)',
+            borderRadius: 'var(--r-md)',
+            color: 'var(--danger)',
+            fontSize: 'var(--fs-sm)',
+          }}>
             {error}
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onClose} disabled={submitting}>{tc('cancel')}</button>
           <button className="btn btn-primary" onClick={handleSubmit} disabled={submitting}>
             {submitting ? t('submitting') : t('submitScan')}
@@ -694,42 +706,51 @@ function DomainConflictModal({
   return (
     <div
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+        position: 'fixed', inset: 0, background: 'rgba(11,14,20,0.5)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100,
       }}
       onClick={onCancel}
     >
       <div
         style={{
-          background: 'var(--bg-secondary)', borderRadius: 12, padding: 24,
-          width: 480, maxWidth: '90vw', border: '1px solid var(--status-warning, #d29922)',
+          background: 'var(--surface-1)', borderRadius: 'var(--r-lg)', padding: 'var(--sp-6)',
+          width: 520, maxWidth: '90vw', border: '1px solid var(--warn)',
+          boxShadow: 'var(--shadow-md)',
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12, color: 'var(--status-warning, #d29922)' }}>
+        <h3 style={{
+          fontSize: 'var(--fs-lg)', fontWeight: 600, marginBottom: 'var(--sp-3)',
+          color: 'var(--warn)', letterSpacing: '-0.01em',
+        }}>
           {t('title')}
         </h3>
-        <p style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 8, lineHeight: 1.6 }}>
-          <code style={{ background: 'var(--bg-primary)', padding: '2px 6px', borderRadius: 4, fontSize: 13 }}>
+        <p style={{ fontSize: 'var(--fs-md)', color: 'var(--ink-900)', marginBottom: 'var(--sp-2)', lineHeight: 'var(--lh-normal)' }}>
+          <code style={{
+            background: 'var(--ink-50)', padding: '2px 6px', borderRadius: 'var(--r-sm)',
+            fontFamily: 'var(--font-mono, monospace)', fontSize: 'var(--fs-sm)', color: 'var(--ink-900)',
+          }}>
             {conflict.fqdn}
           </code>
           {' '}{t('currentlyPointsTo')}
         </p>
-        <p style={{ fontSize: 14, marginBottom: 12 }}>
-          <code style={{ background: 'var(--bg-primary)', padding: '2px 6px', borderRadius: 4, fontSize: 13, color: 'var(--accent)' }}>
+        <p style={{ fontSize: 'var(--fs-md)', marginBottom: 'var(--sp-3)' }}>
+          <code style={{
+            background: 'var(--sea-50)', padding: '2px 6px', borderRadius: 'var(--r-sm)',
+            fontFamily: 'var(--font-mono, monospace)', fontSize: 'var(--fs-sm)', color: 'var(--sea-700)',
+          }}>
             {conflict.existingRoute}
           </code>
         </p>
-        <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-500)', marginBottom: 'var(--sp-5)', lineHeight: 'var(--lh-normal)' }}>
           {t('forceOverrideWarning')}
-          <strong style={{ color: 'var(--status-critical)' }}>{t('loseWarning')}</strong>。
+          <strong style={{ color: 'var(--danger)' }}>{t('loseWarning')}</strong>。
           {t('confirmQuestion')}
         </p>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onCancel} disabled={busy}>{tc('cancel')}</button>
           <button
-            className="btn"
-            style={{ background: 'var(--status-critical)', color: '#fff', borderColor: 'var(--status-critical)' }}
+            className="btn btn-danger"
             onClick={async () => {
               setBusy(true);
               try { await onConfirm(); } finally { setBusy(false); }
@@ -748,8 +769,11 @@ function ModalField({ label, value, onChange, placeholder }: {
   label: string; value: string; onChange: (v: string) => void; placeholder: string;
 }) {
   return (
-    <div style={{ marginBottom: 12 }}>
-      <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
+    <div style={{ marginBottom: 'var(--sp-3)' }}>
+      <label style={{
+        display: 'block', fontSize: 'var(--fs-sm)', fontWeight: 500,
+        marginBottom: 6, color: 'var(--ink-700)',
+      }}>
         {label}
       </label>
       <input
@@ -758,9 +782,10 @@ function ModalField({ label, value, onChange, placeholder }: {
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         style={{
-          width: '100%', padding: '8px 12px',
-          background: 'var(--bg-primary)', border: '1px solid var(--border)',
-          borderRadius: 6, color: 'var(--text-primary)', fontSize: 14,
+          width: '100%', padding: '10px var(--sp-3)',
+          background: 'var(--surface-1)', border: '1px solid var(--border)',
+          borderRadius: 'var(--r-md)', color: 'var(--ink-900)', fontSize: 'var(--fs-md)',
+          fontFamily: 'inherit', outline: 'none',
         }}
       />
     </div>
@@ -781,21 +806,25 @@ function DeleteModal({ project, deleting, deleteLog, onClose, onConfirm }: {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+      position: 'fixed', inset: 0, background: 'rgba(11,14,20,0.5)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
     }} onClick={onClose}>
       <div style={{
-        background: 'var(--bg-secondary)', borderRadius: 12, padding: 24,
-        width: 520, maxWidth: '90vw', border: '1px solid var(--border)',
+        background: 'var(--surface-1)', borderRadius: 'var(--r-lg)', padding: 'var(--sp-6)',
+        width: 560, maxWidth: '90vw', border: '1px solid var(--border)',
+        boxShadow: 'var(--shadow-md)',
       }} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--status-critical)' }}>
+        <h3 style={{
+          fontSize: 'var(--fs-lg)', fontWeight: 600, marginBottom: 'var(--sp-2)',
+          color: 'var(--danger)', letterSpacing: '-0.01em',
+        }}>
           {t('title')}
         </h3>
-        <p style={{ color: 'var(--text-secondary)', marginBottom: 16, fontSize: 14, lineHeight: 1.5 }}>
+        <p style={{ color: 'var(--ink-700)', marginBottom: 'var(--sp-4)', fontSize: 'var(--fs-md)', lineHeight: 'var(--lh-normal)' }}>
           {t('confirmMessage', { name: project.name })}
           {' '}{t('resourceWarning')}
         </p>
-        <ul style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16, paddingLeft: 20, lineHeight: 1.8 }}>
+        <ul style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-sm)', marginBottom: 'var(--sp-4)', paddingLeft: 20, lineHeight: 1.8 }}>
           <li>{t('cloudRunService')}</li>
           <li>{t('domainAndSsl')}</li>
           <li>{t('cloudflareDns')}</li>
@@ -806,41 +835,38 @@ function DeleteModal({ project, deleting, deleteLog, onClose, onConfirm }: {
         {/* Teardown progress log */}
         {(deleting || deleteLog) && (
           <div style={{
-            background: 'var(--bg-primary)', borderRadius: 6, padding: 12,
-            marginBottom: 16, maxHeight: 200, overflowY: 'auto', fontSize: 13,
-            fontFamily: 'monospace', border: '1px solid var(--border)',
+            background: 'var(--ink-50)', borderRadius: 'var(--r-md)', padding: 'var(--sp-3)',
+            marginBottom: 'var(--sp-4)', maxHeight: 200, overflowY: 'auto', fontSize: 'var(--fs-sm)',
+            fontFamily: 'var(--font-mono, monospace)', border: '1px solid var(--ink-100)',
           }}>
             {deleting && !deleteLog && (
-              <div style={{ color: 'var(--text-secondary)' }}>{t('cleaningResources')}</div>
+              <div style={{ color: 'var(--ink-500)' }}>{t('cleaningResources')}</div>
             )}
             {deleteLog?.map((log, i) => (
               <div key={i} style={{ marginBottom: 4, display: 'flex', gap: 8 }}>
                 <span>{log.status === 'ok' ? '\u2705' : '\u274c'}</span>
-                <span style={{ color: log.status === 'ok' ? 'var(--status-live)' : 'var(--status-critical)' }}>
+                <span style={{ color: log.status === 'ok' ? 'var(--ok)' : 'var(--danger)' }}>
                   {log.step}
-                  {log.error && <span style={{ color: 'var(--status-critical)', marginLeft: 8 }}>({log.error})</span>}
+                  {log.error && <span style={{ color: 'var(--danger)', marginLeft: 8 }}>({log.error})</span>}
                 </span>
               </div>
             ))}
             {allOk && (
-              <div style={{ marginTop: 8, color: 'var(--status-live)', fontWeight: 500 }}>
+              <div style={{ marginTop: 8, color: 'var(--ok)', fontWeight: 600 }}>
                 {t('allResourcesCleaned')}
               </div>
             )}
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onClose} disabled={deleting}>{tc('cancel')}</button>
           {!done && (
             <button
-              className="btn"
+              className="btn btn-danger"
               onClick={onConfirm}
               disabled={deleting}
-              style={{
-                background: 'var(--status-critical)', color: '#fff',
-                borderColor: 'var(--status-critical)', opacity: deleting ? 0.6 : 1,
-              }}
+              style={{ opacity: deleting ? 0.6 : 1 }}
             >
               {deleting ? t('deleting') : t('deleteAndClean')}
             </button>

@@ -407,7 +407,7 @@ export default function ProjectDetailPage() {
     return (
       <div>
         <BackLink t={t} />
-        <div style={{ marginTop: 24, padding: 16, background: 'rgba(248,81,73,0.1)', borderRadius: 6, border: '1px solid var(--status-critical)' }}>
+        <div style={{ marginTop: 24, padding: 16, background: 'var(--danger-bg)', borderRadius: 6, border: '1px solid var(--status-critical)' }}>
           <p>{t('loadFailed', { error: error ?? t('notFound') })}</p>
           <button className="btn" style={{ marginTop: 8 }} onClick={() => window.location.reload()}>{tc('retry')}</button>
         </div>
@@ -485,25 +485,25 @@ export default function ProjectDetailPage() {
         };
 
         const ownershipLabels: Record<string, { label: string; color: string; bg: string; hint: string }> = {
-          user: { label: '👤 你的程式碼需要修正', color: '#d29922', bg: 'rgba(210,153,34,0.1)', hint: '請依下方建議修改並重新部署' },
-          platform: { label: '🔧 平台問題，管理員處理中', color: '#58a6ff', bg: 'rgba(88,166,255,0.1)', hint: '這不是你的錯，平台正在排查' },
+          user: { label: '👤 你的程式碼需要修正', color: 'var(--warn)', bg: 'var(--warn-bg)', hint: '請依下方建議修改並重新部署' },
+          platform: { label: '🔧 平台問題，管理員處理中', color: 'var(--info)', bg: 'var(--info-bg)', hint: '這不是你的錯，平台正在排查' },
           environment: { label: '🌐 環境／外部問題', color: '#8957e5', bg: 'rgba(137,87,229,0.1)', hint: '通常重試即可（GCP/網路暫時性問題）' },
-          unknown: { label: '❓ 判斷不出來', color: '#8b949e', bg: 'rgba(139,148,158,0.1)', hint: '需要更多資訊才能判斷' },
+          unknown: { label: '❓ 判斷不出來', color: 'var(--ink-400)', bg: 'var(--ink-50)', hint: '需要更多資訊才能判斷' },
         };
         const ownershipInfo = ownershipLabels[diag?.ownership ?? 'unknown'];
 
         const codeBlockStyle: React.CSSProperties = {
-          padding: '10px 12px', background: 'rgba(0,0,0,0.28)', borderRadius: 6,
-          fontFamily: 'var(--font-mono, monospace)', fontSize: 12,
-          color: 'var(--text-primary)', lineHeight: 1.55,
+          padding: '10px 12px', background: 'var(--ink-50)', borderRadius: 'var(--r-sm)',
+          fontFamily: 'var(--font-mono, monospace)', fontSize: 'var(--fs-xs)',
+          color: 'var(--ink-900)', lineHeight: 1.55,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-          border: '1px solid rgba(255,255,255,0.06)',
+          border: '1px solid var(--ink-100)',
         };
 
         return (
           <div style={{
-            marginTop: 12, padding: 16, background: 'rgba(248,81,73,0.08)',
-            borderRadius: 8, border: '1px solid rgba(248,81,73,0.3)',
+            marginTop: 12, padding: 16, background: 'var(--danger-bg)',
+            borderRadius: 8, border: '1px solid var(--danger)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 16 }}>&#x26A0;&#xFE0F;</span>
@@ -561,9 +561,9 @@ export default function ProjectDetailPage() {
                   // 舊版診斷（無 userFacingMessage）—— 提示使用者 / 管理員可重新分析
                   <div style={{
                     padding: '10px 12px',
-                    background: 'rgba(139,148,158,0.08)',
+                    background: 'var(--ink-50)',
                     borderRadius: 6,
-                    border: '1px dashed rgba(139,148,158,0.35)',
+                    border: '1px dashed var(--ink-200)',
                     fontSize: 12,
                     color: 'var(--text-secondary)',
                     lineHeight: 1.6,
@@ -577,7 +577,7 @@ export default function ProjectDetailPage() {
                 {diag.errorLocation && (
                   <div style={{ fontSize: 13 }}>
                     <span style={{ color: 'var(--text-secondary)' }}>錯誤地點：</span>
-                    <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3, color: 'var(--status-critical)' }}>
+                    <code style={{ background: 'var(--ink-100)', padding: '2px 6px', borderRadius: 'var(--r-sm)', color: 'var(--danger)' }}>
                       {diag.errorLocation}
                     </code>
                   </div>
@@ -590,11 +590,11 @@ export default function ProjectDetailPage() {
                 )}
                 {diag.extraObservations && (
                   <div style={{
-                    padding: '8px 12px', background: 'rgba(255,200,87,0.06)',
-                    borderRadius: 6, border: '1px solid rgba(255,200,87,0.25)',
+                    padding: '8px 12px', background: 'var(--warn-bg)',
+                    borderRadius: 6, border: '1px solid var(--warn)',
                     fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)',
                   }}>
-                    <strong style={{ color: 'var(--status-warning, #9a5700)' }}>附加觀察：</strong> {diag.extraObservations}
+                    <strong style={{ color: 'var(--warn)' }}>附加觀察：</strong> {diag.extraObservations}
                   </div>
                 )}
 
@@ -602,9 +602,9 @@ export default function ProjectDetailPage() {
                 {isAdmin && (diag.adminFacingMessage || diag.rootCause) && (
                   <div style={{
                     padding: '10px 12px',
-                    background: 'rgba(139,148,158,0.08)',
+                    background: 'var(--ink-50)',
                     borderRadius: 6,
-                    border: '1px dashed rgba(139,148,158,0.4)',
+                    border: '1px dashed var(--ink-300)',
                   }}>
                     <button
                       onClick={() => setShowAdminDetail((v) => !v)}
@@ -663,11 +663,11 @@ export default function ProjectDetailPage() {
                   onClick={handleReanalyze}
                   disabled={reanalyzing}
                   style={{
-                    background: 'rgba(88,166,255,0.12)',
-                    border: '1px solid rgba(88,166,255,0.35)',
-                    color: 'var(--accent-blue, #58a6ff)',
-                    fontSize: 12,
-                    padding: '6px 12px',
+                    background: 'var(--info-bg)',
+                    border: '1px solid var(--info)',
+                    color: 'var(--info)',
+                    fontSize: 'var(--fs-sm)',
+                    padding: '6px var(--sp-3)',
                   }}
                 >
                   {reanalyzing ? '分析中…' : diag ? '🤖 重新分析（刷新診斷）' : '🤖 用 AI 重新分析失敗原因'}
@@ -728,14 +728,14 @@ export default function ProjectDetailPage() {
                   )}
                   <InfoRow label={t('ssl')} value={d.sslStatus ?? 'N/A'} />
                   {project.config?.domainError && (
-                    <div style={{ margin: '8px 0', padding: '8px 12px', background: 'rgba(248,81,73,0.1)', borderRadius: 6, border: '1px solid var(--status-critical)', fontSize: 13 }}>
+                    <div style={{ margin: '8px 0', padding: '8px 12px', background: 'var(--danger-bg)', borderRadius: 6, border: '1px solid var(--status-critical)', fontSize: 13 }}>
                       <div style={{ color: 'var(--status-critical)', fontWeight: 500, marginBottom: 4 }}>⚠ Domain 設定失敗</div>
                       <div style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>{String(project.config.domainError)}</div>
                       <button
                         className="btn"
                         disabled={retryingDomain}
                         onClick={handleRetryDomain}
-                        style={{ fontSize: 12, padding: '4px 12px', color: 'var(--accent-blue, #58a6ff)', borderColor: 'var(--accent-blue, #58a6ff)' }}
+                        style={{ fontSize: 'var(--fs-sm)', padding: '4px var(--sp-3)', color: 'var(--info)', borderColor: 'var(--info)' }}
                       >{retryingDomain ? '重試中...' : '重試 Domain 設定'}</button>
                     </div>
                   )}
@@ -770,8 +770,8 @@ export default function ProjectDetailPage() {
                 onClick={handleToggleLock}
                 style={{
                   fontSize: 12, padding: '4px 12px', borderRadius: 4,
-                  background: deployLocked ? 'rgba(248,81,73,0.1)' : 'var(--bg-primary)',
-                  border: `1px solid ${deployLocked ? 'rgba(248,81,73,0.3)' : 'var(--border)'}`,
+                  background: deployLocked ? 'var(--danger-bg)' : 'var(--bg-primary)',
+                  border: `1px solid ${deployLocked ? 'var(--danger)' : 'var(--border)'}`,
                   color: deployLocked ? 'var(--status-critical)' : 'var(--text-secondary)',
                   cursor: 'pointer',
                 }}
@@ -786,8 +786,8 @@ export default function ProjectDetailPage() {
                 key={v.id}
                 style={{
                   padding: '12px 16px',
-                  background: v.isPublished ? 'rgba(63,185,80,0.06)' : 'var(--bg-primary)',
-                  border: `1px solid ${v.isPublished ? 'rgba(63,185,80,0.3)' : 'var(--border)'}`,
+                  background: v.isPublished ? 'var(--ok-bg)' : 'var(--bg-primary)',
+                  border: `1px solid ${v.isPublished ? 'var(--ok)' : 'var(--border)'}`,
                   borderRadius: 8,
                   display: 'flex',
                   alignItems: 'center',
@@ -800,7 +800,7 @@ export default function ProjectDetailPage() {
                     {v.isPublished && (
                       <span style={{
                         fontSize: 11, padding: '2px 8px', borderRadius: 4,
-                        background: 'rgba(63,185,80,0.15)', color: 'var(--status-live)',
+                        background: 'var(--ok-bg)', color: 'var(--status-live)',
                         fontWeight: 500,
                       }}>
                         LIVE
@@ -808,8 +808,8 @@ export default function ProjectDetailPage() {
                     )}
                     <span style={{
                       fontSize: 11, padding: '2px 8px', borderRadius: 4,
-                      background: v.healthStatus === 'healthy' ? 'rgba(63,185,80,0.1)' :
-                                  v.healthStatus === 'unhealthy' ? 'rgba(248,81,73,0.1)' : 'var(--bg-secondary)',
+                      background: v.healthStatus === 'healthy' ? 'var(--ok-bg)' :
+                                  v.healthStatus === 'unhealthy' ? 'var(--danger-bg)' : 'var(--bg-secondary)',
                       color: v.healthStatus === 'healthy' ? 'var(--status-live)' :
                              v.healthStatus === 'unhealthy' ? 'var(--status-critical)' : 'var(--text-secondary)',
                     }}>
@@ -906,7 +906,7 @@ export default function ProjectDetailPage() {
               </div>
               {webhookNewSecret && (
                 <div style={{
-                  padding: 12, background: 'rgba(63,185,80,0.06)', border: '1px solid rgba(63,185,80,0.3)',
+                  padding: 12, background: 'var(--ok-bg)', border: '1px solid var(--ok)',
                   borderRadius: 8, marginTop: 4,
                 }}>
                   <div style={{ fontSize: 12, color: 'var(--status-live)', fontWeight: 600, marginBottom: 6 }}>
@@ -936,8 +936,8 @@ export default function ProjectDetailPage() {
                   onClick={handleToggleAutoDeploy}
                   style={{
                     fontSize: 12, padding: '4px 14px', borderRadius: 4,
-                    background: webhookConfig.autoDeployEnabled ? 'rgba(63,185,80,0.1)' : 'var(--bg-primary)',
-                    border: `1px solid ${webhookConfig.autoDeployEnabled ? 'rgba(63,185,80,0.3)' : 'var(--border)'}`,
+                    background: webhookConfig.autoDeployEnabled ? 'var(--ok-bg)' : 'var(--bg-primary)',
+                    border: `1px solid ${webhookConfig.autoDeployEnabled ? 'var(--ok)' : 'var(--border)'}`,
                     color: webhookConfig.autoDeployEnabled ? 'var(--status-live)' : 'var(--text-secondary)',
                     cursor: 'pointer',
                   }}
@@ -951,7 +951,7 @@ export default function ProjectDetailPage() {
                 onClick={handleRemoveWebhook}
                 style={{
                   fontSize: 12, padding: '4px 14px', borderRadius: 4,
-                  background: 'transparent', border: '1px solid rgba(248,81,73,0.3)',
+                  background: 'transparent', border: '1px solid var(--danger)',
                   color: 'var(--status-critical)', cursor: 'pointer',
                 }}
               >
@@ -1023,7 +1023,7 @@ export default function ProjectDetailPage() {
       {/* Upgrade Modal */}
       {showUpgradeModal && (
         <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+          position: 'fixed', inset: 0, background: 'rgba(11,14,20,0.5)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => { setShowUpgradeModal(false); setUpgradeFile(null); }}>
           <div style={{
@@ -1054,7 +1054,7 @@ export default function ProjectDetailPage() {
                 border: `2px dashed ${upgradeDragOver ? 'var(--accent)' : upgradeFile ? 'var(--status-live)' : 'var(--border)'}`,
                 borderRadius: 8, padding: upgradeFile ? '16px' : '32px 16px',
                 textAlign: 'center', cursor: 'pointer',
-                background: upgradeDragOver ? 'rgba(88,166,255,0.05)' : 'var(--bg-primary)',
+                background: upgradeDragOver ? 'var(--sea-50)' : 'var(--bg-primary)',
               }}
             >
               {upgradeFile ? (
@@ -1246,8 +1246,8 @@ function MetadataBlock({ metadata, t }: { metadata: Record<string, unknown>; t: 
           </div>
         )}
         <div style={{
-          padding: '6px 10px', background: 'rgba(248,81,73,0.1)',
-          borderRadius: 4, border: '1px solid rgba(248,81,73,0.2)',
+          padding: '6px 10px', background: 'var(--danger-bg)',
+          borderRadius: 4, border: '1px solid var(--danger)',
           fontSize: 12, color: 'var(--status-critical)', fontFamily: 'monospace',
           wordBreak: 'break-all', lineHeight: 1.5,
         }}>
@@ -1259,7 +1259,7 @@ function MetadataBlock({ metadata, t }: { metadata: Record<string, unknown>; t: 
               Stack trace
             </summary>
             <div style={{
-              marginTop: 2, padding: '4px 8px', background: 'rgba(0,0,0,0.15)', borderRadius: 4,
+              marginTop: 2, padding: '4px 8px', background: 'var(--ink-100)', borderRadius: 'var(--r-sm)',
               fontFamily: 'monospace', fontSize: 10, color: 'var(--text-secondary)',
               lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
             }}>
@@ -1417,10 +1417,10 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
 }
 
 const SEVERITY_COLORS: Record<string, string> = {
-  critical: '#f85149',
-  high: '#db6d28',
-  medium: '#d29922',
-  low: '#8b949e',
+  critical: 'var(--danger)',
+  high: 'var(--warn)',
+  medium: 'var(--warn)',
+  low: 'var(--ink-400)',
 };
 
 function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
@@ -1428,10 +1428,10 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
   const t = useTranslations('projectDetail.scanReport');
 
   const strategyLabel: Record<string, { label: string; color: string }> = {
-    auto_provision: { label: t('autoProvision'), color: '#3fb950' },
-    user_provided: { label: t('userProvided'), color: '#d29922' },
-    already_configured: { label: t('alreadyConfigured'), color: '#58a6ff' },
-    skip: { label: t('skip'), color: '#8b949e' },
+    auto_provision: { label: t('autoProvision'), color: 'var(--ok)' },
+    user_provided: { label: t('userProvided'), color: 'var(--warn)' },
+    already_configured: { label: t('alreadyConfigured'), color: 'var(--info)' },
+    skip: { label: t('skip'), color: 'var(--ink-400)' },
   };
 
   return (
@@ -1446,11 +1446,11 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
             {t('deploymentPlan', { count: plan.requirements.length })}
           </span>
           {plan.canAutoDeploy ? (
-            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: 'rgba(63,185,80,0.15)', color: '#3fb950' }}>
+            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 'var(--r-sm)', background: 'var(--ok-bg)', color: 'var(--ok)' }}>
               {t('autoDeployable')}
             </span>
           ) : (
-            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: 'rgba(210,153,34,0.15)', color: '#d29922' }}>
+            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 'var(--r-sm)', background: 'var(--warn-bg)', color: 'var(--warn)' }}>
               {t('manualConfigNeeded')}
             </span>
           )}
@@ -1467,7 +1467,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {plan.requirements.map((req, i) => {
-              const s = strategyLabel[req.strategy] ?? { label: req.strategy, color: '#8b949e' };
+              const s = strategyLabel[req.strategy] ?? { label: req.strategy, color: 'var(--ink-400)' };
               return (
                 <div key={i} style={{ padding: 10, background: 'var(--bg-tertiary)', borderRadius: 4, fontSize: 12 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
@@ -1475,7 +1475,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
                       <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{req.type}</span>
                       <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>({req.useCase})</span>
                       {req.required && (
-                        <span style={{ fontSize: 10, color: '#f85149' }}>REQUIRED</span>
+                        <span style={{ fontSize: 10, color: 'var(--danger)' }}>REQUIRED</span>
                       )}
                     </div>
                     <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: `${s.color}22`, color: s.color }}>
@@ -1493,7 +1493,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
             })}
           </div>
           {plan.missingUserEnvVars.length > 0 && (
-            <div style={{ marginTop: 10, padding: 10, background: 'rgba(210,153,34,0.08)', borderRadius: 4, fontSize: 12 }}>
+            <div style={{ marginTop: 10, padding: 10, background: 'var(--warn-bg)', borderRadius: 4, fontSize: 12 }}>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>{t('userMustProvide')}</div>
               {plan.missingUserEnvVars.map((v, i) => (
                 <div key={i} style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)' }}>
@@ -1503,8 +1503,8 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
             </div>
           )}
           {plan.blockers.length > 0 && (
-            <div style={{ marginTop: 10, padding: 10, background: 'rgba(248,81,73,0.08)', borderRadius: 4, fontSize: 12 }}>
-              <div style={{ fontWeight: 600, color: '#f85149', marginBottom: 6 }}>{t('blockers')}</div>
+            <div style={{ marginTop: 10, padding: 10, background: 'var(--danger-bg)', borderRadius: 4, fontSize: 12 }}>
+              <div style={{ fontWeight: 600, color: 'var(--danger)', marginBottom: 6 }}>{t('blockers')}</div>
               {plan.blockers.map((b, i) => (
                 <div key={i} style={{ color: 'var(--text-secondary)' }}>{b}</div>
               ))}
@@ -1532,7 +1532,7 @@ function SeverityBadge({ severity, count }: { severity: string; count: number })
 
 function FindingCard({ finding }: { finding: ScanFinding }) {
   const [showDetail, setShowDetail] = useState(false);
-  const color = SEVERITY_COLORS[finding.severity] ?? '#8b949e';
+  const color = SEVERITY_COLORS[finding.severity] ?? 'var(--ink-400)';
 
   return (
     <div style={{
@@ -1585,8 +1585,8 @@ function AutoFixCard({ fix }: { fix: AutoFixRecord }) {
 
   return (
     <div style={{
-      background: isApplied ? 'rgba(63,185,80,0.05)' : 'rgba(248,81,73,0.05)',
-      border: `1px solid ${isApplied ? 'rgba(63,185,80,0.2)' : 'rgba(248,81,73,0.2)'}`,
+      background: isApplied ? 'var(--ok-bg)' : 'var(--danger-bg)',
+      border: `1px solid ${isApplied ? 'var(--ok)' : 'var(--danger)'}`,
       borderRadius: 6, padding: '10px 12px', cursor: 'pointer',
     }} onClick={() => setShowDiff(!showDiff)}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1603,7 +1603,7 @@ function AutoFixCard({ fix }: { fix: AutoFixRecord }) {
               <div>
                 <label style={{ display: 'block', fontSize: 10, color: 'var(--status-critical)', marginBottom: 2, fontWeight: 600 }}>BEFORE</label>
                 <pre style={{
-                  background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.2)', borderRadius: 4,
+                  background: 'var(--danger-bg)', border: '1px solid var(--danger)', borderRadius: 4,
                   padding: 8, fontSize: 11, margin: 0, overflowX: 'auto', whiteSpace: 'pre-wrap',
                   color: 'var(--text-secondary)', maxHeight: 200,
                 }}>{fix.originalCode}</pre>
@@ -1611,7 +1611,7 @@ function AutoFixCard({ fix }: { fix: AutoFixRecord }) {
               <div>
                 <label style={{ display: 'block', fontSize: 10, color: 'var(--status-live)', marginBottom: 2, fontWeight: 600 }}>AFTER</label>
                 <pre style={{
-                  background: 'rgba(63,185,80,0.08)', border: '1px solid rgba(63,185,80,0.2)', borderRadius: 4,
+                  background: 'var(--ok-bg)', border: '1px solid var(--ok)', borderRadius: 4,
                   padding: 8, fontSize: 11, margin: 0, overflowX: 'auto', whiteSpace: 'pre-wrap',
                   color: 'var(--text-secondary)', maxHeight: 200,
                 }}>{fix.fixedCode}</pre>
@@ -1813,8 +1813,8 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
               {saveMsg && (
                 <div style={{
                   padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13,
-                  background: saveMsg.type === 'success' ? 'rgba(63,185,80,0.1)' : 'rgba(248,81,73,0.1)',
-                  border: `1px solid ${saveMsg.type === 'success' ? 'rgba(63,185,80,0.3)' : 'rgba(248,81,73,0.3)'}`,
+                  background: saveMsg.type === 'success' ? 'var(--ok-bg)' : 'var(--danger-bg)',
+                  border: `1px solid ${saveMsg.type === 'success' ? 'var(--ok)' : 'var(--danger)'}`,
                   color: saveMsg.type === 'success' ? 'var(--status-live)' : 'var(--status-critical)',
                 }}>
                   {saveMsg.text}

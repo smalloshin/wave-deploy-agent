@@ -314,7 +314,7 @@ function ChangePasswordModal({ user, onClose, onDone }: { user: User; onClose: (
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+      position: 'fixed', inset: 0, background: 'rgba(11,14,20,0.5)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
     }} onClick={onClose}>
       <form
