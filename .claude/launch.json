@@ -4,8 +4,14 @@
     {
       "name": "deploy-agent-api",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["tsx", "watch", "apps/api/src/index.ts"],
+      "runtimeArgs": ["tsx", "watch", "deploy-agent/apps/api/src/index.ts"],
       "port": 4000
+    },
+    {
+      "name": "deploy-agent-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "deploy-agent/apps/web", "run", "dev", "--", "--port", "3000"],
+      "port": 3000
     }
   ]
 }

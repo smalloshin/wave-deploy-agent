@@ -28,17 +28,22 @@ export function Sidebar({ items }: { items: NavItem[] }) {
 
   return (
     <nav style={{
-      width: 220,
-      background: 'var(--bg-secondary)',
+      width: 240,
+      background: 'var(--surface-1)',
       borderRight: '1px solid var(--border)',
-      padding: '16px 0',
+      padding: 'var(--sp-4) 0',
       display: 'flex',
       flexDirection: 'column',
     }}>
-      <div style={{ padding: '0 16px 16px', borderBottom: '1px solid var(--border)' }}>
-        <h1 style={{ fontSize: 16, fontWeight: 600 }}>Wave Deploy Agent</h1>
+      <div style={{ padding: '0 var(--sp-4) var(--sp-4)', borderBottom: '1px solid var(--border)' }}>
+        <h1 style={{
+          fontSize: 'var(--fs-md)',
+          fontWeight: 700,
+          letterSpacing: '-0.01em',
+          color: 'var(--ink-900)',
+        }}>Wave Deploy Agent</h1>
       </div>
-      <div style={{ padding: '8px 0', flex: 1 }}>
+      <div style={{ padding: 'var(--sp-3) var(--sp-3)', flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
         {visibleItems.map((item) => {
           const active = item.href === '/'
             ? pathname === '/'
@@ -49,14 +54,15 @@ export function Sidebar({ items }: { items: NavItem[] }) {
               href={item.href}
               style={{
                 display: 'block',
-                padding: '8px 16px',
-                color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-                fontSize: 14,
-                fontWeight: active ? 600 : 400,
-                borderLeft: active ? '2px solid var(--accent-blue, #58a6ff)' : '2px solid transparent',
-                background: active ? 'rgba(88,166,255,0.08)' : 'transparent',
+                padding: 'var(--sp-3) var(--sp-4)',
+                borderRadius: 'var(--r-md)',
+                color: active ? 'var(--sea-600)' : 'var(--ink-700)',
+                fontSize: 'var(--fs-md)',
+                fontWeight: active ? 600 : 500,
+                background: active ? 'var(--sea-50)' : 'transparent',
                 textDecoration: 'none',
-                transition: 'all 0.15s ease',
+                transition: 'background 0.12s, color 0.12s',
+                lineHeight: 1.3,
               }}
             >
               {item.label}
@@ -67,7 +73,7 @@ export function Sidebar({ items }: { items: NavItem[] }) {
 
       {/* Locale switcher */}
       <div style={{
-        padding: '8px 16px',
+        padding: 'var(--sp-3) var(--sp-4)',
         borderTop: '1px solid var(--border)',
         display: 'flex',
         justifyContent: 'flex-end',
@@ -77,33 +83,45 @@ export function Sidebar({ items }: { items: NavItem[] }) {
 
       {/* User info / auth controls */}
       <div style={{
-        padding: '12px 16px',
+        padding: 'var(--sp-4)',
         borderTop: '1px solid var(--border)',
-        fontSize: 13,
+        fontSize: 'var(--fs-sm)',
       }}>
         {loading ? (
-          <span style={{ color: 'var(--text-secondary)' }}>—</span>
+          <span style={{ color: 'var(--ink-400)' }}>—</span>
         ) : user ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
             <div>
-              <div style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+              <div style={{
+                fontWeight: 600,
+                fontSize: 'var(--fs-sm)',
+                color: 'var(--ink-900)',
+                lineHeight: 1.3,
+              }}>
                 {user.display_name ?? user.email}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              <div style={{
+                fontSize: 'var(--fs-xs)',
+                color: 'var(--ink-500)',
+                marginTop: 2,
+              }}>
                 {user.role_name}
               </div>
             </div>
             <button
               onClick={handleLogout}
               style={{
-                padding: '4px 8px',
+                padding: '6px var(--sp-3)',
                 background: 'transparent',
                 border: '1px solid var(--border)',
-                borderRadius: 4,
-                color: 'var(--text-secondary)',
+                borderRadius: 'var(--r-md)',
+                color: 'var(--ink-500)',
                 cursor: 'pointer',
-                fontSize: 12,
+                fontSize: 'var(--fs-xs)',
+                fontWeight: 500,
                 textAlign: 'left',
+                fontFamily: 'inherit',
+                transition: 'background 0.12s, border-color 0.12s',
               }}
             >
               {t('signOut')}
@@ -113,9 +131,10 @@ export function Sidebar({ items }: { items: NavItem[] }) {
           <a
             href="/login"
             style={{
-              color: 'var(--accent-blue, #58a6ff)',
+              color: 'var(--sea-500)',
               textDecoration: 'none',
-              fontSize: 13,
+              fontSize: 'var(--fs-sm)',
+              fontWeight: 500,
             }}
           >
             {t('signInLink')}

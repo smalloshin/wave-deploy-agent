@@ -52,6 +52,21 @@
 - `.btn-primary` sea-500 ✓
 - TypeScript clean（`npx tsc --noEmit` exit 0）
 
+**Prod deploy（build `ebca8c9b`）**：
+- 第一次 `gcloud builds submit` 從 worktree 根跑，掃到**舊版 root `/apps/web`**（不是 `deploy-agent/apps/web`），結果 prod CSS `c04af6d58f5c4b53.css` 還是 Geist dark theme
+- 第二次從 `deploy-agent/` CWD 重跑，tarball 從 2.1MB/220 files 縮到 1.3MB/129 files
+- 新 CSS hash `e925b539b76f20bc.css` 開頭 `:root{--sea-50:#eff3fb;...}` ✓
+- 新 revision `deploy-agent-web-00088-76x` ✓
+- HTML 注入 next/font class `__variable_8b3a0b __variable_6d24ac` ✓
+- 詳見 Pitfall #24（雙 apps/web 目錄陷阱）
+
+**Sidebar DS 4.0 port**：
+- width 220 → 240
+- 取消 `--accent-blue` + `rgba(88,166,255,*)` 舊風格
+- active：`--sea-50` 底 + `--sea-600` 文字 + `--r-md` 圓角
+- item padding `--sp-3 --sp-4`、字 `--fs-md`、weight 500/600
+- login link / logout button 全換 token
+
 **2026-04-20（下半場）—— UI `--status-live` 通過按鈕消失 + Cloud Build logsBucket 400（commits `56dbf46`, `54794e4`）**
 
 連發兩個坑，都從一張 screenshot 抓到：
@@ -132,6 +147,18 @@ trigger 驅動的 build 才會自動塞真 commit sha。
 **Pitfall 記（#23）**：SPA polling 預設 5s + 不管 document.hidden 非常燒額度。在背景
 分頁累積一下午可以打爆 rate limit。長久一點的設計：visibility API + exponential backoff，
 或乾脆換 WebSocket / SSE 才是對的。
+
+**Pitfall 記（#24）**：worktree 根有**舊版 `/apps/`、`/packages/`、`/cloudbuild.yaml`**
+殘留（monorepo 初期遺物），跟 `deploy-agent/apps/*` 兩份**長得一模一樣、各有不同內容**。
+`gcloud builds submit --config cloudbuild.yaml .` 會把**當下 CWD** 整包上傳成 tarball，
+從**根目錄**跑 → 打包根目錄的舊程式碼 + 根目錄的舊 cloudbuild.yaml（6 steps、沒有 bot）。
+
+症狀是 Cloud Build 顯示 SUCCESS，prod CSS/HTML 卻是舊版。tarball size 是關鍵訊號：
+從根目錄跑 **2.1MB / 220 files**（雙份），從 `deploy-agent/` 跑 **1.3MB / 129 files**（對的）。
+
+**解法**：永遠 `cd deploy-agent && gcloud builds submit ...`。長遠解法：刪掉根目錄殘留
+（`/apps/`、`/packages/`、`/cloudbuild.yaml`、`/package.json` 等 monorepo root 檔案），
+要動到「實際部署產物」所以需要 Boss 授權再做。
 
 ---
 
