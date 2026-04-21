@@ -421,30 +421,36 @@ export default function ProjectDetailPage() {
     <div>
       <BackLink t={t} />
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <h2 style={{ fontSize: 22, fontWeight: 600 }}>{project.name}</h2>
-          <StatusPill status={project.status} />
+      {/* Hero — 4.0 design system */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 24, marginTop: 16, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+            <h1 style={{ fontSize: 'var(--fs-2xl)', fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 'var(--lh-tight)', color: 'var(--ink-900)' }}>
+              {project.name}
+            </h1>
+            <StatusPill status={project.status} />
+          </div>
+          <p style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-sm)', display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
+            <span>{project.sourceType}</span>
+            <span style={{ color: 'var(--ink-300)' }}>&middot;</span>
+            <span>slug: <code>{project.slug}</code></span>
+            <span style={{ color: 'var(--ink-300)' }}>&middot;</span>
+            <span>created {new Date(project.createdAt).toLocaleString()}</span>
+          </p>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
           {(project.status === 'live' || project.status === 'stopped' || project.status === 'failed') && (
-            <button className="btn btn-primary" onClick={() => setShowUpgradeModal(true)}
-              style={{ fontSize: 13, padding: '6px 16px' }}>
-              {t('upgradeVersion')}
+            <button className="btn btn-primary" onClick={() => setShowUpgradeModal(true)}>
+              + {t('upgradeVersion')}
             </button>
           )}
           {(project.status === 'failed' || project.status === 'needs_revision') && (
-            <button className="btn" onClick={handleRetry} disabled={retrying}
-              style={{ fontSize: 13, padding: '6px 16px' }}>
+            <button className="btn" onClick={handleRetry} disabled={retrying}>
               {retrying ? t('retrying') : t('retryPipeline')}
             </button>
           )}
         </div>
       </div>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 4 }}>
-        {project.sourceType} &middot; slug: {project.slug} &middot; created {new Date(project.createdAt).toLocaleString()}
-      </p>
 
       {/* Failure Banner with AI Diagnosis */}
       {project.status === 'failed' && (() => {
@@ -1154,23 +1160,39 @@ export default function ProjectDetailPage() {
 
 function BackLink({ t }: { t: (key: string) => string }) {
   return (
-    <a href="/" style={{ color: 'var(--text-secondary)', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+    <a href="/" style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-sm)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
       &larr; {t('backToProjects')}
     </a>
   );
 }
 
-function Card({ title, children, style }: { title: string; children: React.ReactNode; style?: React.CSSProperties }) {
+function Card({ title, subtle, children, style }: { title: string; subtle?: React.ReactNode; children: React.ReactNode; style?: React.CSSProperties }) {
   return (
-    <div style={{
-      background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8,
-      padding: 16, ...style,
-    }}>
-      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: 0.5 }}>
-        {title}
-      </h3>
+    <section
+      style={{
+        background: 'var(--surface-1)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--r-lg)',
+        padding: 'var(--sp-5)',
+        ...style,
+      }}
+    >
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginBottom: 'var(--sp-4)',
+        }}
+      >
+        <h3 style={{ fontSize: 'var(--fs-lg)', fontWeight: 600, letterSpacing: '-0.01em', color: 'var(--ink-900)' }}>
+          {title}
+        </h3>
+        {subtle ? <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-500)' }}>{subtle}</span> : null}
+      </header>
       {children}
-    </div>
+    </section>
   );
 }
 
@@ -1178,12 +1200,23 @@ function InfoRow({ label, value, mono, children }: {
   label: string; value?: string; mono?: boolean; children?: React.ReactNode;
 }) {
   return (
-    <div style={{ display: 'flex', gap: 8, marginBottom: 6, fontSize: 13 }}>
-      <span style={{ color: 'var(--text-secondary)', minWidth: 100, flexShrink: 0 }}>{label}</span>
+    <div style={{
+      display: 'flex',
+      alignItems: 'baseline',
+      gap: 12,
+      paddingTop: 10,
+      paddingBottom: 10,
+      borderTop: '1px solid var(--ink-100)',
+      fontSize: 'var(--fs-sm)',
+    }}>
+      <span style={{ color: 'var(--ink-500)', minWidth: 110, flexShrink: 0 }}>{label}</span>
       {children ?? (
         <span style={{
-          color: 'var(--text-primary)', fontFamily: mono ? 'monospace' : 'inherit',
-          wordBreak: 'break-all',
+          color: 'var(--ink-900)',
+          fontFamily: mono ? 'var(--font-mono, monospace)' : 'inherit',
+          overflowWrap: 'anywhere',
+          wordBreak: 'normal',
+          minWidth: 0,
         }}>
           {value}
         </span>

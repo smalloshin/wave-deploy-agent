@@ -1,97 +1,275 @@
-/* WaveNet Brand Tokens — 3.0 Color
- * Primary: Black + White + Sea (#003aad); Shades Sea 100-900; Grayscale White + Black 100-900
+/* WaveNet Brand Tokens — 4.0 Design System
+ * Anchor: ~/.gstack/projects/smalloshin-smalloshin.github.io/designs/deploy-agent-redesign-20260420/finalized.html
+ * Docs: deploy-agent/DESIGN.md
+ * Changes from 3.0:
+ *   - Ink scale replaces pure-black grayscale (higher contrast, softer neutrals)
+ *   - Canonical status names: --ok / --warn / --danger / --info (legacy aliases preserved)
+ *   - Type scale bumped: 14 / 16 / 18 (body) / 22 / 28 / 36 (hero) / 48
+ *   - 8px space scale (--sp-1 through --sp-8)
+ *   - Inter + JetBrains Mono replace Geist
  */
 :root {
-  /* Sea scale */
-  --sea-100: #e4ecf9; --sea-200: #a4bce7; --sea-300: #7396d7; --sea-400: #436fc5;
-  --sea-500: #003aad; --sea-600: #00287f; --sea-700: #001a5a; --sea-800: #000d37; --sea-900: #00041b;
+  /* Sea (brand) — preserved, plus new 50 tint */
+  --sea-50:  #eff3fb;
+  --sea-100: #dbe4f5;
+  --sea-200: #a4bce7;
+  --sea-300: #7396d7;
+  --sea-400: #436fc5;
+  --sea-500: #003aad;  /* primary */
+  --sea-600: #002a85;  /* hover */
+  --sea-700: #001c58;
+  --sea-800: #000d37;
+  --sea-900: #00041b;
 
-  /* Grayscale */
-  --gray-0: #ffffff; --gray-100: #f2f2f2; --gray-200: #d9d9d9; --gray-300: #bfbfbf;
-  --gray-400: #a6a6a6; --gray-500: #8c8c8c; --gray-600: #737373; --gray-700: #595959;
-  --gray-800: #404040; --gray-900: #262626; --gray-1000: #000000;
+  /* Ink scale — softer than pure black, higher contrast than old gray- */
+  --ink-50:  #f6f7f9;  /* app bg */
+  --ink-100: #eef1f6;  /* separator */
+  --ink-200: #dfe3ea;  /* card border */
+  --ink-300: #c7ccd6;  /* strong border */
+  --ink-400: #8a8f9a;  /* disabled / subtle */
+  --ink-500: #636873;  /* secondary / meta */
+  --ink-700: #30343f;  /* strong body */
+  --ink-900: #0b0e14;  /* primary text */
 
-  /* Surfaces (light) */
-  --bg-primary: var(--gray-100);
-  --bg-secondary: var(--gray-0);
-  --bg-tertiary: var(--gray-100);
-  --surface-raised: var(--gray-0);
-  --border: var(--gray-200);
-  --border-strong: var(--gray-300);
+  /* Legacy grayscale aliases — map old gray- tokens to new ink- scale
+     so un-migrated JSX keeps working. Prefer --ink-* in new code. */
+  --gray-0:    #ffffff;
+  --gray-100:  var(--ink-50);
+  --gray-200:  var(--ink-200);
+  --gray-300:  var(--ink-300);
+  --gray-400:  var(--ink-400);
+  --gray-500:  var(--ink-500);
+  --gray-600:  var(--ink-500);
+  --gray-700:  var(--ink-700);
+  --gray-800:  var(--ink-700);
+  --gray-900:  var(--ink-900);
+  --gray-1000: var(--ink-900);
+
+  /* Surface */
+  --bg:            var(--ink-50);
+  --bg-primary:    var(--ink-50);      /* legacy */
+  --bg-secondary:  #ffffff;             /* legacy */
+  --bg-tertiary:   var(--ink-100);      /* legacy */
+  --surface-1:     #ffffff;             /* cards, sidebar */
+  --surface-2:     #fbfbfd;             /* nested cards */
+  --surface-raised: #ffffff;            /* legacy */
+  --border:        var(--ink-200);
+  --border-strong: var(--ink-300);
 
   /* Text */
-  --text-primary: var(--gray-1000);
-  --text-secondary: var(--gray-600);
-  --text-muted: var(--gray-500);
-  --text-inverse: var(--gray-0);
+  --text-primary:  var(--ink-900);
+  --text-secondary: var(--ink-500);
+  --text-muted:    var(--ink-400);
+  --text-inverse:  #ffffff;
 
   /* Accent (brand) */
-  --accent: var(--sea-500);
-  --accent-blue: var(--sea-500);
-  --accent-hover: var(--sea-600);
-  --accent-bg: var(--sea-100);
-  --accent-blue-bg: var(--sea-100);
+  --accent:          var(--sea-500);
+  --accent-blue:     var(--sea-500);
+  --accent-hover:    var(--sea-600);
+  --accent-bg:       var(--sea-50);
+  --accent-blue-bg:  var(--sea-50);
 
-  /* Status (light-tuned) */
-  --status-critical: #b42318;    --status-critical-bg: #fdd9d4;
-  --status-high: #9a5700;        --status-high-bg: #fff3c2;
-  --status-medium: #9a5700;      --status-medium-bg: #fff8d6;
-  --status-low: var(--sea-500);  --status-low-bg: var(--sea-100);
-  --status-success: #1a7f37;     --status-success-bg: #dafbe1;
-  --status-warning: #9a5700;     --status-warning-bg: #fff3c2;
-  --status-info: var(--sea-500); --status-info-bg: var(--sea-100);
+  /* Status — canonical (4.0) */
+  --ok:        #0f8f45;  --ok-bg:     #e3f6ea;
+  --warn:      #a76a00;  --warn-bg:   #fff0cf;
+  --danger:    #c53030;  --danger-bg: #fde4e1;
+  --info:      var(--sea-500);  --info-bg: var(--sea-50);
 
-  /* Legacy aliases — brand palette refactor renamed these but many JSX files
-     still reference --status-live. Alias keeps them working. */
-  --status-live: var(--status-success);
-  --status-live-bg: var(--status-success-bg);
+  /* Status — legacy aliases (preserved for un-migrated JSX)
+     Many files reference --status-live / --status-success / etc. */
+  --status-live:        var(--ok);      --status-live-bg:     var(--ok-bg);
+  --status-success:     var(--ok);      --status-success-bg:  var(--ok-bg);
+  --status-critical:    var(--danger);  --status-critical-bg: var(--danger-bg);
+  --status-high:        var(--warn);    --status-high-bg:     var(--warn-bg);
+  --status-medium:      var(--warn);    --status-medium-bg:   var(--warn-bg);
+  --status-warning:     var(--warn);    --status-warning-bg:  var(--warn-bg);
+  --status-low:         var(--info);    --status-low-bg:      var(--info-bg);
+  --status-info:        var(--info);    --status-info-bg:     var(--info-bg);
+
+  /* Type scale (4.0) */
+  --fs-xs:  14px;   /* timestamps, tiny meta */
+  --fs-sm:  16px;   /* secondary meta, card subtle */
+  --fs-md:  18px;   /* body, inputs, list items */
+  --fs-lg:  22px;   /* section headers */
+  --fs-xl:  28px;   /* reserved (big section title) */
+  --fs-2xl: 36px;   /* hero */
+  --fs-3xl: 48px;   /* reserved (big numbers) */
+
+  /* Line height */
+  --lh-tight:  1.2;
+  --lh-snug:   1.35;
+  --lh-normal: 1.6;
+
+  /* Space scale (8px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* Radius */
+  --r-sm:   6px;
+  --r-md:  10px;
+  --r-lg:  14px;
+  --r-pill: 999px;
+
+  /* Shadow (subtle — use sparingly) */
+  --shadow-sm: 0 1px 2px rgba(11, 14, 20, 0.04);
+  --shadow-md: 0 4px 12px rgba(11, 14, 20, 0.06);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--bg-primary);
+  font-family: var(--font-inter, 'Inter'), -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Geist Sans', sans-serif;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  background: var(--bg);
   color: var(--text-primary);
-  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-code, .mono { font-family: 'Geist Mono', 'SF Mono', 'Fira Code', monospace; }
+code, .mono {
+  font-family: var(--font-mono, 'JetBrains Mono'), 'SF Mono', 'Fira Code', 'Geist Mono', monospace;
+  font-size: 0.92em;
+}
 
-a { color: var(--accent-blue); text-decoration: none; }
+a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-hover); text-decoration: underline; }
 
-.pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
-.pill-live      { background: var(--status-success-bg);  color: var(--status-success); }
-.pill-scanning  { background: var(--status-info-bg);     color: var(--status-info); }
-.pill-review    { background: var(--status-warning-bg);  color: var(--status-warning); }
-.pill-failed    { background: var(--status-critical-bg); color: var(--status-critical); }
-.pill-deploying { background: var(--status-info-bg);     color: var(--status-info); }
+/* Pill — status badge with leading dot */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1;
+}
+.pill::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.pill-ok, .pill-live, .pill-success { background: var(--ok-bg);     color: var(--ok); }
+.pill-warn, .pill-review, .pill-warning { background: var(--warn-bg); color: var(--warn); }
+.pill-danger, .pill-failed, .pill-critical { background: var(--danger-bg); color: var(--danger); }
+.pill-info, .pill-scanning, .pill-deploying { background: var(--info-bg); color: var(--info); }
 
-.badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; margin-right: 4px; }
-.badge-critical { background: var(--status-critical-bg); color: var(--status-critical); }
-.badge-high     { background: var(--status-high-bg);     color: var(--status-high); }
-.badge-medium   { background: var(--status-medium-bg);   color: var(--status-medium); }
-.badge-low      { background: var(--status-low-bg);      color: var(--status-low); }
+/* Legacy pill compat — no dot, older compact shape */
+.pill-compact {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.pill-compact::before { content: none; }
 
-.btn { padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-raised); color: var(--text-primary); cursor: pointer; font-size: 14px; }
-.btn:hover { background: var(--gray-100); border-color: var(--border-strong); }
+/* Badge — severity chip */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  margin-right: 4px;
+}
+.badge-critical, .badge-danger { background: var(--danger-bg); color: var(--danger); }
+.badge-high, .badge-warning    { background: var(--warn-bg);   color: var(--warn); }
+.badge-medium                  { background: var(--warn-bg);   color: var(--warn); }
+.badge-low, .badge-info        { background: var(--info-bg);   color: var(--info); }
+.badge-ok, .badge-success      { background: var(--ok-bg);     color: var(--ok); }
+
+/* Button */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.btn:hover { background: var(--ink-100); border-color: var(--border-strong); }
 .btn-primary { background: var(--sea-500); border-color: var(--sea-500); color: var(--text-inverse); }
 .btn-primary:hover { background: var(--sea-600); border-color: var(--sea-600); }
-.btn-danger { background: var(--status-critical); border-color: var(--status-critical); color: var(--text-inverse); }
-.btn-danger:hover { background: #8f1a13; border-color: #8f1a13; }
-.btn-delete:hover { background: var(--status-critical-bg); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: var(--text-inverse); }
+.btn-danger:hover { background: #a52828; border-color: #a52828; }
+.btn-delete:hover { background: var(--danger-bg); }
+.btn-sm {
+  padding: 6px 12px;
+  font-size: var(--fs-sm);
+}
 
-/* Markdown body */
-.markdown-body h1, .markdown-body h2, .markdown-body h3 { margin-top: 16px; margin-bottom: 8px; font-weight: 600; line-height: 1.3; }
-.markdown-body h1 { font-size: 18px; }
-.markdown-body h2 { font-size: 15px; }
-.markdown-body h3 { font-size: 14px; }
-.markdown-body p { margin-bottom: 8px; }
-.markdown-body ul, .markdown-body ol { margin-bottom: 8px; padding-left: 20px; }
-.markdown-body li { margin-bottom: 4px; }
-.markdown-body code { padding: 2px 6px; background: var(--bg-tertiary); border-radius: 4px; font-size: 12px; color: var(--sea-700); }
-.markdown-body pre { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow-x: auto; margin-bottom: 8px; }
-.markdown-body pre code { padding: 0; background: transparent; color: var(--text-primary); }
-.markdown-body strong { color: var(--text-primary); }
-.markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+/* Card */
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-5);
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-4);
+}
+.card-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.card-subtle {
+  font-size: var(--fs-sm);
+  color: var(--ink-500);
+}
+
+/* Markdown body — scaled to 4.0 type system */
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  margin-top: var(--sp-4);
+  margin-bottom: var(--sp-2);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  letter-spacing: -0.01em;
+}
+.markdown-body h1 { font-size: var(--fs-xl); }  /* 28 */
+.markdown-body h2 { font-size: var(--fs-lg); }  /* 22 */
+.markdown-body h3 { font-size: var(--fs-md); font-weight: 700; }  /* 18 */
+.markdown-body p { margin-bottom: var(--sp-3); font-size: var(--fs-md); }
+.markdown-body ul, .markdown-body ol { margin-bottom: var(--sp-3); padding-left: 24px; }
+.markdown-body li { margin-bottom: 6px; font-size: var(--fs-md); }
+.markdown-body code {
+  padding: 2px 6px;
+  background: var(--ink-100);
+  border-radius: var(--r-sm);
+  font-size: 0.9em;
+  color: var(--sea-700);
+}
+.markdown-body pre {
+  background: var(--ink-100);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  overflow-x: auto;
+  margin-bottom: var(--sp-3);
+}
+.markdown-body pre code { padding: 0; background: transparent; color: var(--text-primary); font-size: var(--fs-sm); }
+.markdown-body strong { color: var(--text-primary); font-weight: 600; }
+.markdown-body hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }

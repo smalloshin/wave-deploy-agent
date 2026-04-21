@@ -1,9 +1,24 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import { Inter, JetBrains_Mono } from 'next/font/google';
 import { NextIntlClientProvider } from 'next-intl';
 import { getLocale, getMessages, getTranslations } from 'next-intl/server';
 import { Sidebar } from './sidebar';
 import { AuthProvider } from '../lib/auth';
+
+const inter = Inter({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-inter',
+  display: 'swap',
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500'],
+  variable: '--font-mono',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'Wave Deploy Agent',
@@ -25,13 +40,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   ];
 
   return (
-    <html lang={locale}>
+    <html lang={locale} className={`${inter.variable} ${jetbrainsMono.variable}`}>
       <body>
         <NextIntlClientProvider messages={messages}>
           <AuthProvider>
             <div style={{ display: 'flex', minHeight: '100vh' }}>
               <Sidebar items={navItems} />
-              <main style={{ flex: 1, padding: '24px 32px', overflow: 'auto' }}>
+              <main style={{ flex: 1, padding: '32px 48px 64px', overflow: 'auto', maxWidth: 1400, width: '100%' }}>
                 {children}
               </main>
             </div>

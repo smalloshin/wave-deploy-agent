@@ -4,6 +4,54 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-21 —— Design System 4.0 落地（anchor `projects/[id]` redesign + DESIGN.md + tokens）**
+
+接續前一天 UI / 部署坑之後，走 `/design-html` 全站 redesign。使用者明確要求：「全部重新設計，不用
+拘泥於現有格式。字可以放大一點，目前的太小比較看不清楚」。
+
+**產出：**
+
+1. **Anchor HTML**：`~/.gstack/projects/smalloshin-smalloshin.github.io/designs/deploy-agent-redesign-20260420/finalized.html`
+   - 以 `projects/[id]` 為錨，完整 app shell：240px sidebar + main 內容（max 1400）+ 2fr/1fr grid
+   - Hero：專案名 36px bold + 綠色 pill「已上線」
+   - 區塊：版本卡（v1 sea-50 highlight）、安全報告卡、部署時間軸（彩色圓點）、右欄快速動作／詳細資料／環境變數
+   - Pretext 已 wire：`await document.fonts.ready` + `prepare()` + ResizeObserver
+   - 響應式：960px sidebar 轉到上方、640px version/env row 堆疊
+
+2. **DESIGN.md** （`deploy-agent/DESIGN.md`）：完整 4.0 token 文件
+   - Typography：base 18px，scale 14/16/18/22/28/36/48，Inter + JetBrains Mono
+   - Color：保留 sea brand，新增 ink scale（比舊 gray 高對比）、status 正名為 `--ok/--warn/--danger/--info`
+   - Space 8px base（4/8/12/16/24/32/48/64）、Radius `--r-sm/md/lg/pill`
+   - Components：pill（帶 8px dot）、button（primary/secondary/sm）、card、timeline
+   - AI-slop 黑名單：紫藍漸層、三欄 feature grid、浮雕 blob 等
+   - 驗證清單：字級、token 使用、3 viewport、狀態色、reduced-motion
+
+3. **Tokens 落地** （`apps/web/app/globals.css`）：
+   - sea 10 階 + ink 8 階 + 舊 gray 全部 alias 過去（零破壞）
+   - status 正名（ok/warn/danger/info）+ legacy `--status-live/success/critical/warning/low/high/medium/info` 全保留
+   - 所有 --fs-*、--sp-*、--r-* token 上
+   - body 換 Inter + 18px；mono 換 JetBrains
+   - `.pill` 重做成新 4.0 style（帶 leading dot）；`.pill-compact` 保留舊小圓章給 legacy
+   - `.card` / `.btn-sm` / `.markdown-body h1-h3` 都用 token
+
+4. **Font loading** （`apps/web/app/layout.tsx`）：
+   - 用 `next/font/google` 掛 Inter（400/500/600/700）+ JetBrains Mono（400/500）
+   - CSS 變數 `--font-inter` / `--font-mono` 注入 html element
+   - `<main>` padding 32 48 64 + max 1400，對齊 app shell 規格
+
+5. **`projects/[id]` 部分 port**：
+   - Hero 改用 `--fs-2xl` 36px 700 + `-0.02em` letter-spacing
+   - `Card` sub-component 重做（header 22px 600 + 可帶 subtle meta）
+   - `InfoRow` 改 24px padding + top border 做 list 分隔、`overflow-wrap: anywhere`（避免 URL 斷在中間字元）
+   - `BackLink` 用 `--ink-500` + `--fs-sm`
+   - 其他 1900+ lines 的 inline style 先不動（透過 token alias 自動繼承新色階；body 18px 直接生效）
+
+**驗證（localhost dev）**：
+- body Inter / 18px / `#0b0e14` ✓
+- bg `#f6f7f9`（--ink-50）✓
+- `.btn-primary` sea-500 ✓
+- TypeScript clean（`npx tsc --noEmit` exit 0）
+
 **2026-04-20（下半場）—— UI `--status-live` 通過按鈕消失 + Cloud Build logsBucket 400（commits `56dbf46`, `54794e4`）**
 
 連發兩個坑，都從一張 screenshot 抓到：
@@ -615,6 +663,10 @@ re-upload 覆蓋 gcsSourceUri，或直接改成 build 拿 projectDir。
 ## 待辦事項（TODO）
 
 ### 高優先
+- [ ] **Design System 4.0 推其他頁**：anchor + tokens 已落地。還要 port 的頁：
+      `/` (project list)、`/reviews`、`/reviews/[id]`、`/deploys`、`/infra`、`/settings`、`/admin`、`/login`。
+      anchor HTML 在 `~/.gstack/projects/smalloshin-smalloshin.github.io/designs/deploy-agent-redesign-20260420/finalized.html`；
+      DESIGN.md 在 `deploy-agent/DESIGN.md`；globals.css 已含 alias 不會打壞舊頁
 - [ ] **RBAC 系統實作（plan 已定）**：見 `~/.claude/plans/lively-petting-sifakis.md`。
       47 個 API 端點目前裸露，規劃加入 users/roles/sessions/api_keys/auth_audit_log 5 張表 +
       Fastify onRequest hook + 3-phase migration（PERMISSIVE → 更新消費者 → ENFORCED）。

@@ -6,6 +6,12 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["tsx", "watch", "apps/api/src/index.ts"],
       "port": 4000
+    },
+    {
+      "name": "deploy-agent-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/web", "run", "dev"],
+      "port": 3000
     }
   ]
 }
