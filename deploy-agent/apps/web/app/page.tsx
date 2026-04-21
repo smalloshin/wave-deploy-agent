@@ -173,8 +173,19 @@ export default function ProjectsPage() {
     return (
       <div>
         <Header t={t} onSubmit={() => setShowModal(true)} />
-        <div style={{ marginTop: 24, padding: 16, background: 'rgba(248,81,73,0.1)', borderRadius: 6, border: '1px solid var(--status-critical)' }}>
-          <p>{t('loadFailed')} <button className="btn" onClick={() => window.location.reload()}>{tc('retry')}</button></p>
+        <div style={{
+          marginTop: 'var(--sp-5)',
+          padding: 'var(--sp-4)',
+          background: 'var(--danger-bg)',
+          borderRadius: 'var(--r-md)',
+          border: '1px solid var(--danger)',
+          color: 'var(--danger)',
+          fontSize: 'var(--fs-md)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--sp-3)',
+        }}>
+          <p>{t('loadFailed')} <button className="btn btn-sm" onClick={() => window.location.reload()}>{tc('retry')}</button></p>
         </div>
         {showModal && (
           <SubmitModal
@@ -190,15 +201,23 @@ export default function ProjectsPage() {
     <div>
       <Header t={t} onSubmit={() => setShowModal(true)} />
       {groups.length === 0 ? (
-        <div style={{ marginTop: 48, textAlign: 'center', color: 'var(--text-secondary)' }}>
-          <p style={{ fontSize: 18, marginBottom: 8 }}>{t('noProjects')}</p>
-          <p>{t('noProjectsDesc')}</p>
-          <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={() => setShowModal(true)}>
+        <div style={{
+          marginTop: 'var(--sp-7)',
+          textAlign: 'center',
+          color: 'var(--ink-500)',
+          padding: 'var(--sp-7) var(--sp-5)',
+          background: 'var(--surface-1)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-lg)',
+        }}>
+          <p style={{ fontSize: 'var(--fs-lg)', color: 'var(--ink-900)', fontWeight: 600, marginBottom: 'var(--sp-2)' }}>{t('noProjects')}</p>
+          <p style={{ fontSize: 'var(--fs-md)' }}>{t('noProjectsDesc')}</p>
+          <button className="btn btn-primary" style={{ marginTop: 'var(--sp-4)' }} onClick={() => setShowModal(true)}>
             {t('submitProject')}
           </button>
         </div>
       ) : (
-        <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
           {groups.map((g) => (
             <GroupCard
               key={g.groupId}
@@ -255,8 +274,19 @@ export default function ProjectsPage() {
 
 function Header({ t, onSubmit }: { t: (key: string) => string; onSubmit: () => void }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <h2 style={{ fontSize: 20, fontWeight: 600 }}>{t('title')}</h2>
+    <div style={{
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 'var(--sp-5)',
+    }}>
+      <h2 style={{
+        fontSize: 'var(--fs-2xl)',
+        fontWeight: 700,
+        letterSpacing: '-0.02em',
+        lineHeight: 'var(--lh-tight)',
+        color: 'var(--ink-900)',
+      }}>{t('title')}</h2>
       <button className="btn btn-primary" onClick={onSubmit}>
         {t('submitProject')}
       </button>
@@ -492,7 +522,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
                 padding: file ? '16px' : '32px 16px',
                 textAlign: 'center',
                 cursor: 'pointer',
-                background: dragOver ? 'rgba(88,166,255,0.05)' : 'var(--bg-primary)',
+                background: dragOver ? 'var(--sea-50)' : 'var(--ink-50)',
                 transition: 'all 0.2s ease',
               }}
             >
@@ -845,24 +875,27 @@ function GroupCard({
 
   return (
     <div style={{
-      background: 'var(--bg-secondary)', border: '1px solid var(--border)',
-      borderRadius: 8, overflow: 'hidden',
+      background: 'var(--surface-1)',
+      border: '1px solid var(--border)',
+      borderRadius: 'var(--r-lg)',
+      overflow: 'hidden',
     }}>
       {/* Group header */}
       <div
         style={{
-          display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px',
+          display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
+          padding: 'var(--sp-4) var(--sp-5)',
           cursor: 'pointer', userSelect: 'none' as const,
         }}
         onClick={onToggleExpand}
       >
-        <span style={{ fontSize: 12, color: 'var(--text-secondary)', width: 12 }}>
+        <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-400)', width: 14 }}>
           {expanded ? '\u25BE' : '\u25B8'}
         </span>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 600, fontSize: 15 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 'var(--fs-lg)', letterSpacing: '-0.01em', color: 'var(--ink-900)' }}>
             {!isMonorepo && group.services.length === 1 ? (
-              <a href={`/projects/${group.services[0].id}`} style={{ color: 'var(--text-primary)', textDecoration: 'none' }}
+              <a href={`/projects/${group.services[0].id}`} style={{ color: 'var(--ink-900)', textDecoration: 'none' }}
                 onClick={(e) => e.stopPropagation()}>
                 {group.groupName}
               </a>
@@ -871,35 +904,39 @@ function GroupCard({
             )}
             {isMonorepo && (
               <span style={{
-                marginLeft: 8, fontSize: 11, padding: '2px 6px', borderRadius: 4,
-                background: 'var(--bg-tertiary)', color: 'var(--text-secondary)',
-                fontWeight: 400,
+                marginLeft: 'var(--sp-2)',
+                fontSize: 'var(--fs-xs)',
+                padding: '2px var(--sp-2)',
+                borderRadius: 'var(--r-sm)',
+                background: 'var(--ink-100)',
+                color: 'var(--ink-500)',
+                fontWeight: 500,
+                verticalAlign: 'middle',
               }}>{t('monorepoServices', { count: String(group.serviceCount) })}</span>
             )}
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-            {group.liveCount > 0 && <span style={{ color: 'var(--status-live)' }}>{'\u25CF'} {group.liveCount} live </span>}
-            {group.stoppedCount > 0 && <span style={{ color: 'var(--text-secondary)' }}>{'\u25CF'} {group.stoppedCount} stopped </span>}
-            {group.failedCount > 0 && <span style={{ color: 'var(--status-critical)' }}>{'\u25CF'} {group.failedCount} failed </span>}
-            <span style={{ marginLeft: 8 }}>{t('updatedAt', { time: new Date(group.updatedAt).toLocaleString() })}</span>
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-500)', marginTop: 4, display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
+            {group.liveCount > 0 && <span style={{ color: 'var(--ok)' }}>{'\u25CF'} {group.liveCount} live</span>}
+            {group.stoppedCount > 0 && <span>{'\u25CF'} {group.stoppedCount} stopped</span>}
+            {group.failedCount > 0 && <span style={{ color: 'var(--danger)' }}>{'\u25CF'} {group.failedCount} failed</span>}
+            <span>{t('updatedAt', { time: new Date(group.updatedAt).toLocaleString() })}</span>
           </div>
         </div>
         {isMonorepo && (
-          <div style={{ display: 'flex', gap: 6 }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ display: 'flex', gap: 'var(--sp-2)' }} onClick={(e) => e.stopPropagation()}>
             <button
-              className="btn"
+              className="btn btn-sm"
               disabled={busyStop}
               onClick={() => onGroupAction('stop')}
-              style={{ fontSize: 12, padding: '4px 10px' }}
               title={`${tc('stop')} ${selectedLabel}`}
             >
               {busyStop ? tc('stopping') : `${tc('stop')} ${selectedLabel}`}
             </button>
             <button
-              className="btn"
+              className="btn btn-sm"
               disabled={busyStart}
               onClick={() => onGroupAction('start')}
-              style={{ fontSize: 12, padding: '4px 10px', color: 'var(--status-live)', borderColor: 'var(--status-live)' }}
+              style={{ color: 'var(--ok)', borderColor: 'var(--ok)' }}
               title={`${tc('start')} ${selectedLabel}`}
             >
               {busyStart ? tc('starting') : `${tc('start')} ${selectedLabel}`}
@@ -956,10 +993,11 @@ function ServiceRow({
 
   return (
     <div style={{
-      padding: '12px 16px 12px 40px', borderTop: '1px solid var(--border)',
-      display: 'flex', flexDirection: 'column', gap: 8,
+      padding: 'var(--sp-4) var(--sp-5) var(--sp-4) var(--sp-7)',
+      borderTop: '1px solid var(--ink-100)',
+      display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
         {isMonorepo && (
           <input
             type="checkbox"
@@ -968,15 +1006,25 @@ function ServiceRow({
             style={{ cursor: 'pointer' }}
           />
         )}
-        <a href={`/projects/${svc.id}`} style={{ fontWeight: 500, color: 'var(--text-primary)', textDecoration: 'none' }}>
+        <a href={`/projects/${svc.id}`} style={{
+          fontWeight: 600,
+          fontSize: 'var(--fs-md)',
+          color: 'var(--ink-900)',
+          textDecoration: 'none',
+        }}>
           {svc.name}
         </a>
         <StatusPill status={svc.status} />
         {svc.detectedLanguage && (
-          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{svc.detectedLanguage}{svc.detectedFramework ? ` \u00B7 ${svc.detectedFramework}` : ''}</span>
+          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-500)' }}>{svc.detectedLanguage}{svc.detectedFramework ? ` \u00B7 ${svc.detectedFramework}` : ''}</span>
         )}
         {url && (
-          <a href={url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--accent-blue, #58a6ff)', fontFamily: 'monospace', marginLeft: 'auto' }}>
+          <a href={url} target="_blank" rel="noreferrer" style={{
+            fontSize: 'var(--fs-sm)',
+            color: 'var(--sea-500)',
+            fontFamily: 'var(--font-mono, monospace)',
+            marginLeft: 'auto',
+          }}>
             {url.replace(/^https?:\/\//, '')} ↗
           </a>
         )}
@@ -984,56 +1032,59 @@ function ServiceRow({
 
       {/* Resources list */}
       {svc.resources.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginLeft: isMonorepo ? 24 : 0 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', marginLeft: isMonorepo ? 'var(--sp-5)' : 0 }}>
           {svc.resources.map((r, i) => (
             <span key={i} style={{
-              fontSize: 11, padding: '3px 8px', borderRadius: 4,
-              background: 'var(--bg-tertiary)', border: '1px solid var(--border)',
-              color: 'var(--text-secondary)', fontFamily: 'monospace',
+              fontSize: 'var(--fs-xs)',
+              padding: '4px var(--sp-2)',
+              borderRadius: 'var(--r-sm)',
+              background: 'var(--ink-50)',
+              border: '1px solid var(--ink-100)',
+              color: 'var(--ink-500)',
+              fontFamily: 'var(--font-mono, monospace)',
             }} title={r.detail}>
-              <span style={{ color: 'var(--text-primary)' }}>{resourceIcon(r.kind)}</span> {r.label}
+              <span style={{ color: 'var(--ink-900)' }}>{resourceIcon(r.kind)}</span> {r.label}
             </span>
           ))}
         </div>
       )}
 
       {/* Actions */}
-      <div style={{ display: 'flex', gap: 6, marginLeft: isMonorepo ? 24 : 0 }}>
+      <div style={{ display: 'flex', gap: 'var(--sp-2)', marginLeft: isMonorepo ? 'var(--sp-5)' : 0, flexWrap: 'wrap' }}>
         {canStop && (
           <button
-            className="btn"
+            className="btn btn-sm"
             disabled={busyStop}
             onClick={() => onServiceAction(svc.id, 'stop')}
-            style={{ fontSize: 11, padding: '3px 10px' }}
           >{busyStop ? tc('stopping') : tc('stop')}</button>
         )}
         {canStart && (
           <button
-            className="btn"
+            className="btn btn-sm"
             disabled={busyStart}
             onClick={() => onServiceAction(svc.id, 'start')}
-            style={{ fontSize: 11, padding: '3px 10px', color: 'var(--status-live)', borderColor: 'var(--status-live)' }}
+            style={{ color: 'var(--ok)', borderColor: 'var(--ok)' }}
           >{busyStart ? tc('starting') : tc('start')}</button>
         )}
         {failed && (
           <button
-            className="btn"
+            className="btn btn-sm"
             disabled={busyRetry}
             onClick={() => onRetryService(svc.id)}
-            style={{ fontSize: 11, padding: '3px 10px', color: 'var(--accent-blue, #58a6ff)', borderColor: 'var(--accent-blue, #58a6ff)' }}
+            style={{ color: 'var(--sea-500)', borderColor: 'var(--sea-500)' }}
           >{busyRetry ? tc('retrying') : tc('retryPipeline')}</button>
         )}
         {gcsSource && (
           <a
             href={`${API}/api/projects/${svc.id}/source-download`}
-            className="btn"
-            style={{ fontSize: 11, padding: '3px 10px', textDecoration: 'none' }}
+            className="btn btn-sm"
+            style={{ textDecoration: 'none' }}
           >{tc('downloadSourceCode')}</a>
         )}
         <button
-          className="btn btn-delete"
+          className="btn btn-sm btn-delete"
           onClick={onDeleteService}
-          style={{ fontSize: 11, padding: '3px 10px', color: 'var(--status-critical)', borderColor: 'var(--status-critical)', marginLeft: 'auto' }}
+          style={{ color: 'var(--danger)', borderColor: 'var(--danger)', marginLeft: 'auto' }}
         >{tc('delete')}</button>
       </div>
     </div>

@@ -90,7 +90,7 @@ export default function ReviewDetailPage() {
     return (
       <div>
         <BackLink t={t} />
-        <div style={{ marginTop: 24, color: 'var(--text-secondary)' }}>{t('loadingReview')}</div>
+        <div style={{ marginTop: 'var(--sp-5)', color: 'var(--ink-500)', fontSize: 'var(--fs-md)' }}>{t('loadingReview')}</div>
       </div>
     );
   }
@@ -99,8 +99,19 @@ export default function ReviewDetailPage() {
     return (
       <div>
         <BackLink t={t} />
-        <div style={{ marginTop: 24, padding: 16, background: 'rgba(248,81,73,0.1)', borderRadius: 6, border: '1px solid var(--status-critical)' }}>
-          {t('notFound')} <button className="btn" onClick={() => router.push('/reviews')}>{t('returnBtn')}</button>
+        <div style={{
+          marginTop: 'var(--sp-5)',
+          padding: 'var(--sp-4)',
+          background: 'var(--danger-bg)',
+          borderRadius: 'var(--r-md)',
+          border: '1px solid var(--danger)',
+          color: 'var(--danger)',
+          fontSize: 'var(--fs-md)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--sp-3)',
+        }}>
+          {t('notFound')} <button className="btn btn-sm" onClick={() => router.push('/reviews')}>{t('returnBtn')}</button>
         </div>
       </div>
     );
@@ -123,26 +134,32 @@ export default function ReviewDetailPage() {
       <BackLink t={t} />
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 600 }}>{t('reviewTitle', { name: review.project_name })}</h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', marginTop: 'var(--sp-3)', flexWrap: 'wrap' }}>
+        <h2 style={{
+          fontSize: 'var(--fs-2xl)',
+          fontWeight: 700,
+          letterSpacing: '-0.02em',
+          lineHeight: 'var(--lh-tight)',
+          color: 'var(--ink-900)',
+        }}>{t('reviewTitle', { name: review.project_name })}</h2>
         {alreadyDecided && (
           <span className={`pill ${review.decision === 'approved' ? 'pill-live' : 'pill-failed'}`}>
             {review.decision}
           </span>
         )}
       </div>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 4 }}>
+      <p style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-sm)', marginTop: 'var(--sp-2)' }}>
         {t('createdAt', { time: new Date(review.created_at).toLocaleString() })}
         {review.reviewed_at && ` · ${t('reviewedAt', { time: new Date(review.reviewed_at).toLocaleString(), email: review.reviewer_email ?? '' })}`}
       </p>
 
       {/* Summary Stats */}
-      <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+      <div style={{ display: 'flex', gap: 'var(--sp-3)', marginTop: 'var(--sp-5)', flexWrap: 'wrap' }}>
         <StatCard label={t('totalFindings')} value={String(allFindings.length)} />
         <StatCard label={t('critical')} value={String(severityCounts['critical'] ?? 0)}
-          color={severityCounts['critical'] ? 'var(--status-critical)' : undefined} />
+          color={severityCounts['critical'] ? 'var(--danger)' : undefined} />
         <StatCard label={t('high')} value={String(severityCounts['high'] ?? 0)}
-          color={severityCounts['high'] ? '#f0883e' : undefined} />
+          color={severityCounts['high'] ? 'var(--warn)' : undefined} />
         <StatCard label={t('medium')} value={String(severityCounts['medium'] ?? 0)} />
         <StatCard label={t('lowInfo')} value={String((severityCounts['low'] ?? 0) + (severityCounts['info'] ?? 0))} />
         <StatCard label={t('autoFixes')} value={`${autoFixes.filter((f) => f.applied).length}/${autoFixes.length}`} />
@@ -237,17 +254,18 @@ export default function ReviewDetailPage() {
 
       {/* Decision Form */}
       {!alreadyDecided && (
-        <Card title={t('submitDecision')} style={{ marginTop: 16 }}>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+        <Card title={t('submitDecision')} style={{ marginTop: 'var(--sp-4)' }}>
+          <div style={{ display: 'flex', gap: 'var(--sp-3)', marginBottom: 'var(--sp-4)' }}>
             <button
               type="button"
-              className={`btn ${decision === 'approved' ? 'btn-primary' : ''}`}
+              className="btn"
               onClick={() => setDecision('approved')}
               style={{
-                flex: 1, padding: '10px', fontSize: 14,
+                flex: 1,
+                justifyContent: 'center',
                 ...(decision === 'approved' ? {
-                  background: 'var(--status-success)',
-                  borderColor: 'var(--status-success)',
+                  background: 'var(--ok)',
+                  borderColor: 'var(--ok)',
                   color: 'var(--text-inverse)',
                 } : {}),
               }}
@@ -256,13 +274,14 @@ export default function ReviewDetailPage() {
             </button>
             <button
               type="button"
-              className={`btn ${decision === 'rejected' ? 'btn-primary' : ''}`}
+              className="btn"
               onClick={() => setDecision('rejected')}
               style={{
-                flex: 1, padding: '10px', fontSize: 14,
+                flex: 1,
+                justifyContent: 'center',
                 ...(decision === 'rejected' ? {
-                  background: 'var(--status-critical)',
-                  borderColor: 'var(--status-critical)',
+                  background: 'var(--danger)',
+                  borderColor: 'var(--danger)',
                   color: 'var(--text-inverse)',
                 } : {}),
               }}
@@ -271,46 +290,77 @@ export default function ReviewDetailPage() {
             </button>
           </div>
 
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
+          <div style={{ marginBottom: 'var(--sp-3)' }}>
+            <label style={{
+              display: 'block',
+              fontSize: 'var(--fs-sm)',
+              fontWeight: 500,
+              marginBottom: 6,
+              color: 'var(--ink-700)',
+            }}>
               {t('reviewerEmail')}
             </label>
             <input
               type="email" value={email} onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
               style={{
-                width: '100%', padding: '8px 12px',
-                background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                borderRadius: 6, color: 'var(--text-primary)', fontSize: 14,
+                width: '100%',
+                padding: '10px var(--sp-3)',
+                background: 'var(--surface-1)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--r-md)',
+                color: 'var(--ink-900)',
+                fontSize: 'var(--fs-md)',
+                fontFamily: 'inherit',
+                outline: 'none',
               }}
             />
           </div>
 
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
+          <div style={{ marginBottom: 'var(--sp-3)' }}>
+            <label style={{
+              display: 'block',
+              fontSize: 'var(--fs-sm)',
+              fontWeight: 500,
+              marginBottom: 6,
+              color: 'var(--ink-700)',
+            }}>
               {t('notesOptional')}
             </label>
             <textarea
               value={comments} onChange={(e) => setComments(e.target.value)}
               rows={3} placeholder={t('notesPlaceholder')}
               style={{
-                width: '100%', padding: '8px 12px',
-                background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                borderRadius: 6, color: 'var(--text-primary)', fontSize: 14,
+                width: '100%',
+                padding: '10px var(--sp-3)',
+                background: 'var(--surface-1)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--r-md)',
+                color: 'var(--ink-900)',
+                fontSize: 'var(--fs-md)',
+                fontFamily: 'inherit',
                 resize: 'vertical',
+                outline: 'none',
               }}
             />
           </div>
 
           {error && (
-            <div style={{ padding: 8, marginBottom: 12, background: 'rgba(248,81,73,0.1)', borderRadius: 6, color: 'var(--status-critical)', fontSize: 13 }}>
+            <div style={{
+              padding: 'var(--sp-3)',
+              marginBottom: 'var(--sp-3)',
+              background: 'var(--danger-bg)',
+              border: '1px solid var(--danger)',
+              borderRadius: 'var(--r-md)',
+              color: 'var(--danger)',
+              fontSize: 'var(--fs-sm)',
+            }}>
               {error}
             </div>
           )}
 
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button className="btn btn-primary" onClick={handleSubmit} disabled={submitting || !decision}
-              style={{ padding: '8px 24px', fontSize: 14 }}>
+            <button className="btn btn-primary" onClick={handleSubmit} disabled={submitting || !decision}>
               {submitting ? t('submitting') : t('submitLabel', { decision: decision || '...' })}
             </button>
           </div>
@@ -348,7 +398,14 @@ export default function ReviewDetailPage() {
 
 function BackLink({ t }: { t: (key: string) => string }) {
   return (
-    <a href="/reviews" style={{ color: 'var(--text-secondary)', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+    <a href="/reviews" style={{
+      color: 'var(--ink-500)',
+      fontSize: 'var(--fs-sm)',
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 4,
+      fontWeight: 500,
+    }}>
       &larr; {t('backToReviews')}
     </a>
   );
@@ -357,10 +414,19 @@ function BackLink({ t }: { t: (key: string) => string }) {
 function Card({ title, children, style }: { title: string; children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <div style={{
-      background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8,
-      padding: 16, ...style,
+      background: 'var(--surface-1)',
+      border: '1px solid var(--border)',
+      borderRadius: 'var(--r-lg)',
+      padding: 'var(--sp-5)',
+      ...style,
     }}>
-      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: 0.5 }}>
+      <h3 style={{
+        fontSize: 'var(--fs-lg)',
+        fontWeight: 600,
+        letterSpacing: '-0.01em',
+        marginBottom: 'var(--sp-4)',
+        color: 'var(--ink-900)',
+      }}>
         {title}
       </h3>
       {children}
@@ -371,29 +437,52 @@ function Card({ title, children, style }: { title: string; children: React.React
 function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div style={{
-      flex: 1, padding: '12px 16px', background: 'var(--bg-secondary)', borderRadius: 8,
-      border: '1px solid var(--border)', textAlign: 'center',
+      flex: '1 1 130px',
+      padding: 'var(--sp-4) var(--sp-4)',
+      background: 'var(--surface-1)',
+      borderRadius: 'var(--r-lg)',
+      border: '1px solid var(--border)',
+      textAlign: 'center',
     }}>
-      <div style={{ fontSize: 22, fontWeight: 600, color: color ?? 'var(--text-primary)' }}>{value}</div>
-      <div style={{ fontSize: 11, color: 'var(--text-secondary)', textTransform: 'uppercase', marginTop: 2 }}>{label}</div>
+      <div style={{
+        fontSize: 'var(--fs-2xl)',
+        fontWeight: 700,
+        letterSpacing: '-0.02em',
+        color: color ?? 'var(--ink-900)',
+        lineHeight: 'var(--lh-tight)',
+      }}>{value}</div>
+      <div style={{
+        fontSize: 'var(--fs-xs)',
+        color: 'var(--ink-500)',
+        textTransform: 'uppercase',
+        marginTop: 4,
+        letterSpacing: '0.05em',
+        fontWeight: 500,
+      }}>{label}</div>
     </div>
   );
 }
 
 function SeverityBadge({ severity }: { severity: string }) {
-  const colors: Record<string, string> = {
-    critical: '#f85149',
-    high: '#f0883e',
-    medium: '#d29922',
-    low: '#58a6ff',
-    info: '#8b949e',
+  const map: Record<string, { bg: string; color: string }> = {
+    critical: { bg: 'var(--danger-bg)', color: 'var(--danger)' },
+    high: { bg: 'var(--warn-bg)', color: 'var(--warn)' },
+    medium: { bg: 'var(--warn-bg)', color: 'var(--warn)' },
+    low: { bg: 'var(--info-bg)', color: 'var(--info)' },
+    info: { bg: 'var(--ink-100)', color: 'var(--ink-500)' },
   };
+  const s = map[severity] ?? map['info'];
   return (
     <span style={{
-      display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 11,
-      fontWeight: 600, textTransform: 'uppercase',
-      background: `${colors[severity] ?? '#8b949e'}20`,
-      color: colors[severity] ?? '#8b949e',
+      display: 'inline-block',
+      padding: '3px var(--sp-2)',
+      borderRadius: 'var(--r-sm)',
+      fontSize: 'var(--fs-xs)',
+      fontWeight: 600,
+      textTransform: 'uppercase',
+      letterSpacing: '0.03em',
+      background: s.bg,
+      color: s.color,
     }}>
       {severity}
     </span>

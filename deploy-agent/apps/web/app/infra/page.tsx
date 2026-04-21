@@ -81,40 +81,47 @@ export default function InfraPage() {
     }
   };
 
-  if (loading) return <div style={{ color: 'var(--text-secondary)' }}>{tc('loading')}</div>;
-  if (error) return <div style={{ color: 'var(--status-critical)' }}>{t('loadFailed', { error })}</div>;
+  if (loading) return <div style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-md)' }}>{tc('loading')}</div>;
+  if (error) return <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-md)' }}>{t('loadFailed', { error })}</div>;
   if (!data) return null;
 
   const hasOrphans = data.orphans.tarballCount > 0 || data.orphans.packageCount > 0;
 
   return (
     <div style={{ maxWidth: 1100 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 600 }}>{t('title')}</h1>
-        <button onClick={load} style={btnSecondary}>{t('refresh')}</button>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--sp-5)' }}>
+        <h1 style={{
+          fontSize: 'var(--fs-2xl)',
+          fontWeight: 700,
+          letterSpacing: '-0.02em',
+          lineHeight: 'var(--lh-tight)',
+          color: 'var(--ink-900)',
+        }}>{t('title')}</h1>
+        <button onClick={load} className="btn btn-sm">{t('refresh')}</button>
       </div>
 
       {/* Orphans banner */}
       {hasOrphans && (
         <div style={{
-          background: 'var(--bg-tertiary)',
-          border: '1px solid var(--status-high)',
-          borderRadius: 8,
-          padding: 16,
-          marginBottom: 24,
+          background: 'var(--warn-bg)',
+          border: '1px solid var(--warn)',
+          borderRadius: 'var(--r-lg)',
+          padding: 'var(--sp-5)',
+          marginBottom: 'var(--sp-5)',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-4)' }}>
             <div>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+              <div style={{ fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>
                 {t('orphansFound', { tarballCount: data.orphans.tarballCount, tarballSize: formatBytes(data.orphans.tarballBytes), packageCount: data.orphans.packageCount })}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-700)' }}>
                 {t('orphansDescription')}
               </div>
             </div>
             <button
               onClick={() => setShowConfirm(true)}
-              style={{ ...btnDanger, opacity: cleanupBusy ? 0.5 : 1 }}
+              className="btn btn-danger"
+              style={{ opacity: cleanupBusy ? 0.5 : 1 }}
               disabled={cleanupBusy}
             >
               {cleanupBusy ? t('cleaning') : t('cleanOrphans')}
@@ -126,15 +133,21 @@ export default function InfraPage() {
       {/* Cleanup result */}
       {cleanupResult && (
         <div style={{
-          background: 'var(--bg-tertiary)',
-          border: '1px solid var(--status-success)',
-          borderRadius: 8,
-          padding: 16,
-          marginBottom: 24,
-          fontSize: 13,
+          background: 'var(--ok-bg)',
+          border: '1px solid var(--ok)',
+          color: 'var(--ok)',
+          borderRadius: 'var(--r-md)',
+          padding: 'var(--sp-4)',
+          marginBottom: 'var(--sp-5)',
+          fontSize: 'var(--fs-sm)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--sp-3)',
         }}>
-          {t('cleanedResult', { tarballs: cleanupResult.deletedTarballs, packages: cleanupResult.deletedPackages, freed: formatBytes(cleanupResult.freedBytes) })}
-          <button onClick={() => setCleanupResult(null)} style={{ marginLeft: 12, ...btnGhost }}>{tc('close')}</button>
+          <span style={{ flex: 1 }}>
+            {t('cleanedResult', { tarballs: cleanupResult.deletedTarballs, packages: cleanupResult.deletedPackages, freed: formatBytes(cleanupResult.freedBytes) })}
+          </span>
+          <button onClick={() => setCleanupResult(null)} style={btnGhost}>{tc('close')}</button>
         </div>
       )}
 
@@ -159,7 +172,7 @@ export default function InfraPage() {
                 <tr key={p.name}>
                   <td style={tdStyle}><code>{p.name}</code></td>
                   <td style={tdStyle}>{p.versionCount}</td>
-                  <td style={{ ...tdStyle, color: 'var(--text-secondary)', fontSize: 12 }}>
+                  <td style={{ ...tdStyle, color: 'var(--ink-500)', fontSize: 'var(--fs-sm)' }}>
                     {p.updateTime ? new Date(p.updateTime).toLocaleDateString() : '—'}
                   </td>
                 </tr>
@@ -192,12 +205,12 @@ export default function InfraPage() {
               <tr key={s.name}>
                 <td style={tdStyle}><code>{s.name}</code></td>
                 <td style={tdStyle}>
-                  <span style={{ color: s.ready ? 'var(--status-success)' : 'var(--status-critical)' }}>
+                  <span style={{ color: s.ready ? 'var(--ok)' : 'var(--danger)', fontWeight: 500 }}>
                     {'\u25CF'} {s.ready ? 'Ready' : 'Not Ready'}
                   </span>
                 </td>
-                <td style={{ ...tdStyle, fontSize: 12 }}>
-                  {s.url ? <a href={s.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent-blue)' }}>{s.url}</a> : '—'}
+                <td style={{ ...tdStyle, fontSize: 'var(--fs-sm)' }}>
+                  {s.url ? <a href={s.url} target="_blank" rel="noreferrer" style={{ color: 'var(--sea-500)' }}>{s.url}</a> : <span style={{ color: 'var(--ink-400)' }}>—</span>}
                 </td>
               </tr>
             ))}
@@ -209,20 +222,34 @@ export default function InfraPage() {
       {showConfirm && (
         <div style={modalBackdrop} onClick={() => setShowConfirm(false)}>
           <div style={modalBody} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>{t('confirmCleanup')}</h3>
-            <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 8 }}>
+            <h3 style={{
+              fontSize: 'var(--fs-xl)',
+              fontWeight: 700,
+              letterSpacing: '-0.02em',
+              color: 'var(--ink-900)',
+              marginBottom: 'var(--sp-3)',
+            }}>{t('confirmCleanup')}</h3>
+            <p style={{ fontSize: 'var(--fs-md)', color: 'var(--ink-700)', marginBottom: 'var(--sp-2)' }}>
               {t('willDelete')}
             </p>
-            <ul style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16, paddingLeft: 20 }}>
+            <ul style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-500)', marginBottom: 'var(--sp-4)', paddingLeft: 20 }}>
               <li>{t('gcsTarballs', { count: data.orphans.tarballCount, size: formatBytes(data.orphans.tarballBytes) })}</li>
               <li>{t('arPackages', { count: data.orphans.packageCount })}</li>
             </ul>
-            <p style={{ fontSize: 13, color: 'var(--status-high)', marginBottom: 16 }}>
+            <p style={{
+              fontSize: 'var(--fs-sm)',
+              color: 'var(--warn)',
+              fontWeight: 500,
+              marginBottom: 'var(--sp-4)',
+              padding: 'var(--sp-3)',
+              background: 'var(--warn-bg)',
+              borderRadius: 'var(--r-md)',
+            }}>
               {t('irreversibleWarning')}
             </p>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => setShowConfirm(false)} style={btnSecondary}>{tc('cancel')}</button>
-              <button onClick={runCleanup} style={btnDanger} disabled={cleanupBusy}>
+            <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowConfirm(false)} className="btn">{tc('cancel')}</button>
+              <button onClick={runCleanup} className="btn btn-danger" disabled={cleanupBusy}>
                 {cleanupBusy ? t('cleaning') : t('confirmClean')}
               </button>
             </div>
@@ -236,13 +263,19 @@ export default function InfraPage() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div style={{
-      background: 'var(--bg-secondary)',
+      background: 'var(--surface-1)',
       border: '1px solid var(--border)',
-      borderRadius: 8,
-      padding: 20,
-      marginBottom: 16,
+      borderRadius: 'var(--r-lg)',
+      padding: 'var(--sp-5)',
+      marginBottom: 'var(--sp-4)',
     }}>
-      <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>{title}</h2>
+      <h2 style={{
+        fontSize: 'var(--fs-lg)',
+        fontWeight: 600,
+        letterSpacing: '-0.01em',
+        color: 'var(--ink-900)',
+        marginBottom: 'var(--sp-4)',
+      }}>{title}</h2>
       {children}
     </div>
   );
@@ -250,9 +283,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
-      <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
-      <span style={{ fontFamily: 'ui-monospace, monospace' }}>{value}</span>
+    <div style={{
+      display: 'flex',
+      justifyContent: 'space-between',
+      padding: 'var(--sp-2) 0',
+      fontSize: 'var(--fs-sm)',
+      borderBottom: '1px solid var(--ink-100)',
+    }}>
+      <span style={{ color: 'var(--ink-500)' }}>{label}</span>
+      <span style={{ fontFamily: 'var(--font-mono, monospace)', color: 'var(--ink-900)', fontWeight: 500 }}>{value}</span>
     </div>
   );
 }
@@ -261,62 +300,48 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 const tableStyle: React.CSSProperties = {
   width: '100%',
-  marginTop: 12,
+  marginTop: 'var(--sp-3)',
   borderCollapse: 'collapse',
-  fontSize: 13,
+  fontSize: 'var(--fs-sm)',
 };
 const thStyle: React.CSSProperties = {
   textAlign: 'left',
-  padding: '8px 12px',
+  padding: 'var(--sp-3)',
   borderBottom: '1px solid var(--border)',
-  color: 'var(--text-secondary)',
-  fontWeight: 500,
-  fontSize: 12,
+  color: 'var(--ink-500)',
+  fontWeight: 600,
+  fontSize: 'var(--fs-sm)',
 };
 const tdStyle: React.CSSProperties = {
-  padding: '8px 12px',
-  borderBottom: '1px solid var(--border)',
+  padding: 'var(--sp-3)',
+  borderBottom: '1px solid var(--ink-100)',
 };
 
-const btnBase: React.CSSProperties = {
-  padding: '8px 14px',
-  borderRadius: 6,
-  fontSize: 13,
-  cursor: 'pointer',
-  border: '1px solid var(--border)',
-};
-const btnSecondary: React.CSSProperties = {
-  ...btnBase,
-  background: 'var(--bg-tertiary)',
-  color: 'var(--text-primary)',
-};
-const btnDanger: React.CSSProperties = {
-  ...btnBase,
-  background: 'var(--status-critical)',
-  color: 'white',
-  border: 'none',
-};
 const btnGhost: React.CSSProperties = {
-  ...btnBase,
   background: 'transparent',
-  color: 'var(--text-secondary)',
+  color: 'var(--ink-500)',
   border: 'none',
-  padding: '4px 8px',
+  padding: '6px var(--sp-2)',
+  fontSize: 'var(--fs-sm)',
+  borderRadius: 'var(--r-sm)',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
 };
 const modalBackdrop: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
-  background: 'rgba(0,0,0,0.6)',
+  background: 'rgba(11,14,20,0.5)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   zIndex: 100,
 };
 const modalBody: React.CSSProperties = {
-  background: 'var(--bg-secondary)',
+  background: 'var(--surface-1)',
   border: '1px solid var(--border)',
-  borderRadius: 8,
-  padding: 24,
-  maxWidth: 480,
+  borderRadius: 'var(--r-lg)',
+  padding: 'var(--sp-6)',
+  maxWidth: 520,
   width: '90%',
+  boxShadow: 'var(--shadow-md)',
 };

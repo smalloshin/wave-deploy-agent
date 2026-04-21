@@ -83,9 +83,17 @@ export default function AdminPage() {
 
   return (
     <div>
-      <h1 style={{ marginTop: 0 }}>{t('title')}</h1>
+      <h1 style={{
+        marginTop: 0,
+        fontSize: 'var(--fs-2xl)',
+        fontWeight: 700,
+        letterSpacing: '-0.02em',
+        lineHeight: 'var(--lh-tight)',
+        color: 'var(--ink-900)',
+        marginBottom: 'var(--sp-5)',
+      }}>{t('title')}</h1>
 
-      <div style={{ display: 'flex', gap: 16, borderBottom: '1px solid var(--border)', marginBottom: 24 }}>
+      <div style={{ display: 'flex', gap: 'var(--sp-5)', borderBottom: '1px solid var(--border)', marginBottom: 'var(--sp-5)' }}>
         {canManageUsers && (
           <TabButton active={tab === 'users'} onClick={() => setTab('users')}>
             {t('tabs.users')}
@@ -113,15 +121,17 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
     <button
       onClick={onClick}
       style={{
-        padding: '8px 16px',
+        padding: 'var(--sp-3) var(--sp-4)',
         background: 'transparent',
         border: 'none',
-        borderBottom: active ? '2px solid var(--accent-blue, #58a6ff)' : '2px solid transparent',
-        color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-        fontWeight: active ? 600 : 400,
+        borderBottom: active ? '2px solid var(--sea-500)' : '2px solid transparent',
+        color: active ? 'var(--sea-600)' : 'var(--ink-500)',
+        fontWeight: active ? 600 : 500,
         cursor: 'pointer',
-        fontSize: 14,
+        fontSize: 'var(--fs-md)',
         marginBottom: -1,
+        fontFamily: 'inherit',
+        transition: 'color 0.12s, border-color 0.12s',
       }}
     >
       {children}
@@ -180,13 +190,13 @@ function UsersSection() {
     }
   }
 
-  if (error) return <div style={{ color: 'var(--status-critical)' }}>{error}</div>;
-  if (!users) return <div>Loading...</div>;
+  if (error) return <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-md)' }}>{error}</div>;
+  if (!users) return <div style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-md)' }}>Loading...</div>;
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--sp-4)' }}>
+        <div style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-sm)' }}>
           {t('count', { count: users.length })}
         </div>
         <button
@@ -704,64 +714,82 @@ function AuditLogSection() {
 const tableStyle: React.CSSProperties = {
   width: '100%',
   borderCollapse: 'collapse',
-  fontSize: 13,
+  fontSize: 'var(--fs-sm)',
+  background: 'var(--surface-1)',
+  border: '1px solid var(--border)',
+  borderRadius: 'var(--r-lg)',
+  overflow: 'hidden',
 };
 const th: React.CSSProperties = {
   textAlign: 'left',
-  padding: '8px 12px',
+  padding: 'var(--sp-3) var(--sp-4)',
   fontWeight: 600,
-  color: 'var(--text-secondary)',
-  fontSize: 12,
+  color: 'var(--ink-500)',
+  fontSize: 'var(--fs-sm)',
   borderBottom: '1px solid var(--border)',
+  background: 'var(--ink-50)',
 };
 const td: React.CSSProperties = {
-  padding: '8px 12px',
+  padding: 'var(--sp-3) var(--sp-4)',
   verticalAlign: 'middle',
+  borderBottom: '1px solid var(--ink-100)',
+  color: 'var(--ink-700)',
+  fontSize: 'var(--fs-sm)',
 };
 const inputStyle: React.CSSProperties = {
-  padding: '6px 10px',
+  padding: '8px var(--sp-3)',
   border: '1px solid var(--border)',
-  borderRadius: 4,
-  fontSize: 13,
+  borderRadius: 'var(--r-md)',
+  fontSize: 'var(--fs-md)',
+  fontFamily: 'inherit',
+  background: 'var(--surface-1)',
+  color: 'var(--ink-900)',
+  outline: 'none',
 };
 const selectStyle: React.CSSProperties = {
-  padding: '4px 8px',
+  padding: '6px var(--sp-3)',
   border: '1px solid var(--border)',
-  borderRadius: 4,
-  fontSize: 12,
-  background: 'var(--surface-raised)',
-  color: 'var(--text-primary)',
+  borderRadius: 'var(--r-md)',
+  fontSize: 'var(--fs-sm)',
+  background: 'var(--surface-1)',
+  color: 'var(--ink-900)',
+  fontFamily: 'inherit',
+  cursor: 'pointer',
 };
 const btnPrimary: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'var(--accent-blue)',
+  padding: '8px var(--sp-4)',
+  background: 'var(--sea-500)',
   color: 'var(--text-inverse)',
-  border: 'none',
-  borderRadius: 4,
-  fontSize: 13,
+  border: '1px solid var(--sea-500)',
+  borderRadius: 'var(--r-md)',
+  fontSize: 'var(--fs-sm)',
   cursor: 'pointer',
-  fontWeight: 500,
+  fontWeight: 600,
+  fontFamily: 'inherit',
 };
 const btnGhost: React.CSSProperties = {
-  padding: '6px 14px',
+  padding: '8px var(--sp-4)',
   background: 'transparent',
   border: '1px solid var(--border)',
-  borderRadius: 4,
-  fontSize: 13,
+  borderRadius: 'var(--r-md)',
+  fontSize: 'var(--fs-sm)',
   cursor: 'pointer',
-  color: 'var(--text-primary)',
+  color: 'var(--ink-700)',
+  fontFamily: 'inherit',
+  fontWeight: 500,
 };
 const pillStyle: React.CSSProperties = {
-  padding: '2px 8px',
-  background: 'var(--accent-blue-bg)',
-  borderRadius: 10,
-  fontSize: 11,
-  fontFamily: 'monospace',
-  color: 'var(--text-primary)',
+  padding: '2px var(--sp-2)',
+  background: 'var(--sea-50)',
+  borderRadius: 'var(--r-sm)',
+  fontSize: 'var(--fs-xs)',
+  fontFamily: 'var(--font-mono, monospace)',
+  color: 'var(--sea-700)',
+  fontWeight: 500,
 };
 const card: React.CSSProperties = {
-  padding: 16,
+  padding: 'var(--sp-5)',
   border: '1px solid var(--border)',
-  borderRadius: 6,
-  background: 'var(--bg-secondary)',
+  borderRadius: 'var(--r-lg)',
+  background: 'var(--surface-1)',
 };

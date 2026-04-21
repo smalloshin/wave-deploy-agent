@@ -70,18 +70,27 @@ export default function SettingsPage() {
     setSaving(false);
   };
 
+  const heroStyle: React.CSSProperties = {
+    fontSize: 'var(--fs-2xl)',
+    fontWeight: 700,
+    letterSpacing: '-0.02em',
+    lineHeight: 'var(--lh-tight)',
+    color: 'var(--ink-900)',
+    marginBottom: 'var(--sp-5)',
+  };
+
   if (loading) {
     return (
       <div>
-        <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 24 }}>{t('title')}</h2>
-        <div style={{ color: 'var(--text-secondary)' }}>{t('loadingSettings')}</div>
+        <h2 style={heroStyle}>{t('title')}</h2>
+        <div style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-md)' }}>{t('loadingSettings')}</div>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 720 }}>
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 24 }}>{t('title')}</h2>
+    <div style={{ maxWidth: 760 }}>
+      <h2 style={heroStyle}>{t('title')}</h2>
 
       <Section title={t('gcpSettings')}>
         <Field label={t('gcpProjectId')} placeholder="my-gcp-project" value={settings.gcpProject} onChange={(v) => update('gcpProject', v)} />
@@ -94,7 +103,7 @@ export default function SettingsPage() {
         <Field label="Cloudflare Zone ID" placeholder="zone-id" value={settings.cloudflareZoneId} onChange={(v) => update('cloudflareZoneId', v)} />
         <Field label={t('cloudflareZoneName')} placeholder="yourdomain.com" value={settings.cloudflareZoneName} onChange={(v) => update('cloudflareZoneName', v)} />
         <Field label={t('cloudflareApiToken')} placeholder="token" type="password" value={settings.cloudflareToken} onChange={(v) => update('cloudflareToken', v)} />
-        <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 4 }}>
+        <p style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-sm)', marginTop: 'var(--sp-2)' }}>
           {t('domainDeployHint')}
         </p>
       </Section>
@@ -110,16 +119,19 @@ export default function SettingsPage() {
 
       {message && (
         <div style={{
-          padding: '8px 12px', marginBottom: 12, borderRadius: 6, fontSize: 13,
-          background: message.type === 'success' ? 'rgba(63,185,80,0.1)' : 'rgba(248,81,73,0.1)',
-          color: message.type === 'success' ? 'var(--status-success)' : 'var(--status-critical)',
-          border: `1px solid ${message.type === 'success' ? 'var(--status-success)' : 'var(--status-critical)'}`,
+          padding: 'var(--sp-3) var(--sp-4)',
+          marginBottom: 'var(--sp-3)',
+          borderRadius: 'var(--r-md)',
+          fontSize: 'var(--fs-sm)',
+          background: message.type === 'success' ? 'var(--ok-bg)' : 'var(--danger-bg)',
+          color: message.type === 'success' ? 'var(--ok)' : 'var(--danger)',
+          border: `1px solid ${message.type === 'success' ? 'var(--ok)' : 'var(--danger)'}`,
         }}>
           {message.text}
         </div>
       )}
 
-      <div style={{ marginTop: 24 }}>
+      <div style={{ marginTop: 'var(--sp-5)' }}>
         <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
           {saving ? t('saving') : t('saveSettings')}
         </button>
@@ -131,11 +143,19 @@ export default function SettingsPage() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div style={{
-      marginBottom: 24, padding: 16,
-      background: 'var(--bg-secondary)', borderRadius: 8,
+      marginBottom: 'var(--sp-5)',
+      padding: 'var(--sp-5)',
+      background: 'var(--surface-1)',
+      borderRadius: 'var(--r-lg)',
       border: '1px solid var(--border)',
     }}>
-      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: 'var(--text-secondary)' }}>
+      <h3 style={{
+        fontSize: 'var(--fs-lg)',
+        fontWeight: 600,
+        letterSpacing: '-0.01em',
+        marginBottom: 'var(--sp-4)',
+        color: 'var(--ink-900)',
+      }}>
         {title}
       </h3>
       {children}
@@ -147,8 +167,14 @@ function Field({ label, placeholder, type = 'text', value, onChange }: {
   label: string; placeholder: string; type?: string; value: string; onChange: (v: string) => void;
 }) {
   return (
-    <div style={{ marginBottom: 12 }}>
-      <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: 'var(--text-secondary)' }}>
+    <div style={{ marginBottom: 'var(--sp-3)' }}>
+      <label style={{
+        display: 'block',
+        fontSize: 'var(--fs-sm)',
+        fontWeight: 500,
+        marginBottom: 6,
+        color: 'var(--ink-700)',
+      }}>
         {label}
       </label>
       <input
@@ -157,9 +183,16 @@ function Field({ label, placeholder, type = 'text', value, onChange }: {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         style={{
-          width: '100%', maxWidth: 560, padding: '8px 12px',
-          background: 'var(--bg-primary)', border: '1px solid var(--border)',
-          borderRadius: 6, color: 'var(--text-primary)', fontSize: 14,
+          width: '100%',
+          maxWidth: 580,
+          padding: '10px var(--sp-3)',
+          background: 'var(--surface-1)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-md)',
+          color: 'var(--ink-900)',
+          fontSize: 'var(--fs-md)',
+          fontFamily: 'inherit',
+          outline: 'none',
         }}
       />
     </div>

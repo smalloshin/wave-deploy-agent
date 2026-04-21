@@ -35,71 +35,100 @@ export default function DeploysPage() {
 
   return (
     <div>
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 16 }}>{t('title')}</h2>
+      <h2 style={{
+        fontSize: 'var(--fs-2xl)',
+        fontWeight: 700,
+        letterSpacing: '-0.02em',
+        lineHeight: 'var(--lh-tight)',
+        color: 'var(--ink-900)',
+        marginBottom: 'var(--sp-5)',
+      }}>{t('title')}</h2>
       {loading ? (
-        <div style={{ color: 'var(--text-secondary)' }}>{tc('loading')}</div>
+        <div style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-md)' }}>{tc('loading')}</div>
       ) : deployments.length === 0 ? (
-        <div style={{ marginTop: 32, textAlign: 'center', color: 'var(--text-secondary)' }}>
-          <p style={{ fontSize: 18 }}>{t('noDeployments')}</p>
-          <p>{t('noDeploymentsHint')}</p>
+        <div style={{
+          marginTop: 'var(--sp-6)',
+          textAlign: 'center',
+          padding: 'var(--sp-7) var(--sp-5)',
+          background: 'var(--surface-1)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-lg)',
+        }}>
+          <p style={{ fontSize: 'var(--fs-lg)', color: 'var(--ink-900)', fontWeight: 600, marginBottom: 'var(--sp-2)' }}>{t('noDeployments')}</p>
+          <p style={{ fontSize: 'var(--fs-md)', color: 'var(--ink-500)' }}>{t('noDeploymentsHint')}</p>
         </div>
       ) : (
         <>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: 12 }}>
-                <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('project')}</th>
-                <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('customDomain')}</th>
-                <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('cloudRunUrl')}</th>
-                <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('healthStatus')}</th>
-                <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('deployTime')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {paged.map((d: any) => (
-                <tr key={d.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                  <td style={{ padding: '12px' }}>
-                    <a href={`/projects/${d.project_id}`} style={{ color: 'var(--text-primary)', textDecoration: 'none', fontWeight: 500 }}>
-                      {d.project_name}
-                    </a>
-                  </td>
-                  <td style={{ padding: '12px' }}>
-                    {d.custom_domain ? (
-                      <a href={`https://${d.custom_domain}`} target="_blank" className="mono" style={{ fontSize: 12, color: 'var(--accent)' }}>
-                        {d.custom_domain}
-                      </a>
-                    ) : '—'}
-                  </td>
-                  <td style={{ padding: '12px' }}>
-                    {d.cloud_run_url ? (
-                      <a href={d.cloud_run_url} target="_blank" className="mono" style={{ fontSize: 12 }}>
-                        {d.cloud_run_url}
-                      </a>
-                    ) : '—'}
-                  </td>
-                  <td style={{ padding: '12px' }}>
-                    <span className={`pill ${d.health_status === 'healthy' ? 'pill-live' : d.health_status === 'unhealthy' ? 'pill-failed' : ''}`}>
-                      {d.health_status}
-                    </span>
-                  </td>
-                  <td style={{ padding: '12px', color: 'var(--text-secondary)', fontSize: 13 }}>
-                    {d.deployed_at ? new Date(d.deployed_at).toLocaleString() : tc('waiting')}
-                  </td>
+          <div style={{
+            background: 'var(--surface-1)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--r-lg)',
+            overflow: 'hidden',
+          }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{
+                  borderBottom: '1px solid var(--border)',
+                  color: 'var(--ink-500)',
+                  fontSize: 'var(--fs-sm)',
+                  background: 'var(--ink-50)',
+                }}>
+                  <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('project')}</th>
+                  <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('customDomain')}</th>
+                  <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('cloudRunUrl')}</th>
+                  <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('healthStatus')}</th>
+                  <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('deployTime')}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {paged.map((d: any) => (
+                  <tr key={d.id} style={{ borderBottom: '1px solid var(--ink-100)' }}>
+                    <td style={{ padding: 'var(--sp-4)' }}>
+                      <a href={`/projects/${d.project_id}`} style={{
+                        color: 'var(--ink-900)',
+                        textDecoration: 'none',
+                        fontWeight: 600,
+                        fontSize: 'var(--fs-md)',
+                      }}>
+                        {d.project_name}
+                      </a>
+                    </td>
+                    <td style={{ padding: 'var(--sp-4)' }}>
+                      {d.custom_domain ? (
+                        <a href={`https://${d.custom_domain}`} target="_blank" className="mono" style={{ fontSize: 'var(--fs-sm)', color: 'var(--sea-500)' }}>
+                          {d.custom_domain}
+                        </a>
+                      ) : <span style={{ color: 'var(--ink-400)' }}>—</span>}
+                    </td>
+                    <td style={{ padding: 'var(--sp-4)' }}>
+                      {d.cloud_run_url ? (
+                        <a href={d.cloud_run_url} target="_blank" className="mono" style={{ fontSize: 'var(--fs-sm)', color: 'var(--sea-500)' }}>
+                          {d.cloud_run_url}
+                        </a>
+                      ) : <span style={{ color: 'var(--ink-400)' }}>—</span>}
+                    </td>
+                    <td style={{ padding: 'var(--sp-4)' }}>
+                      <span className={`pill ${d.health_status === 'healthy' ? 'pill-live' : d.health_status === 'unhealthy' ? 'pill-failed' : ''}`}>
+                        {d.health_status}
+                      </span>
+                    </td>
+                    <td style={{ padding: 'var(--sp-4)', color: 'var(--ink-500)', fontSize: 'var(--fs-sm)' }}>
+                      {d.deployed_at ? new Date(d.deployed_at).toLocaleString() : tc('waiting')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {totalPages > 1 && (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16 }}>
-              <button className="btn" disabled={page === 0} onClick={() => setPage(page - 1)}
-                style={{ fontSize: 12, padding: '4px 10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--sp-3)', marginTop: 'var(--sp-5)' }}>
+              <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>
                 &larr;
               </button>
-              <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-500)' }}>
                 {page + 1} / {totalPages}
               </span>
-              <button className="btn" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}
-                style={{ fontSize: 12, padding: '4px 10px' }}>
+              <button className="btn btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>
                 &rarr;
               </button>
             </div>

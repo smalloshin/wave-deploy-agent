@@ -30,44 +30,70 @@ export default function ReviewsPage() {
 
   return (
     <div>
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 16 }}>{t('title')}</h2>
+      <h2 style={{
+        fontSize: 'var(--fs-2xl)',
+        fontWeight: 700,
+        letterSpacing: '-0.02em',
+        lineHeight: 'var(--lh-tight)',
+        color: 'var(--ink-900)',
+        marginBottom: 'var(--sp-5)',
+      }}>{t('title')}</h2>
       {loading ? (
-        <div style={{ color: 'var(--text-secondary)' }}>{tc('loading')}</div>
+        <div style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-md)' }}>{tc('loading')}</div>
       ) : reviews.length === 0 ? (
-        <div style={{ marginTop: 32, textAlign: 'center', color: 'var(--text-secondary)' }}>
-          <p style={{ fontSize: 18 }}>{t('noReviews')}</p>
+        <div style={{
+          marginTop: 'var(--sp-6)',
+          textAlign: 'center',
+          padding: 'var(--sp-7) var(--sp-5)',
+          background: 'var(--surface-1)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-lg)',
+        }}>
+          <p style={{ fontSize: 'var(--fs-lg)', color: 'var(--ink-900)', fontWeight: 600 }}>{t('noReviews')}</p>
         </div>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: 12 }}>
-              <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('project')}</th>
-              <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('status')}</th>
-              <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('createdDate')}</th>
-              <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('actions')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {reviews.map((r: any) => (
-              <tr key={r.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '12px' }}>{r.project_name}</td>
-                <td style={{ padding: '12px' }}>
-                  <span className={`pill ${r.decision ? (r.decision === 'approved' ? 'pill-live' : 'pill-failed') : 'pill-review'}`}>
-                    {r.decision ?? tc('pendingReview')}
-                  </span>
-                </td>
-                <td style={{ padding: '12px', color: 'var(--text-secondary)', fontSize: 13 }}>
-                  {new Date(r.created_at).toLocaleDateString()}
-                </td>
-                <td style={{ padding: '12px' }}>
-                  {!r.decision && (
-                    <a href={`/reviews/${r.id}`} className="btn" style={{ fontSize: 12 }}>{t('review')}</a>
-                  )}
-                </td>
+        <div style={{
+          background: 'var(--surface-1)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-lg)',
+          overflow: 'hidden',
+        }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{
+                borderBottom: '1px solid var(--border)',
+                color: 'var(--ink-500)',
+                fontSize: 'var(--fs-sm)',
+                background: 'var(--ink-50)',
+              }}>
+                <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('project')}</th>
+                <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('status')}</th>
+                <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('createdDate')}</th>
+                <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('actions')}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {reviews.map((r: any) => (
+                <tr key={r.id} style={{ borderBottom: '1px solid var(--ink-100)' }}>
+                  <td style={{ padding: 'var(--sp-4)', fontSize: 'var(--fs-md)', color: 'var(--ink-900)', fontWeight: 500 }}>{r.project_name}</td>
+                  <td style={{ padding: 'var(--sp-4)' }}>
+                    <span className={`pill ${r.decision ? (r.decision === 'approved' ? 'pill-live' : 'pill-failed') : 'pill-review'}`}>
+                      {r.decision ?? tc('pendingReview')}
+                    </span>
+                  </td>
+                  <td style={{ padding: 'var(--sp-4)', color: 'var(--ink-500)', fontSize: 'var(--fs-sm)' }}>
+                    {new Date(r.created_at).toLocaleDateString()}
+                  </td>
+                  <td style={{ padding: 'var(--sp-4)' }}>
+                    {!r.decision && (
+                      <a href={`/reviews/${r.id}`} className="btn btn-sm">{t('review')}</a>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
