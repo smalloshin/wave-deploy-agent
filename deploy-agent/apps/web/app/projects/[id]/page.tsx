@@ -394,7 +394,7 @@ export default function ProjectDetailPage() {
         <div style={{ marginTop: 24 }}>
           {[1, 2, 3, 4].map((i) => (
             <div key={i} style={{
-              height: 48, background: 'var(--bg-secondary)', borderRadius: 6,
+              height: 48, background: 'var(--bg-secondary)', borderRadius: 'var(--r-sm)',
               marginBottom: 8, animation: 'pulse 1.5s ease-in-out infinite',
             }} />
           ))}
@@ -407,7 +407,7 @@ export default function ProjectDetailPage() {
     return (
       <div>
         <BackLink t={t} />
-        <div style={{ marginTop: 24, padding: 16, background: 'var(--danger-bg)', borderRadius: 6, border: '1px solid var(--status-critical)' }}>
+        <div style={{ marginTop: 24, padding: 16, background: 'var(--danger-bg)', borderRadius: 'var(--r-sm)', border: '1px solid var(--status-critical)' }}>
           <p>{t('loadFailed', { error: error ?? t('notFound') })}</p>
           <button className="btn" style={{ marginTop: 8 }} onClick={() => window.location.reload()}>{tc('retry')}</button>
         </div>
@@ -503,18 +503,18 @@ export default function ProjectDetailPage() {
         return (
           <div style={{
             marginTop: 12, padding: 16, background: 'var(--danger-bg)',
-            borderRadius: 8, border: '1px solid var(--danger)',
+            borderRadius: 'var(--r-sm)', border: '1px solid var(--danger)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 16 }}>&#x26A0;&#xFE0F;</span>
-              <strong style={{ color: 'var(--status-critical)', fontSize: 14 }}>
+              <span style={{ fontSize: 'var(--fs-sm)' }}>&#x26A0;&#xFE0F;</span>
+              <strong style={{ color: 'var(--status-critical)', fontSize: 'var(--fs-xs)' }}>
                 {project.name} 部署失敗{meta.failedStep ? ` — ${String(meta.failedStep)}` : ''}
               </strong>
               {diag && (
                 <span className="pill" style={{
                   background: ownershipInfo.bg,
                   color: ownershipInfo.color,
-                  fontSize: 12,
+                  fontSize: 'var(--fs-xs)',
                   fontWeight: 600,
                   padding: '3px 10px',
                   border: `1px solid ${ownershipInfo.color}44`,
@@ -540,15 +540,15 @@ export default function ProjectDetailPage() {
                   <div style={{
                     padding: '14px 16px',
                     background: ownershipInfo.bg,
-                    borderRadius: 8,
+                    borderRadius: 'var(--r-sm)',
                     border: `1px solid ${ownershipInfo.color}55`,
-                    fontSize: 14,
+                    fontSize: 'var(--fs-xs)',
                     lineHeight: 1.7,
                   }}>
                     <div style={{
                       color: ownershipInfo.color,
                       fontWeight: 600,
-                      fontSize: 12,
+                      fontSize: 'var(--fs-xs)',
                       marginBottom: 6,
                       textTransform: 'uppercase',
                       letterSpacing: 0.5,
@@ -562,9 +562,9 @@ export default function ProjectDetailPage() {
                   <div style={{
                     padding: '10px 12px',
                     background: 'var(--ink-50)',
-                    borderRadius: 6,
+                    borderRadius: 'var(--r-sm)',
                     border: '1px dashed var(--ink-200)',
-                    fontSize: 12,
+                    fontSize: 'var(--fs-xs)',
                     color: 'var(--text-secondary)',
                     lineHeight: 1.6,
                   }}>
@@ -575,7 +575,7 @@ export default function ProjectDetailPage() {
 
                 {/* 錯誤地點 + 片段 —— 使用者修 code 時最需要看的 */}
                 {diag.errorLocation && (
-                  <div style={{ fontSize: 13 }}>
+                  <div style={{ fontSize: 'var(--fs-xs)' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>錯誤地點：</span>
                     <code style={{ background: 'var(--ink-100)', padding: '2px 6px', borderRadius: 'var(--r-sm)', color: 'var(--danger)' }}>
                       {diag.errorLocation}
@@ -584,15 +584,15 @@ export default function ProjectDetailPage() {
                 )}
                 {diag.errorSnippet && (
                   <div>
-                    <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 4 }}>錯誤片段：</div>
+                    <div style={{ color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)', marginBottom: 4 }}>錯誤片段：</div>
                     <div style={codeBlockStyle}>{diag.errorSnippet}</div>
                   </div>
                 )}
                 {diag.extraObservations && (
                   <div style={{
                     padding: '8px 12px', background: 'var(--warn-bg)',
-                    borderRadius: 6, border: '1px solid var(--warn)',
-                    fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)',
+                    borderRadius: 'var(--r-sm)', border: '1px solid var(--warn)',
+                    fontSize: 'var(--fs-xs)', lineHeight: 1.6, color: 'var(--text-secondary)',
                   }}>
                     <strong style={{ color: 'var(--warn)' }}>附加觀察：</strong> {diag.extraObservations}
                   </div>
@@ -603,14 +603,14 @@ export default function ProjectDetailPage() {
                   <div style={{
                     padding: '10px 12px',
                     background: 'var(--ink-50)',
-                    borderRadius: 6,
+                    borderRadius: 'var(--r-sm)',
                     border: '1px dashed var(--ink-300)',
                   }}>
                     <button
                       onClick={() => setShowAdminDetail((v) => !v)}
                       style={{
                         background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                        color: 'var(--text-secondary)', fontSize: 12, fontWeight: 600,
+                        color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)', fontWeight: 600,
                         display: 'flex', alignItems: 'center', gap: 6,
                       }}
                     >
@@ -619,13 +619,13 @@ export default function ProjectDetailPage() {
                     {showAdminDetail && (
                       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
                         {diag.adminFacingMessage && (
-                          <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
+                          <div style={{ fontSize: 'var(--fs-xs)', lineHeight: 1.6, color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
                             <strong style={{ color: 'var(--text-secondary)' }}>平台層分析：</strong><br />
                             {diag.adminFacingMessage}
                           </div>
                         )}
                         {diag.rootCause && diag.rootCause !== diag.adminFacingMessage && (
-                          <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+                          <div style={{ fontSize: 'var(--fs-xs)', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
                             <strong>根本原因：</strong> {diag.rootCause}
                           </div>
                         )}
@@ -680,7 +680,7 @@ export default function ProjectDetailPage() {
 
             {isAdmin && meta.stack ? (
               <details style={{ marginTop: 10 }}>
-                <summary style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>Stack Trace（admin）</summary>
+                <summary style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>Stack Trace（admin）</summary>
                 <div style={{ ...codeBlockStyle, fontSize: 11, marginTop: 4, color: 'var(--text-secondary)' }}>
                   {String(meta.stack)}
                 </div>
@@ -704,7 +704,7 @@ export default function ProjectDetailPage() {
         {/* Deployment Card */}
         <Card title={t('deploymentInfo')}>
           {deployments.length === 0 ? (
-            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{t('noDeployments')}</p>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)' }}>{t('noDeployments')}</p>
           ) : (
             deployments.slice(0, 1).map((d) => {
               const domainName = d.customDomain
@@ -717,18 +717,18 @@ export default function ProjectDetailPage() {
                   {d.cloudRunUrl && (
                     <InfoRow label={t('cloudRunUrl')}>
                       <a href={d.cloudRunUrl} target="_blank" rel="noreferrer"
-                        style={{ color: 'var(--accent)', fontSize: 13 }}>{d.cloudRunUrl}</a>
+                        style={{ color: 'var(--accent)', fontSize: 'var(--fs-xs)' }}>{d.cloudRunUrl}</a>
                     </InfoRow>
                   )}
                   {domainName && (
                     <InfoRow label={t('customDomain')}>
                       <a href={`https://${domainName}`} target="_blank" rel="noreferrer"
-                        style={{ color: 'var(--accent)', fontSize: 13 }}>https://{domainName}</a>
+                        style={{ color: 'var(--accent)', fontSize: 'var(--fs-xs)' }}>https://{domainName}</a>
                     </InfoRow>
                   )}
                   <InfoRow label={t('ssl')} value={d.sslStatus ?? 'N/A'} />
                   {project.config?.domainError && (
-                    <div style={{ margin: '8px 0', padding: '8px 12px', background: 'var(--danger-bg)', borderRadius: 6, border: '1px solid var(--status-critical)', fontSize: 13 }}>
+                    <div style={{ margin: '8px 0', padding: '8px 12px', background: 'var(--danger-bg)', borderRadius: 'var(--r-sm)', border: '1px solid var(--status-critical)', fontSize: 'var(--fs-xs)' }}>
                       <div style={{ color: 'var(--status-critical)', fontWeight: 500, marginBottom: 4 }}>⚠ Domain 設定失敗</div>
                       <div style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>{String(project.config.domainError)}</div>
                       <button
@@ -756,20 +756,20 @@ export default function ProjectDetailPage() {
       {versions.length > 0 && (
         <Card title={t('versionHistory')} style={{ marginTop: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
               {t('totalVersions', { count: versions.length })}
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
               {project.status === 'live' && (
                 <button className="btn btn-primary" onClick={handleUpgrade}
-                  style={{ fontSize: 12, padding: '4px 12px' }}>
+                  style={{ fontSize: 'var(--fs-xs)', padding: '4px 12px' }}>
                   {t('upgradeVersion')}
                 </button>
               )}
               <button
                 onClick={handleToggleLock}
                 style={{
-                  fontSize: 12, padding: '4px 12px', borderRadius: 4,
+                  fontSize: 'var(--fs-xs)', padding: '4px 12px', borderRadius: 'var(--r-sm)',
                   background: deployLocked ? 'var(--danger-bg)' : 'var(--bg-primary)',
                   border: `1px solid ${deployLocked ? 'var(--danger)' : 'var(--border)'}`,
                   color: deployLocked ? 'var(--status-critical)' : 'var(--text-secondary)',
@@ -788,7 +788,7 @@ export default function ProjectDetailPage() {
                   padding: '12px 16px',
                   background: v.isPublished ? 'var(--ok-bg)' : 'var(--bg-primary)',
                   border: `1px solid ${v.isPublished ? 'var(--ok)' : 'var(--border)'}`,
-                  borderRadius: 8,
+                  borderRadius: 'var(--r-sm)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
@@ -796,10 +796,10 @@ export default function ProjectDetailPage() {
               >
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <span style={{ fontWeight: 600, fontSize: 14 }}>v{v.version}</span>
+                    <span style={{ fontWeight: 600, fontSize: 'var(--fs-xs)' }}>v{v.version}</span>
                     {v.isPublished && (
                       <span style={{
-                        fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                        fontSize: 11, padding: '2px 8px', borderRadius: 'var(--r-sm)',
                         background: 'var(--ok-bg)', color: 'var(--status-live)',
                         fontWeight: 500,
                       }}>
@@ -807,7 +807,7 @@ export default function ProjectDetailPage() {
                       </span>
                     )}
                     <span style={{
-                      fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                      fontSize: 11, padding: '2px 8px', borderRadius: 'var(--r-sm)',
                       background: v.healthStatus === 'healthy' ? 'var(--ok-bg)' :
                                   v.healthStatus === 'unhealthy' ? 'var(--danger-bg)' : 'var(--bg-secondary)',
                       color: v.healthStatus === 'healthy' ? 'var(--status-live)' :
@@ -816,7 +816,7 @@ export default function ProjectDetailPage() {
                       {v.healthStatus}
                     </span>
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
                     {v.deployedAt ? new Date(v.deployedAt).toLocaleString() : tc('deploying')}
                     {v.revisionName && <span> &middot; {v.revisionName}</span>}
                   </div>
@@ -833,7 +833,7 @@ export default function ProjectDetailPage() {
                       onClick={() => handleDownload(v.id)}
                       title={t('downloadSourceHint')}
                       style={{
-                        fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                        fontSize: 'var(--fs-xs)', padding: '6px 14px', borderRadius: 'var(--r-sm)',
                         background: 'transparent', color: 'var(--accent)',
                         border: '1px solid var(--accent)', cursor: 'pointer',
                       }}
@@ -846,7 +846,7 @@ export default function ProjectDetailPage() {
                       onClick={() => handlePublish(v.id)}
                       disabled={publishing === v.id}
                       style={{
-                        fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                        fontSize: 'var(--fs-xs)', padding: '6px 14px', borderRadius: 'var(--r-sm)',
                         background: 'var(--accent)', color: '#fff', border: 'none',
                         cursor: publishing === v.id ? 'wait' : 'pointer',
                         opacity: publishing === v.id ? 0.6 : 1,
@@ -869,26 +869,26 @@ export default function ProjectDetailPage() {
             {/* Configured state */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Repository</span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>Repository</span>
                 <a href={webhookConfig.repoUrl} target="_blank" rel="noreferrer"
-                  style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}>
+                  style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', textDecoration: 'none' }}>
                   {webhookConfig.repoUrl}
                 </a>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Branch</span>
-                <span style={{ fontSize: 13, fontFamily: 'monospace' }}>{webhookConfig.branch}</span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>Branch</span>
+                <span style={{ fontSize: 'var(--fs-xs)', fontFamily: 'monospace' }}>{webhookConfig.branch}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Webhook URL</span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>Webhook URL</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <code style={{ fontSize: 12, color: 'var(--text-primary)', background: 'var(--bg-primary)', padding: '2px 8px', borderRadius: 4 }}>
+                  <code style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-primary)', background: 'var(--bg-primary)', padding: '2px 8px', borderRadius: 'var(--r-sm)' }}>
                     {webhookConfig.webhookUrl}
                   </code>
                   <button
                     onClick={() => copyToClipboard(webhookConfig.webhookUrl!, 'url')}
                     style={{
-                      fontSize: 11, padding: '3px 8px', borderRadius: 4,
+                      fontSize: 11, padding: '3px 8px', borderRadius: 'var(--r-sm)',
                       border: '1px solid var(--border)', background: 'var(--bg-primary)',
                       color: webhookCopied === 'url' ? 'var(--status-live)' : 'var(--text-secondary)',
                       cursor: 'pointer',
@@ -899,27 +899,27 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Secret</span>
-                <code style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-primary)', padding: '2px 8px', borderRadius: 4 }}>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>Secret</span>
+                <code style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', background: 'var(--bg-primary)', padding: '2px 8px', borderRadius: 'var(--r-sm)' }}>
                   {webhookConfig.maskedSecret}
                 </code>
               </div>
               {webhookNewSecret && (
                 <div style={{
                   padding: 12, background: 'var(--ok-bg)', border: '1px solid var(--ok)',
-                  borderRadius: 8, marginTop: 4,
+                  borderRadius: 'var(--r-sm)', marginTop: 4,
                 }}>
-                  <div style={{ fontSize: 12, color: 'var(--status-live)', fontWeight: 600, marginBottom: 6 }}>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--status-live)', fontWeight: 600, marginBottom: 6 }}>
                     {t('webhookSecretHint')}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <code style={{ fontSize: 12, fontFamily: 'monospace', wordBreak: 'break-all', flex: 1 }}>
+                    <code style={{ fontSize: 'var(--fs-xs)', fontFamily: 'monospace', wordBreak: 'break-all', flex: 1 }}>
                       {webhookNewSecret}
                     </code>
                     <button
                       onClick={() => copyToClipboard(webhookNewSecret, 'secret')}
                       style={{
-                        fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                        fontSize: 11, padding: '4px 10px', borderRadius: 'var(--r-sm)',
                         border: '1px solid var(--border)', background: 'var(--bg-primary)',
                         color: webhookCopied === 'secret' ? 'var(--status-live)' : 'var(--text-secondary)',
                         cursor: 'pointer', flexShrink: 0,
@@ -931,11 +931,11 @@ export default function ProjectDetailPage() {
                 </div>
               )}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('autoDeploy')}</span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>{t('autoDeploy')}</span>
                 <button
                   onClick={handleToggleAutoDeploy}
                   style={{
-                    fontSize: 12, padding: '4px 14px', borderRadius: 4,
+                    fontSize: 'var(--fs-xs)', padding: '4px 14px', borderRadius: 'var(--r-sm)',
                     background: webhookConfig.autoDeployEnabled ? 'var(--ok-bg)' : 'var(--bg-primary)',
                     border: `1px solid ${webhookConfig.autoDeployEnabled ? 'var(--ok)' : 'var(--border)'}`,
                     color: webhookConfig.autoDeployEnabled ? 'var(--status-live)' : 'var(--text-secondary)',
@@ -950,7 +950,7 @@ export default function ProjectDetailPage() {
               <button
                 onClick={handleRemoveWebhook}
                 style={{
-                  fontSize: 12, padding: '4px 14px', borderRadius: 4,
+                  fontSize: 'var(--fs-xs)', padding: '4px 14px', borderRadius: 'var(--r-sm)',
                   background: 'transparent', border: '1px solid var(--danger)',
                   color: 'var(--status-critical)', cursor: 'pointer',
                 }}
@@ -965,12 +965,12 @@ export default function ProjectDetailPage() {
         ) : (
           <div>
             {/* Setup form */}
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 12 }}>
               {t('webhookSetupHint')}
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div>
-                <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                <label style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
                   Repository URL
                 </label>
                 <input
@@ -979,14 +979,14 @@ export default function ProjectDetailPage() {
                   onChange={(e) => setWebhookRepoUrl(e.target.value)}
                   placeholder="https://github.com/owner/repo"
                   style={{
-                    width: '100%', padding: '8px 12px', fontSize: 13, fontFamily: 'monospace',
+                    width: '100%', padding: '8px 12px', fontSize: 'var(--fs-xs)', fontFamily: 'monospace',
                     background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                    borderRadius: 6, color: 'var(--text-primary)', boxSizing: 'border-box',
+                    borderRadius: 'var(--r-sm)', color: 'var(--text-primary)', boxSizing: 'border-box',
                   }}
                 />
               </div>
               <div>
-                <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                <label style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
                   Branch
                 </label>
                 <input
@@ -995,9 +995,9 @@ export default function ProjectDetailPage() {
                   onChange={(e) => setWebhookBranch(e.target.value)}
                   placeholder="main"
                   style={{
-                    width: 200, padding: '8px 12px', fontSize: 13, fontFamily: 'monospace',
+                    width: 200, padding: '8px 12px', fontSize: 'var(--fs-xs)', fontFamily: 'monospace',
                     background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                    borderRadius: 6, color: 'var(--text-primary)',
+                    borderRadius: 'var(--r-sm)', color: 'var(--text-primary)',
                   }}
                 />
               </div>
@@ -1006,7 +1006,7 @@ export default function ProjectDetailPage() {
                   onClick={handleSetupWebhook}
                   disabled={webhookSaving || !webhookRepoUrl.trim()}
                   style={{
-                    fontSize: 13, padding: '8px 20px', borderRadius: 6,
+                    fontSize: 'var(--fs-xs)', padding: '8px 20px', borderRadius: 'var(--r-sm)',
                     background: 'var(--accent)', color: '#fff', border: 'none',
                     cursor: webhookSaving || !webhookRepoUrl.trim() ? 'not-allowed' : 'pointer',
                     opacity: webhookSaving || !webhookRepoUrl.trim() ? 0.5 : 1,
@@ -1028,10 +1028,10 @@ export default function ProjectDetailPage() {
         }} onClick={() => { setShowUpgradeModal(false); setUpgradeFile(null); }}>
           <div style={{
             background: 'var(--bg-secondary)', border: '1px solid var(--border)',
-            borderRadius: 12, padding: 24, width: 480, maxWidth: '90vw',
+            borderRadius: 'var(--r-md)', padding: 24, width: 480, maxWidth: '90vw',
           }} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>{t('upgradeModal.title')}</h3>
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
+            <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 600, marginBottom: 16 }}>{t('upgradeModal.title')}</h3>
+            <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 16 }}>
               {t('upgradeModal.description')}
             </p>
             <div
@@ -1052,7 +1052,7 @@ export default function ProjectDetailPage() {
               }}
               style={{
                 border: `2px dashed ${upgradeDragOver ? 'var(--accent)' : upgradeFile ? 'var(--status-live)' : 'var(--border)'}`,
-                borderRadius: 8, padding: upgradeFile ? '16px' : '32px 16px',
+                borderRadius: 'var(--r-sm)', padding: upgradeFile ? '16px' : '32px 16px',
                 textAlign: 'center', cursor: 'pointer',
                 background: upgradeDragOver ? 'var(--sea-50)' : 'var(--bg-primary)',
               }}
@@ -1060,26 +1060,26 @@ export default function ProjectDetailPage() {
               {upgradeFile ? (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
                   <div style={{ textAlign: 'left' }}>
-                    <div style={{ fontWeight: 500, fontSize: 14 }}>{upgradeFile.name}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    <div style={{ fontWeight: 500, fontSize: 'var(--fs-xs)' }}>{upgradeFile.name}</div>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
                       {(upgradeFile.size / 1024 / 1024).toFixed(1)} MB
                     </div>
                   </div>
                 </div>
               ) : (
-                <div style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+                <div style={{ color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)' }}>
                   {t('upgradeModal.dragHint')}
                 </div>
               )}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
               <button onClick={() => { setShowUpgradeModal(false); setUpgradeFile(null); }}
-                style={{ fontSize: 13, padding: '8px 16px', borderRadius: 6, background: 'var(--bg-primary)', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-primary)' }}>
+                style={{ fontSize: 'var(--fs-xs)', padding: '8px 16px', borderRadius: 'var(--r-sm)', background: 'var(--bg-primary)', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-primary)' }}>
                 {tc('cancel')}
               </button>
               <button onClick={handleUpgrade} disabled={!upgradeFile || upgrading}
                 style={{
-                  fontSize: 13, padding: '8px 16px', borderRadius: 6,
+                  fontSize: 'var(--fs-xs)', padding: '8px 16px', borderRadius: 'var(--r-sm)',
                   background: upgradeFile ? 'var(--accent)' : 'var(--bg-primary)',
                   color: upgradeFile ? '#fff' : 'var(--text-secondary)',
                   border: 'none', cursor: upgradeFile ? 'pointer' : 'not-allowed',
@@ -1107,7 +1107,7 @@ export default function ProjectDetailPage() {
       {/* Pipeline Timeline */}
       <Card title={t('timeline.title')} style={{ marginTop: 16 }}>
         {timeline.length === 0 ? (
-          <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{t('timeline.noEvents')}</p>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)' }}>{t('timeline.noEvents')}</p>
         ) : (
           <div style={{ position: 'relative', paddingLeft: 24 }}>
             {/* Vertical line */}
@@ -1138,7 +1138,7 @@ export default function ProjectDetailPage() {
                         </span>
                       )}
                     </div>
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 2 }}>
                       {new Date(entry.createdAt).toLocaleString()} &middot; by {entry.triggeredBy}
                     </div>
                     {/* Show metadata if there's useful info */}
@@ -1247,8 +1247,8 @@ function MetadataBlock({ metadata, t }: { metadata: Record<string, unknown>; t: 
         )}
         <div style={{
           padding: '6px 10px', background: 'var(--danger-bg)',
-          borderRadius: 4, border: '1px solid var(--danger)',
-          fontSize: 12, color: 'var(--status-critical)', fontFamily: 'monospace',
+          borderRadius: 'var(--r-sm)', border: '1px solid var(--danger)',
+          fontSize: 'var(--fs-xs)', color: 'var(--status-critical)', fontFamily: 'monospace',
           wordBreak: 'break-all', lineHeight: 1.5,
         }}>
           {errorMsg}
@@ -1276,7 +1276,7 @@ function MetadataBlock({ metadata, t }: { metadata: Record<string, unknown>; t: 
     <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
       {entries.map(([key, val]) => (
         <span key={key} style={{
-          display: 'inline-block', padding: '2px 8px', borderRadius: 4,
+          display: 'inline-block', padding: '2px 8px', borderRadius: 'var(--r-sm)',
           background: 'var(--bg-primary)', border: '1px solid var(--border)',
           fontSize: 11, color: 'var(--text-secondary)',
         }}>
@@ -1301,19 +1301,19 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
 
   return (
     <div style={{
-      background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8,
+      background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
       padding: 16, marginTop: 16,
     }}>
       <div
         style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
         onClick={() => setExpanded(!expanded)}
       >
-        <h3 style={{ fontSize: 14, fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: 0.5, margin: 0 }}>
+        <h3 style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: 0.5, margin: 0 }}>
           {expanded ? '\u25BC' : '\u25B6'}&nbsp; {t('title')}
         </h3>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {findings.length > 0 && (
-            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
               {findings.length} findings
               {autoFixes.length > 0 && ` (${autoFixes.length} auto-fixed)`}
             </span>
@@ -1322,7 +1322,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
             {scanReport.status}
           </span>
           {scanReport.costEstimate && (
-            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
               ~${scanReport.costEstimate.monthlyTotal.toFixed(2)}/mo
             </span>
           )}
@@ -1333,16 +1333,16 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
               onClick={(e) => e.stopPropagation()}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
-                padding: '4px 10px', fontSize: 12, fontWeight: 500,
+                padding: '4px 10px', fontSize: 'var(--fs-xs)', fontWeight: 500,
                 background: 'var(--bg-tertiary)', color: 'var(--accent-blue)',
-                border: '1px solid var(--border)', borderRadius: 6,
+                border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
                 textDecoration: 'none', cursor: 'pointer',
                 transition: 'background 0.15s',
               }}
               onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--border)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
             >
-              <span style={{ fontSize: 14 }}>&#8681;</span> {t('downloadReport')}
+              <span style={{ fontSize: 'var(--fs-xs)' }}>&#8681;</span> {t('downloadReport')}
             </a>
           )}
         </div>
@@ -1366,12 +1366,12 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
           {/* Threat summary */}
           {scanReport.threatSummary && (
             <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4, textTransform: 'uppercase' }}>
+              <label style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 4, textTransform: 'uppercase' }}>
                 {t('threatSummary')}
               </label>
               <div style={{
-                background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 6,
-                padding: 12, fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', maxHeight: 300,
+                background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
+                padding: 12, fontSize: 'var(--fs-xs)', lineHeight: 1.6, whiteSpace: 'pre-wrap', maxHeight: 300,
                 overflowY: 'auto', fontFamily: 'monospace',
               }}>
                 {scanReport.threatSummary}
@@ -1382,7 +1382,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
           {/* Findings list */}
           {findings.length > 0 && (
             <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase' }}>
+              <label style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase' }}>
                 {t('securityFindings', { count: findings.length })}
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1396,7 +1396,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
           {/* Auto-fixes list */}
           {autoFixes.length > 0 && (
             <div>
-              <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase' }}>
+              <label style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase' }}>
                 {t('autoFixes', { count: autoFixes.length })}
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1408,7 +1408,7 @@ function ScanReportSection({ scanReport, projectStatus, projectId }: { scanRepor
           )}
 
           {findings.length === 0 && !scanReport.threatSummary && (
-            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{t('scanningInProgress')}</p>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)' }}>{t('scanningInProgress')}</p>
           )}
         </div>
       )}
@@ -1435,14 +1435,14 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
   };
 
   return (
-    <div style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-primary)' }}>
+    <div style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', background: 'var(--bg-primary)' }}>
       <div
         style={{ padding: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
         onClick={() => setExpanded(!expanded)}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{expanded ? '\u25BC' : '\u25B6'}</span>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>{expanded ? '\u25BC' : '\u25B6'}</span>
+          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
             {t('deploymentPlan', { count: plan.requirements.length })}
           </span>
           {plan.canAutoDeploy ? (
@@ -1461,7 +1461,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
       {expanded && (
         <div style={{ padding: '0 12px 12px 12px', borderTop: '1px solid var(--border)' }}>
           {plan.summary && (
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '12px 0', lineHeight: 1.6 }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', margin: '12px 0', lineHeight: 1.6 }}>
               {plan.summary}
             </div>
           )}
@@ -1469,7 +1469,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
             {plan.requirements.map((req, i) => {
               const s = strategyLabel[req.strategy] ?? { label: req.strategy, color: 'var(--ink-400)' };
               return (
-                <div key={i} style={{ padding: 10, background: 'var(--bg-tertiary)', borderRadius: 4, fontSize: 12 }}>
+                <div key={i} style={{ padding: 10, background: 'var(--bg-tertiary)', borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-xs)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{req.type}</span>
@@ -1478,7 +1478,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
                         <span style={{ fontSize: 10, color: 'var(--danger)' }}>REQUIRED</span>
                       )}
                     </div>
-                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: `${s.color}22`, color: s.color }}>
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 'var(--r-sm)', background: `${s.color}22`, color: s.color }}>
                       {s.label}
                     </span>
                   </div>
@@ -1493,7 +1493,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
             })}
           </div>
           {plan.missingUserEnvVars.length > 0 && (
-            <div style={{ marginTop: 10, padding: 10, background: 'var(--warn-bg)', borderRadius: 4, fontSize: 12 }}>
+            <div style={{ marginTop: 10, padding: 10, background: 'var(--warn-bg)', borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-xs)' }}>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>{t('userMustProvide')}</div>
               {plan.missingUserEnvVars.map((v, i) => (
                 <div key={i} style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)' }}>
@@ -1503,7 +1503,7 @@ function ResourcePlanCard({ plan }: { plan: ResourcePlan }) {
             </div>
           )}
           {plan.blockers.length > 0 && (
-            <div style={{ marginTop: 10, padding: 10, background: 'var(--danger-bg)', borderRadius: 4, fontSize: 12 }}>
+            <div style={{ marginTop: 10, padding: 10, background: 'var(--danger-bg)', borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-xs)' }}>
               <div style={{ fontWeight: 600, color: 'var(--danger)', marginBottom: 6 }}>{t('blockers')}</div>
               {plan.blockers.map((b, i) => (
                 <div key={i} style={{ color: 'var(--text-secondary)' }}>{b}</div>
@@ -1520,7 +1520,7 @@ function SeverityBadge({ severity, count }: { severity: string; count: number })
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 10px',
-      borderRadius: 12, fontSize: 12, fontWeight: 600,
+      borderRadius: 'var(--r-md)', fontSize: 'var(--fs-xs)', fontWeight: 600,
       background: `${SEVERITY_COLORS[severity]}20`,
       color: SEVERITY_COLORS[severity],
       border: `1px solid ${SEVERITY_COLORS[severity]}40`,
@@ -1536,25 +1536,25 @@ function FindingCard({ finding }: { finding: ScanFinding }) {
 
   return (
     <div style={{
-      background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 6,
+      background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
       padding: '10px 12px', cursor: 'pointer',
     }} onClick={() => setShowDetail(!showDetail)}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{
-          display: 'inline-block', padding: '1px 6px', borderRadius: 4,
+          display: 'inline-block', padding: '1px 6px', borderRadius: 'var(--r-sm)',
           fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
           background: `${color}20`, color, border: `1px solid ${color}40`,
         }}>
           {finding.severity}
         </span>
         <span style={{
-          display: 'inline-block', padding: '1px 6px', borderRadius: 4,
+          display: 'inline-block', padding: '1px 6px', borderRadius: 'var(--r-sm)',
           fontSize: 10, background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
           border: '1px solid var(--border)',
         }}>
           {finding.tool}
         </span>
-        <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', flex: 1 }}>
+        <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 500, color: 'var(--text-primary)', flex: 1 }}>
           {finding.title}
         </span>
         {finding.action === 'auto_fix' && (
@@ -1562,7 +1562,7 @@ function FindingCard({ finding }: { finding: ScanFinding }) {
         )}
       </div>
       {showDetail && (
-        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+        <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
           <p style={{ margin: '0 0 4px' }}>{finding.description}</p>
           {finding.filePath && (
             <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--accent)' }}>
@@ -1587,11 +1587,11 @@ function AutoFixCard({ fix }: { fix: AutoFixRecord }) {
     <div style={{
       background: isApplied ? 'var(--ok-bg)' : 'var(--danger-bg)',
       border: `1px solid ${isApplied ? 'var(--ok)' : 'var(--danger)'}`,
-      borderRadius: 6, padding: '10px 12px', cursor: 'pointer',
+      borderRadius: 'var(--r-sm)', padding: '10px 12px', cursor: 'pointer',
     }} onClick={() => setShowDiff(!showDiff)}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ color: statusColor, fontSize: 12, fontWeight: 600, flexShrink: 0 }}>{statusLabel}</span>
-        <span style={{ fontSize: 13, color: 'var(--text-primary)', flex: 1 }}>{fix.explanation}</span>
+        <span style={{ color: statusColor, fontSize: 'var(--fs-xs)', fontWeight: 600, flexShrink: 0 }}>{statusLabel}</span>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-primary)', flex: 1 }}>{fix.explanation}</span>
         {fix.filePath && (
           <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)', flexShrink: 0 }}>{fix.filePath}</span>
         )}
@@ -1603,7 +1603,7 @@ function AutoFixCard({ fix }: { fix: AutoFixRecord }) {
               <div>
                 <label style={{ display: 'block', fontSize: 10, color: 'var(--status-critical)', marginBottom: 2, fontWeight: 600 }}>BEFORE</label>
                 <pre style={{
-                  background: 'var(--danger-bg)', border: '1px solid var(--danger)', borderRadius: 4,
+                  background: 'var(--danger-bg)', border: '1px solid var(--danger)', borderRadius: 'var(--r-sm)',
                   padding: 8, fontSize: 11, margin: 0, overflowX: 'auto', whiteSpace: 'pre-wrap',
                   color: 'var(--text-secondary)', maxHeight: 200,
                 }}>{fix.originalCode}</pre>
@@ -1611,7 +1611,7 @@ function AutoFixCard({ fix }: { fix: AutoFixRecord }) {
               <div>
                 <label style={{ display: 'block', fontSize: 10, color: 'var(--status-live)', marginBottom: 2, fontWeight: 600 }}>AFTER</label>
                 <pre style={{
-                  background: 'var(--ok-bg)', border: '1px solid var(--ok)', borderRadius: 4,
+                  background: 'var(--ok-bg)', border: '1px solid var(--ok)', borderRadius: 'var(--r-sm)',
                   padding: 8, fontSize: 11, margin: 0, overflowX: 'auto', whiteSpace: 'pre-wrap',
                   color: 'var(--text-secondary)', maxHeight: 200,
                 }}>{fix.fixedCode}</pre>
@@ -1619,7 +1619,7 @@ function AutoFixCard({ fix }: { fix: AutoFixRecord }) {
             </div>
           ) : fix.diff ? (
             <pre style={{
-              background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 4,
+              background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
               padding: 8, fontSize: 11, margin: 0, overflowX: 'auto', whiteSpace: 'pre-wrap',
               color: 'var(--text-secondary)', maxHeight: 200,
             }}>{fix.diff}</pre>
@@ -1738,17 +1738,17 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
 
   return (
     <div style={{
-      background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8,
+      background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
       padding: 16, marginTop: 16,
     }}>
       <div
         style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
         onClick={onToggle}
       >
-        <h3 style={{ fontSize: 14, fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: 0.5, margin: 0 }}>
+        <h3 style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: 0.5, margin: 0 }}>
           {expanded ? '\u25BC' : '\u25B6'}&nbsp; {t('title')}
         </h3>
-        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
           {envVars.length} vars
         </span>
       </div>
@@ -1756,7 +1756,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
       {expanded && (
         <div style={{ marginTop: 12 }}>
           {loadingEnv ? (
-            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{tc('loading')}</p>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)' }}>{tc('loading')}</p>
           ) : (
             <>
               {/* Action buttons */}
@@ -1765,7 +1765,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                   <button
                     onClick={(e) => { e.stopPropagation(); startEditing(); }}
                     style={{
-                      padding: '5px 14px', fontSize: 12, borderRadius: 6, border: '1px solid var(--accent)',
+                      padding: '5px 14px', fontSize: 'var(--fs-xs)', borderRadius: 'var(--r-sm)', border: '1px solid var(--accent)',
                       background: 'transparent', color: 'var(--accent)', cursor: 'pointer',
                       fontWeight: 500,
                     }}
@@ -1778,7 +1778,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                       onClick={(e) => { e.stopPropagation(); handleSave(); }}
                       disabled={saving}
                       style={{
-                        padding: '5px 14px', fontSize: 12, borderRadius: 6, border: 'none',
+                        padding: '5px 14px', fontSize: 'var(--fs-xs)', borderRadius: 'var(--r-sm)', border: 'none',
                         background: 'var(--accent)', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer',
                         fontWeight: 500, opacity: saving ? 0.6 : 1,
                       }}
@@ -1788,7 +1788,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                     <button
                       onClick={(e) => { e.stopPropagation(); cancelEditing(); }}
                       style={{
-                        padding: '5px 14px', fontSize: 12, borderRadius: 6,
+                        padding: '5px 14px', fontSize: 'var(--fs-xs)', borderRadius: 'var(--r-sm)',
                         border: '1px solid var(--border)', background: 'transparent',
                         color: 'var(--text-secondary)', cursor: 'pointer',
                       }}
@@ -1798,7 +1798,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                     <button
                       onClick={(e) => { e.stopPropagation(); addEntry(); }}
                       style={{
-                        padding: '5px 14px', fontSize: 12, borderRadius: 6,
+                        padding: '5px 14px', fontSize: 'var(--fs-xs)', borderRadius: 'var(--r-sm)',
                         border: '1px solid var(--border)', background: 'transparent',
                         color: 'var(--status-live)', cursor: 'pointer', marginLeft: 'auto',
                       }}
@@ -1812,7 +1812,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
               {/* Status message */}
               {saveMsg && (
                 <div style={{
-                  padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13,
+                  padding: '8px 12px', borderRadius: 'var(--r-sm)', marginBottom: 12, fontSize: 'var(--fs-xs)',
                   background: saveMsg.type === 'success' ? 'var(--ok-bg)' : 'var(--danger-bg)',
                   border: `1px solid ${saveMsg.type === 'success' ? 'var(--ok)' : 'var(--danger)'}`,
                   color: saveMsg.type === 'success' ? 'var(--status-live)' : 'var(--status-critical)',
@@ -1824,11 +1824,11 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
               {/* Env vars table */}
               {!editing ? (
                 <div style={{
-                  background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 6,
+                  background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
                   overflow: 'hidden',
                 }}>
                   {envVars.length === 0 ? (
-                    <p style={{ padding: 12, color: 'var(--text-secondary)', fontSize: 13, margin: 0 }}>
+                    <p style={{ padding: 12, color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)', margin: 0 }}>
                       No environment variables set
                     </p>
                   ) : (
@@ -1842,8 +1842,8 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                       <tbody>
                         {envVars.map((v, i) => (
                           <tr key={i} style={{ borderBottom: i < envVars.length - 1 ? '1px solid var(--border)' : 'none' }}>
-                            <td style={{ padding: '6px 12px', fontFamily: 'monospace', fontSize: 12, color: 'var(--text-primary)' }}>{v.key}</td>
-                            <td style={{ padding: '6px 12px', fontFamily: 'monospace', fontSize: 12, color: 'var(--text-secondary)' }}>{v.maskedValue}</td>
+                            <td style={{ padding: '6px 12px', fontFamily: 'monospace', fontSize: 'var(--fs-xs)', color: 'var(--text-primary)' }}>{v.key}</td>
+                            <td style={{ padding: '6px 12px', fontFamily: 'monospace', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>{v.maskedValue}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1863,10 +1863,10 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                           placeholder="KEY"
                           readOnly={!entry.isNew}
                           style={{
-                            flex: '0 0 220px', padding: '6px 10px', fontSize: 12, fontFamily: 'monospace',
+                            flex: '0 0 220px', padding: '6px 10px', fontSize: 'var(--fs-xs)', fontFamily: 'monospace',
                             background: entry.isNew ? 'var(--bg-primary)' : 'var(--bg-tertiary, var(--bg-secondary))',
                             border: `1px solid ${isReserved ? 'var(--status-critical)' : 'var(--border)'}`,
-                            borderRadius: 4, color: 'var(--text-primary)',
+                            borderRadius: 'var(--r-sm)', color: 'var(--text-primary)',
                             opacity: entry.isNew ? 1 : 0.8,
                           }}
                         />
@@ -1876,18 +1876,18 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                           onChange={(e) => updateEntry(i, 'value', e.target.value)}
                           placeholder={entry.isNew ? 'value' : '(leave empty = no change)'}
                           style={{
-                            flex: 1, padding: '6px 10px', fontSize: 12, fontFamily: 'monospace',
+                            flex: 1, padding: '6px 10px', fontSize: 'var(--fs-xs)', fontFamily: 'monospace',
                             background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                            borderRadius: 4, color: 'var(--text-primary)',
+                            borderRadius: 'var(--r-sm)', color: 'var(--text-primary)',
                           }}
                         />
                         <button
                           onClick={() => removeEntry(i)}
                           title={tc('delete')}
                           style={{
-                            width: 28, height: 28, borderRadius: 4, border: '1px solid var(--border)',
+                            width: 28, height: 28, borderRadius: 'var(--r-sm)', border: '1px solid var(--border)',
                             background: 'transparent', color: 'var(--status-critical)',
-                            cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center',
+                            cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center',
                             justifyContent: 'center', flexShrink: 0,
                           }}
                         >
@@ -1902,7 +1902,7 @@ function EnvVarsSection({ projectId, expanded, onToggle }: {
                     );
                   })}
                   {editEntries.length === 0 && (
-                    <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)' }}>
                       {t('addVar')}
                     </p>
                   )}
