@@ -4,6 +4,33 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-22 —— DS 4.0 polish batch 3（fontSize/borderRadius token 化 + worktree 根清理）**
+
+接續前一天 polish batch 2 後使用者回 `推 prod 推 prod`，先推 batch 2（build `9870625d` SUCCESS，
+revision 00088-76x → 00089-cvc，CSS hash 維持 `e925b539b76f20bc.css`），然後走 backlog：
+
+1. **Worktree 根 stale workspace 清理（commit `7b51c9d`）** —— Pitfall #24 的根源修法：
+   - `git rm -r apps packages cloudbuild.yaml docker-compose.yml package.json package-lock.json turbo.json tsconfig.base.json`
+   - `rm -rf node_modules`
+   - 66 files deletion，只留 `.claude/ .gstack/ brain/ deploy-agent/ skills/ terraform/` 與 `CLAUDE.md`
+   - `brain/` 有分歧（root 有 unique `runbooks/` + RBAC plan），保留
+   - 之後 `gcloud builds submit` 誤從根跑的風險歸零
+
+2. **projects/[id]/page.tsx fontSize + borderRadius 全數 token 化（commit `974024f`，125 處）**：
+   - fontSize 12/13/14 → `var(--fs-xs)`（87 處）
+   - fontSize 16 → `var(--fs-sm)`、18 → `var(--fs-md)`（2 處）
+   - fontSize 10/11 保留 literal（micro meta，低於 DS scale）
+   - borderRadius 4/6/8 → `var(--r-sm)`（54 處）
+   - borderRadius 12 → `var(--r-md)`（2 處）
+   - `npx tsc --noEmit` clean
+
+3. **Prod deploy（build `a1d7e5c8` SUCCESS, 7m52s）**：
+   - 第一次 submit 忘了帶 `--substitutions=SHORT_SHA=` → 踩到 **Pitfall #21**（已記錄）→
+     build step 0 `invalid reference format`（tag 結尾 `:`），FAIL
+   - 補 `--substitutions=SHORT_SHA=$(git rev-parse --short HEAD)` → SUCCESS
+   - Web revision 00089-cvc → 00090-r8n
+   - CSS 無變動（純 inline style token 替換）
+
 **2026-04-21 —— Design System 4.0 落地（anchor `projects/[id]` redesign + DESIGN.md + tokens）**
 
 接續前一天 UI / 部署坑之後，走 `/design-html` 全站 redesign。使用者明確要求：「全部重新設計，不用
