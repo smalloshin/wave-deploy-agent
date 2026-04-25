@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { query, getOne } from '../db/index';
+import { query, getOne, withTransaction } from '../db/index';
 import {
   canTransition,
   InvalidTransitionError,
@@ -426,17 +426,40 @@ export async function unpublishAllDeployments(projectId: string): Promise<void> 
   );
 }
 
-/** Mark a deployment as published and record the project's active deployment. */
+/**
+ * Mark a deployment as published and record the project's active deployment.
+ *
+ * Atomicity matters here. The three statements have to either all land or
+ * none of them — if step 2 fails, every prior published deployment is now
+ * unpublished and nothing replaces it (project shows "no live version" in
+ * the UI). If step 3 fails, deployments.is_published says X but
+ * projects.published_deployment_id says Y, and the rollback dropdown lies
+ * about which version is live.
+ *
+ * The route at versioning.ts:62 also calls publishRevision() FIRST (Cloud
+ * Run traffic split) before this — that mutation is in GCP, not the DB,
+ * and can't be rolled back atomically. The route handler logs a CRITICAL
+ * if this DB write fails after the GCP write succeeded, so an operator
+ * can manually reconcile.
+ */
 export async function publishDeployment(projectId: string, deploymentId: string): Promise<void> {
-  await unpublishAllDeployments(projectId);
-  await query(
-    'UPDATE deployments SET is_published = true, published_at = NOW() WHERE id = $1',
-    [deploymentId]
-  );
-  await query(
-    'UPDATE projects SET published_deployment_id = $1, updated_at = NOW() WHERE id = $2',
-    [deploymentId, projectId]
-  );
+  await withTransaction(async (client) => {
+    await client.query(
+      `UPDATE deployments SET is_published = false
+        WHERE project_id = $1 AND is_published = true AND id <> $2`,
+      [projectId, deploymentId],
+    );
+    await client.query(
+      `UPDATE deployments SET is_published = true, published_at = NOW()
+        WHERE id = $1`,
+      [deploymentId],
+    );
+    await client.query(
+      `UPDATE projects SET published_deployment_id = $1, updated_at = NOW()
+        WHERE id = $2`,
+      [deploymentId, projectId],
+    );
+  });
 }
 
 /** Get the currently published deployment for a project. */

@@ -78,18 +78,55 @@ export async function versioningRoutes(app: FastifyInstance) {
       const gcpProject = (project.config?.gcpProject as string) || process.env.GCP_PROJECT || '';
       const gcpRegion = (project.config?.gcpRegion as string) || process.env.GCP_REGION || 'asia-east1';
 
-      // Route 100% traffic to the target revision
+      // Check rollback direction BEFORE we mutate anything — once Cloud Run
+      // traffic shifts, getPublishedDeployment() may briefly disagree with
+      // the published reality.
+      const previousPublished = await getPublishedDeployment(project.id);
+      const isRollback = (previousPublished?.version ?? 0) > target.version;
+
+      // Step 1: Route 100% Cloud Run traffic to the target revision.
+      // This is the GCP-side mutation. If it fails, nothing has changed yet
+      // and we return cleanly.
       const result = await publishRevision(gcpProject, gcpRegion, target.cloudRunService, target.revisionName);
       if (!result.success) {
         return reply.status(500).send({ error: `Failed to publish: ${result.error}` });
       }
 
-      // Check if this is a rollback BEFORE updating DB
-      const previousPublished = await getPublishedDeployment(project.id);
-      const isRollback = (previousPublished?.version ?? 0) > target.version;
-
-      // Update DB: mark this deployment as published
-      await publishDeployment(project.id, target.id);
+      // Step 2: Update DB to record the new published deployment.
+      // CRITICAL: if this throws, Cloud Run traffic is already on `target` but
+      // DB still says `previousPublished` is published — UI lies, dashboards
+      // lie, and the next rollback decision is based on stale state. We can't
+      // automatically roll Cloud Run back here (that's another GCP call that
+      // could also fail and recurse), so:
+      //   - log a CRITICAL line that includes both states (operator can
+      //     manually run publishDeployment() or rollback Cloud Run)
+      //   - tell the caller the publish completed at the GCP layer but DB
+      //     write failed, so they don't think it succeeded
+      try {
+        await publishDeployment(project.id, target.id);
+      } catch (err) {
+        const msg = (err as Error).message;
+        request.log.fatal(
+          {
+            event: 'publish_db_split',
+            projectId: project.id,
+            targetDeploymentId: target.id,
+            targetVersion: target.version,
+            targetRevision: target.revisionName,
+            cloudRunService: target.cloudRunService,
+            previousPublishedDeploymentId: previousPublished?.id ?? null,
+            previousVersion: previousPublished?.version ?? null,
+            error: msg,
+          },
+          `[CRITICAL] Cloud Run traffic on v${target.version} but DB publishDeployment() failed: ${msg}. ` +
+            'Manual reconcile required: either re-run publishDeployment OR roll Cloud Run back to previous revision.',
+        );
+        return reply.status(500).send({
+          error:
+            'Partial publish: Cloud Run traffic switched to target version, but DB record could not be updated. ' +
+            'This has been logged at fatal level for manual reconcile. Do NOT retry until investigated.',
+        });
+      }
 
       return {
         published: true,
