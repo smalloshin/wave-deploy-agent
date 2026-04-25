@@ -311,11 +311,11 @@ export async function projectRoutes(app: FastifyInstance) {
     const lowerName = body.fileName.toLowerCase();
     try {
       if (lowerName.endsWith('.zip')) {
-        await execFileAsync('unzip', ['-o', archivePath, '-d', extractDir], { timeout: 60000 });
+        await execFileAsync('unzip', ['-q', '-o', archivePath, '-d', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
       } else if (lowerName.endsWith('.tar.gz') || lowerName.endsWith('.tgz')) {
-        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: 60000 });
+        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
       } else if (lowerName.endsWith('.tar')) {
-        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: 60000 });
+        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
       } else {
         return reply.status(400).send({ error: 'Unsupported file type' });
       }
@@ -331,8 +331,7 @@ export async function projectRoutes(app: FastifyInstance) {
     }
 
     // Determine projectDir
-    const { stdout } = await execFileAsync('ls', [extractDir]);
-    const entries = stdout.trim().split('\n').filter(e => e && !junkDirs.includes(e));
+    const entries = readdirSync(extractDir).filter(e => e && !junkDirs.includes(e));
     let projectDir: string;
     if (entries.length === 1 && existsSync(join(extractDir, entries[0])) &&
         statSync(join(extractDir, entries[0])).isDirectory()) {
@@ -618,11 +617,11 @@ export async function projectRoutes(app: FastifyInstance) {
     const lowerName = fileName.toLowerCase();
     try {
       if (lowerName.endsWith('.zip')) {
-        await execFileAsync('unzip', ['-o', archivePath, '-d', extractDir], { timeout: 60000 });
+        await execFileAsync('unzip', ['-q', '-o', archivePath, '-d', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
       } else if (lowerName.endsWith('.tar.gz') || lowerName.endsWith('.tgz')) {
-        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: 60000 });
+        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
       } else if (lowerName.endsWith('.tar')) {
-        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: 60000 });
+        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
       } else {
         return reply.status(400).send({ error: 'Unsupported file type. Please upload .zip, .tar.gz, or .tar' });
       }
@@ -650,8 +649,7 @@ export async function projectRoutes(app: FastifyInstance) {
     removeDsStore(extractDir);
 
     // ── Determine projectDir: find the real root with source code ──
-    const { stdout } = await execFileAsync('ls', [extractDir]);
-    const entries = stdout.trim().split('\n').filter(e => e && !junkDirs.includes(e));
+    const entries = readdirSync(extractDir).filter(e => e && !junkDirs.includes(e));
     let projectDir: string;
 
     if (entries.length === 1 && existsSync(join(extractDir, entries[0])) &&
