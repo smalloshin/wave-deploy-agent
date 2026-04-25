@@ -4,6 +4,55 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第七段）—— auth tables 生命週期管理（expired sessions 清理 + audit log 留存政策）**
+
+第六段做完 NaN 防禦之後，把 auth subsystem 完整重審一輪——這次掃 lifecycle hygiene，不是 coercion。Spawn 一個 Explore agent 跑 auth-service 全表 audit，回來兩個 production-shipped 的 silent issue：
+
+1. **`cleanupExpiredSessions()` 函式存在但沒人呼叫**——code 寫好了，但 boot 流程裡沒掛載任何 cron / scheduler。`validateSession()` 過期 row 會被 `expires_at > NOW()` 過濾掉，所以使用者無感，但 `sessions` 表會無限長大。每次 login append 一 row、cookie 過期後 row 永遠留著。
+2. **`auth_audit_log` 完全沒留存政策**——每次 login / api_key_used / permission_denied 都 INSERT 一 row。中等流量推估每月 2-3M rows；`listAuditLog()` 會逐月變慢、index bloat、backup 越備越大。
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/auth-service.ts`** —— 新增 `cleanupAuditLog(retentionDays = 90)`：
+   ```typescript
+   const days = Math.max(7, Math.min(retentionDays, 3650));  // clamp 防 0/negative/年餘
+   DELETE FROM auth_audit_log WHERE created_at < NOW() - ($1 || ' days')::interval
+   ```
+   Default 90 天涵蓋典型 breach-detection window（30-60d）；clamp 下界 7 防誤把整表清空，上界 10 年防荒謬參數。
+
+B. **`apps/api/src/services/auth-cleanup.ts`（新檔）** —— 週期 scheduler，shape 跟 reconciler.ts 對齊：
+   - `runAuthCleanupOnce()` —— 兩個 cleanup 各自 try/catch isolation，回傳 `{sessions, auditLog, errors[]}`，failure 不會讓另一個 skip
+   - `startAuthCleanup()` —— idempotent（重複呼叫 no-op），setTimeout(INITIAL_DELAY_MS) 初次 + setInterval(INTERVAL_MS) 週期性 + in-flight guard 防 overlap
+   - `stopAuthCleanup()` —— 測試 / graceful shutdown 用
+   - Env knobs：`AUDIT_RETENTION_DAYS`（90）、`AUTH_CLEANUP_INTERVAL_HRS`（24）、`AUTH_CLEANUP_INITIAL_DELAY_MS`（30000）；全用 round-6 的 `safePositiveInt` 包裹，NaN-proof
+
+C. **`apps/api/src/index.ts`** —— `startReconciler()` 後緊跟 `startAuthCleanup()`，非 blocking。Boot 流程零變動，cleanup 30s 後第一次跑。
+
+D. **`apps/api/src/test-auth-cleanup.ts`（新檔，7 tests）** —— 兩層：
+   - **Unit（無 DB）**：scheduler idempotency、stop-without-start safety、`runAuthCleanupOnce()` 在兩個 cleanup 都炸時 returns 兩條 errors（證 isolation 不是「first-error-bail」）、cleanupAuditLog 對 0 / 負值 / 99999 不丟例外（clamp 生效）
+   - **Integration（DATABASE_URL gated，沒 DB 乾淨 skip）**：插一個 fresh + 一個 expired session 驗 `cleanupExpiredSessions()` 只刪過期；插 100 天前 row 驗 90 天 retention；插 3 天前 row 驗 `retentionDays=1` clamp 到 7 不會誤刪
+
+E. **TS strictness papercut 順手修**：`test-auth-coverage.ts:64` 的 `loggerInstance: captureLogger as never` 把 Fastify logger generic 收斂到 never，導致 child-logger 推斷壞掉；改 `as unknown as FastifyBaseLogger`。
+
+**Test 通過率（累計）：120 unit pass / 0 fail**：
+- 第六段 113 + `test-auth-cleanup.ts`：**7（新增）** = 120
+- pipeline / deploy 兩個 fixture-dependent integration script 缺 `/tmp/kol-studio` 而 ENOENT，與本 round 無關（之前就這樣）
+
+**驗證**：`npm run build` clean。`npx tsx src/test-auth-cleanup.ts` 全綠（3 個 DB integration test 自動 skip）。
+
+**為什麼沒寫 ADR**：「定期清表」屬於 operational hygiene，不是架構分岔。reconciler 也沒 ADR。SESSION_HANDOFF 記錄即可。
+
+**已知妥協**：
+- 沒寫 metrics endpoint 暴露 cleanup 統計（每次 deleted row count 只進 console）。短期可接受，要做監控時補
+- `runAuthCleanupOnce()` return 值有用但 scheduler 內部丟掉了（`wrappedRun` 不消費）。等真要監控再接
+
+**使用者下一步**：
+1. Review 第七段 1 個 commit（pr/sync-all：`2744c47` auth-cleanup feature + tests）
+2. Production deploy 後驗證 boot log 出現 `[auth-cleanup] scheduler started — interval=24h, retention=90d`
+3. 若想改保留期（例如合規要求一年），設 `AUDIT_RETENTION_DAYS=365`
+
+---
+
 **2026-04-26（autonomous overnight 第六段）—— 防禦性數值 coercion 集中化 + boot-time coverage check 補測試 + 過時 comment 清理**
 
 第五段把 RBAC coverage check 寫好但**只信「函式邏輯簡單就不用測」**——我自己的 review 直接點名這條沒驗證。第六段補完，順便做 codebase-wide 的 NaN-prone coercion 掃描。
