@@ -226,3 +226,25 @@ ON CONFLICT (name) DO UPDATE
   SET permissions = EXCLUDED.permissions,
       description = EXCLUDED.description,
       is_system = EXCLUDED.is_system;
+
+-- ═══════════════════════════════════════════════════════════════
+-- Deployment observability — per-stage timeline (Commit 0)
+-- ═══════════════════════════════════════════════════════════════
+-- Records sub-stage transitions of a single deployment (extract, build, push,
+-- deploy, health_check, ssl). Distinct from `state_transitions` which records
+-- the orchestrator-level project state machine (submitted/scanning/approved/...).
+--
+-- Stage values:    upload | extract | build | push | deploy | health_check | ssl
+-- Status values:   started | succeeded | failed | skipped
+-- One deployment can have multiple events for the same stage (e.g. retry).
+CREATE TABLE IF NOT EXISTS deployment_stage_events (
+  id BIGSERIAL PRIMARY KEY,
+  deployment_id UUID NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+  stage VARCHAR(32) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  metadata JSONB DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dse_deployment ON deployment_stage_events(deployment_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_dse_stage_status ON deployment_stage_events(stage, status);

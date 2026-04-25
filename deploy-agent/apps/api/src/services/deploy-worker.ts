@@ -26,12 +26,38 @@ import { provisionProjectRedis } from './redis-provisioner';
 import { restoreDbDump } from './db-restore';
 import { notifyDeployComplete, notifyCanaryFailed, notifyDeployFailed } from './discord-notifier';
 import { captureDeployedSource } from './deployed-source-capture';
+import { recordStageEvent, type StageName } from './stage-events';
 
 export async function runDeployPipeline(
   projectId: string,
   reviewId: string
 ): Promise<void> {
   let currentStep = '';
+  let currentStage: StageName | null = null;
+  let currentStageStartedAt = 0;
+  let deploymentIdForStages = ''; // populated after createDeployment
+
+  // Stage instrumentation helpers — emit events to deployment_stage_events table.
+  // All best-effort: a logging failure must NOT crash the deploy.
+  const stageStart = (stage: StageName, metadata: Record<string, unknown> = {}) => {
+    currentStage = stage;
+    currentStageStartedAt = Date.now();
+    if (deploymentIdForStages) {
+      void recordStageEvent(deploymentIdForStages, stage, 'started', metadata);
+    }
+  };
+  const stageEnd = (
+    stage: StageName,
+    status: 'succeeded' | 'failed' | 'skipped',
+    metadata: Record<string, unknown> = {}
+  ) => {
+    if (deploymentIdForStages) {
+      const duration_ms = currentStageStartedAt > 0 ? Date.now() - currentStageStartedAt : null;
+      void recordStageEvent(deploymentIdForStages, stage, status, { ...metadata, duration_ms });
+    }
+    currentStage = null;
+    currentStageStartedAt = 0;
+  };
 
   try {
     const project = await getProject(projectId);
@@ -62,7 +88,11 @@ export async function runDeployPipeline(
     // Create deployment record with auto-incrementing version
     const deployVersion = await getNextDeploymentVersion(projectId);
     const deployment = await createDeployment(projectId, reviewId, deployVersion);
+    deploymentIdForStages = deployment.id;
     console.log(`[Deploy]   Version: v${deployVersion}`);
+
+    // Stage 1/7: extract — read source from GCS / detect framework / port.
+    stageStart('extract', { version: deployVersion });
 
     // ─── Step 2: Detect project settings + env vars ───
     currentStep = 'Step 2: Detect project settings';
@@ -536,8 +566,12 @@ export async function runDeployPipeline(
     }
 
     // ─── Step 3: Build and push Docker image ───
+    // extract is implicit by this point (source is on disk or in GCS); close it.
+    stageEnd('extract', 'succeeded', { gcsSourceUri, port, detectedLanguage });
     currentStep = 'Step 3: Build Docker image (Cloud Build)';
     console.log(`[Deploy] ${currentStep}...`);
+    // Stage 2/7: build — Cloud Build runs Dockerfile and pushes to AR.
+    stageStart('build', { framework: detectedFramework, packageManager: detectedPackageManager });
 
     // Pre-flight: 對 TS 專案跑 tsc --noEmit，讓 TS 錯誤以乾淨 stderr fail fast，
     // 不要塞在 next build 的輸出裡讓 LLM 難解析。預設開啟，env DEPLOY_PREFLIGHT=0 可關掉。
@@ -568,6 +602,11 @@ export async function runDeployPipeline(
     }, gcsSourceUri);
 
     if (!buildResult.success) {
+      // Build failed — record failure for both build and (implicit) push stages.
+      stageEnd('build', 'failed', {
+        error: buildResult.error,
+        build_id: (buildResult as unknown as { buildId?: string }).buildId,
+      });
       // LLM 分析 build 失敗原因。無論 buildLog 有沒有拿到，都呼叫 LLM —
       // 就算只有 error message，LLM 仍能從 Cloud Build API 的文字中判斷大方向。
       let buildDiagnosis: Awaited<ReturnType<typeof analyzeDeployFailure>> | null = null;
@@ -593,10 +632,18 @@ export async function runDeployPipeline(
       throw err;
     }
     console.log(`[Deploy]   Image: ${buildResult.imageUri}`);
+    // Cloud Build atomically builds AND pushes; record both with 0-duration push.
+    stageEnd('build', 'succeeded', {
+      imageUri: buildResult.imageUri,
+      build_id: (buildResult as unknown as { buildId?: string }).buildId,
+    });
+    stageStart('push', { imageUri: buildResult.imageUri });
+    stageEnd('push', 'succeeded', { imageUri: buildResult.imageUri });
 
     // ─── Step 4: Deploy to Cloud Run ───
     currentStep = 'Step 4: Deploy to Cloud Run';
     console.log(`[Deploy] ${currentStep}...`);
+    stageStart('deploy', {});
     const deployResult = await deployToCloudRun({
       projectSlug: project.slug,
       gcpProject,
@@ -619,6 +666,7 @@ export async function runDeployPipeline(
     }, buildResult.imageUri);
 
     if (!deployResult.success) {
+      stageEnd('deploy', 'failed', { error: deployResult.error });
       throw new Error(`Cloud Run deploy failed: ${deployResult.error}`);
     }
     console.log(`[Deploy]   Service: ${deployResult.serviceName}`);
@@ -626,6 +674,10 @@ export async function runDeployPipeline(
     if (deployResult.revisionName) {
       console.log(`[Deploy]   Revision: ${deployResult.revisionName}`);
     }
+    stageEnd('deploy', 'succeeded', {
+      serviceUrl: deployResult.serviceUrl,
+      revisionName: deployResult.revisionName,
+    });
 
     // Tag revision for preview URL: https://v3---service.a.run.app
     let previewUrl: string | undefined;
@@ -841,6 +893,7 @@ export async function runDeployPipeline(
           // ─── Step 6: SSL monitoring ───
           currentStep = 'Step 6: SSL certificate provisioning';
           console.log(`[Deploy] ${currentStep}...`);
+          stageStart('ssl', { domain: fqdn });
 
           try {
             const sslResult = await monitorSsl(deployment.id, projectId, {
@@ -854,14 +907,18 @@ export async function runDeployPipeline(
             if (sslResult.allReady) {
               await updateDeployment(deployment.id, { sslStatus: 'active' });
               console.log(`[Deploy]   SSL active for ${fqdn}`);
+              stageEnd('ssl', 'succeeded', { domain: fqdn });
             } else {
               // SSL not ready yet — this is normal, can take up to 15 minutes
               // Don't fail, just continue the pipeline
               console.warn(`[Deploy]   SSL still provisioning for ${fqdn}, continuing pipeline`);
               await updateDeployment(deployment.id, { sslStatus: 'provisioning' });
+              // Leave the 'started' row open — UI will show ssl as in-progress.
+              // The reconciler / ssl-monitor will write a closing row when cert lands.
             }
           } catch (sslErr) {
             console.warn(`[Deploy]   SSL monitoring error: ${(sslErr as Error).message}, continuing`);
+            stageEnd('ssl', 'failed', { domain: fqdn, error: (sslErr as Error).message });
           }
         } else {
           const domainError = domainResult.conflict
@@ -905,6 +962,7 @@ export async function runDeployPipeline(
     // For canary, prefer Cloud Run URL (always accessible with auth) over custom domain (may not have SSL yet)
     const targetUrl = deployResult.serviceUrl ?? '';
     if (targetUrl) {
+      stageStart('health_check', { targetUrl });
       // Use identity token for .run.app URLs since the service may require auth
       const canaryResult = await runCanaryChecks(targetUrl, {
         checks: 3,          // reduce from 5 to speed up
@@ -914,6 +972,11 @@ export async function runDeployPipeline(
         canaryResults: canaryResult,
         healthStatus: canaryResult.passed ? 'healthy' : 'unhealthy',
       });
+      stageEnd(
+        'health_check',
+        canaryResult.passed ? 'succeeded' : 'failed',
+        { passed: canaryResult.passed, checks: 3 }
+      );
 
       if (canaryResult.passed) {
         // ─── Step 8: Go live + auto-publish ───
@@ -1046,6 +1109,15 @@ export async function runDeployPipeline(
 
   } catch (err) {
     const error = err as Error;
+    // Close any open stage as failed — currentStage is null if the failing line
+    // already emitted its own stageEnd('...', 'failed').
+    if (currentStage && deploymentIdForStages) {
+      void recordStageEvent(deploymentIdForStages, currentStage, 'failed', {
+        error: error.message,
+        currentStep,
+      });
+      currentStage = null;
+    }
     // 優先用已附著的 buildDiagnosis（Step 3 build 失敗路徑會帶），否則現場呼叫 LLM
     let buildDiagnosis = (error as Error & { buildDiagnosis?: Awaited<ReturnType<typeof analyzeDeployFailure>> }).buildDiagnosis ?? null;
     const attachedLog = (error as Error & { buildLog?: string }).buildLog ?? '';
