@@ -579,6 +579,58 @@ export async function publishRevision(
   }
 }
 
+// ─── Read live traffic state from Cloud Run ───
+
+/**
+ * Fetch current traffic state for a service. Used by the reconciler to detect
+ * Cloud-Run/DB split state (round 9 introduced the possibility: publishRevision
+ * succeeds but publishDeployment fails, leaving Cloud Run serving one revision
+ * while the DB says another is published).
+ *
+ * Cloud Run v2 exposes two fields:
+ *   - `traffic`        — the *desired* allocation (set via PATCH)
+ *   - `trafficStatuses` — the *observed* allocation (what's actually serving)
+ *
+ * For split detection we want trafficStatuses (actual truth on the wire). When
+ * a PATCH is in flight or rejected, the two diverge. trafficStatuses is what
+ * users hit; that's what matters.
+ *
+ * Returns null on any failure — caller should treat null as "unknown, skip the
+ * check this round" rather than as authoritative state.
+ */
+export async function getServiceLiveTraffic(
+  gcpProject: string,
+  gcpRegion: string,
+  serviceName: string
+): Promise<{
+  /** Revision currently serving 100% of traffic, or null if traffic is split / no statuses returned. */
+  liveRevision: string | null;
+  /** Raw trafficStatuses array, in case caller wants to inspect splits. */
+  statuses: Array<{ revision?: string; percent?: number; type?: string; tag?: string }>;
+} | null> {
+  try {
+    const url = `https://run.googleapis.com/v2/projects/${gcpProject}/locations/${gcpRegion}/services/${serviceName}`;
+    const res = await gcpFetch(url);
+    if (!res.ok) return null;
+    const svc = (await res.json()) as {
+      trafficStatuses?: Array<{ revision?: string; percent?: number; type?: string; tag?: string }>;
+    };
+    const statuses = svc.trafficStatuses ?? [];
+    // Find the revision with 100% traffic. Cloud Run reports tagged-but-zero-traffic
+    // routes alongside the live one; we want the single 100% serving revision.
+    const live = statuses.find((t) => (t.percent ?? 0) === 100 && t.revision);
+    return {
+      liveRevision: live?.revision ?? null,
+      statuses,
+    };
+  } catch (err) {
+    console.warn(
+      `[Deploy]   getServiceLiveTraffic(${serviceName}) failed: ${(err as Error).message}`,
+    );
+    return null;
+  }
+}
+
 // ─── Tag a revision for preview URL (v3---service.a.run.app) ───
 
 export async function tagRevision(
