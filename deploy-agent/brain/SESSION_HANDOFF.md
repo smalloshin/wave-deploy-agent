@@ -4,7 +4,42 @@
 
 ## 上次進度（Last Progress）
 
-**2026-04-25（深夜，autonomous overnight） —— 部署可觀測性 3 層全部 ship 完成（4 commits, 39/39 tests, 等使用者起床）**
+**2026-04-25（深夜後續，autonomous overnight 第二段）—— RBAC 系統補測試 + 修一個 production bug + ADR**
+
+繼觀測性 3 層 ship 完之後，回頭補 RBAC（commit `34a8671` 早就上了）的 test coverage 跟 ADR。順便發現一個 **production-shipped bug**：`middleware/auth.ts` 的 `lookupRequiredPermission()` 用 `key.split(':')[1]` 取 path，但 path 裡本來就有 `:param`，多冒號 split 會把 path 截斷——所以任何 `/api/projects/:id` 之類的 route lookup 永遠回傳 null，permission check 失效。改成 `indexOf(':')` 切第一個冒號即可。test-auth.ts 有 cover 這個 case。
+
+**這段做了什麼**：
+- `middleware/auth.ts` — fix split-by-first-colon bug + 把 helpers export 給 test 用
+- `test-auth.ts` 新增 33 個 unit tests（permission 邏輯 / route → permission map / pattern-to-regex / password hash）+ 9 個 integration tests（DB-gated，跟 stage-events 一樣 clean skip）
+- `brain/decisions/2026-04-25-rbac-system-permissive-then-enforced.md` 新 ADR
+- `brain/decisions/index.md` 加一列
+
+**Test 通過率（累計）：72/72** unit tests，所有 integration tests 因 local Postgres 未啟而 skip cleanly：
+- `test-stage-events.ts`：10
+- `test-timeline-route.ts`：7
+- `test-event-stream.ts`：15
+- `test-diagnostics.ts`：7
+- `test-auth.ts`：33（新增）
+
+**驗證**：API `npx tsc --noEmit` clean、`npm run build` clean；Web `npm run build` clean（10 routes 全綠，含 /admin、/login）。
+
+**RBAC enforced 切換 checklist（給使用者）**：
+1. Cloud Run 設 `ADMIN_EMAIL` / `ADMIN_PASSWORD` / `SESSION_SECRET`（從 Secret Manager）
+2. 起 API → 自動 bootstrap admin user
+3. 進 `/admin` 建一把 Bot API key（perms = `reviews:read,reviews:decide,projects:read,deploys:read`），寫入 Bot 的 `DEPLOY_AGENT_API_KEY` env
+4. 同樣建一把 MCP key（perms = `*`）
+5. 觀察 `auth_audit_log` 一週，`SELECT * WHERE action = 'anonymous_request'` 回 0 筆才能切
+6. Cloud Run 設 `AUTH_MODE=enforced`，redeploy
+
+**已知妥協**：
+- 沒做 SSO/OAuth/Passkey（一人創業階段過度）
+- 沒做 password reset email flow（沒 SMTP）
+- API key 撤銷不會立即同步（in-flight request 跑完才生效）
+- `SESSION_SECRET` 預設 `dev-secret-change-me`，prod 必須換
+
+---
+
+**2026-04-25（深夜，autonomous overnight 第一段） —— 部署可觀測性 3 層全部 ship 完成（4 commits, 39/39 tests, 等使用者起床）**
 
 使用者半夜睡前下達指令：「請你把所有的 todo 都做完，需要決定的地方 spawn 4 個 subagent 來決定（architect / eng-lead / engineer / QA）...一直做到我回來為止」。本次連跑 6 個 phase，全部 local-only 在 `pr/sync-all` branch（不 push、不 merge、不碰 production）。
 

@@ -87,7 +87,8 @@ const AUTHENTICATED_ROUTES: Array<[string, RegExp]> = [
   ['DELETE', /^\/api\/auth\/api-keys\/[^/]+$/],
 ];
 
-function patternToRegex(pattern: string): RegExp {
+// Exported for unit testing — converts ":param" placeholders to "[^/]+" regex.
+export function patternToRegex(pattern: string): RegExp {
   // Convert ":param" → "[^/]+", escape slashes
   const escaped = pattern
     .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
@@ -95,22 +96,24 @@ function patternToRegex(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`);
 }
 
-function lookupRequiredPermission(method: string, url: string): Permission | null {
+export function lookupRequiredPermission(method: string, url: string): Permission | null {
   const path = url.split('?')[0];
   for (const [key, perm] of ROUTE_PERMISSIONS) {
-    const [m, p] = key.split(':');
+    const colonIdx = key.indexOf(':');
+    const m = key.slice(0, colonIdx);
+    const p = key.slice(colonIdx + 1);
     if (m !== method) continue;
     if (patternToRegex(p).test(path)) return perm;
   }
   return null;
 }
 
-function isPublic(method: string, url: string): boolean {
+export function isPublic(method: string, url: string): boolean {
   const path = url.split('?')[0];
   return PUBLIC_ROUTES.some(([m, re]) => m === method && re.test(path));
 }
 
-function isAuthenticatedOnly(method: string, url: string): boolean {
+export function isAuthenticatedOnly(method: string, url: string): boolean {
   const path = url.split('?')[0];
   return AUTHENTICATED_ROUTES.some(([m, re]) => m === method && re.test(path));
 }
