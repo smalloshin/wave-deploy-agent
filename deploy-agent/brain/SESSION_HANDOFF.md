@@ -4,7 +4,46 @@
 
 ## 上次進度（Last Progress）
 
-**2026-04-22 —— DS 4.0 polish batch 3（fontSize/borderRadius token 化 + worktree 根清理）**
+**2026-04-24 —— 上傳錯誤 UX 升級：typed registry + LLM fallback + draft 保留（commit `02bf5aa`）**
+
+走 `/office-hours 幫我設計一下上傳檔案的功能` 從診斷到全量實作。使用者一句話定調：
+**「立刻做到好！不要下個月再說」**——直接走 Approach C 完整版。
+
+**Wedge 確認**：問題不是「進度條/上傳速度」，而是「失敗時你不知道怎麼辦」——
+之前所有上傳 catch 都是 `setError((err as Error).message)` + 一坨字串，自己用都會踩雷。
+
+**設計核心：Failure Mode Registry**
+
+每個錯誤都有 `code: UploadFailureCode`（discriminated union），對應一個 i18n key + 可恢復動作。
+Server 出 envelope，client 用 `mapEnvelope()` 轉 `UploadFailure` 渲染。沒命中的（`code === 'unknown'`）
+client 主動 POST `/api/upload/diagnose`，server 用 LLM (Claude → GPT-5.4 → rule-based) 給用戶看的繁中分析。
+
+**14 個錯誤碼涵蓋全 7 個 stage**（validate/init/upload/submit/extract/analyze/deploy）：
+file_too_large_for_direct, file_extension_invalid, init_session_failed, gcs_auth_failed, gcs_timeout,
+network_error, submit_failed, extract_failed, extract_buffer_overflow, analyze_failed, domain_conflict,
+project_quota_exceeded, unknown — 每個都帶 retryable flag + recoveryHint i18n key。
+
+**新檔**：
+- `packages/shared/src/upload-types.ts`（typed registry + envelope schema + draft schema）
+- `apps/web/lib/upload-error-mapper.ts`（mapEnvelope/mapClientError/fetchDiagnostic/buildErrorReport）
+- `apps/web/lib/upload-draft-storage.ts`（localStorage 草稿 7 天 TTL，debounced save 500ms）
+- `apps/web/app/components/UploadErrorBlock.tsx`（DS 4.0 token UI，重試/取消/複製錯誤報告）
+- `apps/api/src/services/upload-diagnostic.ts`（reuse `callLLM` from llm-analyzer.ts，12s timeout，rule-based fallback）
+
+**改動**：
+- `apps/api/src/routes/projects.ts`：所有上傳 catch 改用 `uploadError(stage, code, message, opts)` helper 統一出 envelope。
+  新增 `POST /api/upload/diagnose` 端點。**向後相容**：envelope 同時帶 legacy `error` 欄位。
+- `apps/api/src/services/llm-analyzer.ts`：把 `callLLM` 從 internal 改 export（一行）給 upload-diagnostic 重用。
+- `apps/web/app/page.tsx` (SubmitModal) + `apps/web/app/projects/[id]/page.tsx`（升版 modal）：
+  refactor 三段式 try/catch（init / upload / submit），每段都吐 envelope 走 mapper，
+  Cancel 用 xhrRef.abort()，Retry 不丟表單。homepage 加 draft restored banner。
+- `apps/web/package.json` + `next.config.ts`：補 `@deploy-agent/shared` workspace dep + `transpilePackages`。
+- `apps/web/messages/{zh-TW,en}.json`：新增 `projectDetail.uploadErrors` 區塊（14 個訊息 + recovery hints + LLM category labels）。
+
+**驗證**：`npx tsc --noEmit` 全部 clean（api / web / shared）。Bot 有 pre-existing TS error
+（sendTyping on PartialGroupDMChannel）跟此次無關。
+
+**狀態**：Local commit done, **prod deploy + remote push 待使用者授權**（沒有未經授權地 deploy）。
 
 接續前一天 polish batch 2 後使用者回 `推 prod 推 prod`，先推 batch 2（build `9870625d` SUCCESS，
 revision 00088-76x → 00089-cvc，CSS hash 維持 `e925b539b76f20bc.css`），然後走 backlog：
