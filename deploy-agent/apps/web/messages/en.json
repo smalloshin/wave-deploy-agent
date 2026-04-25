@@ -358,6 +358,16 @@
         "succeeded": "Done",
         "failed": "Failed",
         "skipped": "Skipped"
+      },
+      "logStream": {
+        "title": "Live activity",
+        "live": "● Live",
+        "connecting": "Connecting…",
+        "waiting": "Waiting for events…",
+        "empty": "No stream events recorded.",
+        "loadBuildLog": "Load build log",
+        "loadingBuildLog": "Loading build log…",
+        "emptyBuildLog": "Build log was empty."
       }
     }
   },

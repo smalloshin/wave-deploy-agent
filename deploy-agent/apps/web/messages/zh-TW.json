@@ -358,6 +358,16 @@
         "succeeded": "完成",
         "failed": "失敗",
         "skipped": "略過"
+      },
+      "logStream": {
+        "title": "即時動態",
+        "live": "● 直播中",
+        "connecting": "連線中…",
+        "waiting": "等待事件…",
+        "empty": "沒有事件紀錄。",
+        "loadBuildLog": "載入 build log",
+        "loadingBuildLog": "載入中…",
+        "emptyBuildLog": "Build log 是空的。"
       }
     }
   },

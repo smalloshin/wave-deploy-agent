@@ -12,6 +12,7 @@
  */
 
 import { query } from '../db/index';
+import { publish as publishToStream } from './deployment-event-stream';
 
 export type StageName =
   | 'upload'
@@ -63,6 +64,14 @@ export async function recordStageEvent(
     console.warn(
       `[stage-events] failed to record ${stage}:${status} for deployment=${deploymentId}: ${(err as Error).message}`
     );
+  }
+  // Also fan-out to the SSE bus so connected clients see it in real time.
+  // This is fire-and-forget; the bus stores in a ring buffer for reconnects.
+  try {
+    publishToStream(deploymentId, 'stage', { stage, status, metadata: metadata ?? {} });
+  } catch (err) {
+    // Bus errors are non-fatal — DB row is the source of truth.
+    console.warn(`[stage-events] bus publish failed: ${(err as Error).message}`);
   }
 }
 

@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useParams } from 'next/navigation';
 import { DeploymentTimeline, type StageSummary } from '../../components/DeploymentTimeline';
+import { LogStream } from '../../components/LogStream';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -165,7 +166,22 @@ export default function DeployDetailPage() {
 
       <DeploymentTimeline stages={stages} overall={overall} />
 
-      {/* Tier 2 LogStream slot — Commit 2 will mount LogStream here */}
+      <LogStream
+        deploymentId={deployment.id}
+        terminal={overall === 'succeeded' || overall === 'failed'}
+        // On gap, the SSE server says we fell behind the ring buffer. Refetch
+        // the timeline immediately to get fresh state instead of stale cache.
+        onGap={() => {
+          setLoading(true);
+          // The polling effect will pick up via re-render; explicit fetch below
+          // for immediate refresh.
+          fetch(`${API}/api/deploys/${id}/timeline`, { credentials: 'include' })
+            .then(r => r.json() as Promise<TimelineResponse>)
+            .then(j => { setData(j); setLoading(false); })
+            .catch(() => setLoading(false));
+        }}
+      />
+
       {/* Tier 3 DiagnosticBlock slot — Commit 3 will mount DiagnosticBlock here when overall === 'failed' */}
     </div>
   );
