@@ -32,13 +32,26 @@
 
 **已知妥協 / 待 follow-up**：
 - Web 端 SubmitModal 仍未自動 navigate to detail page（commit 1 spec 提過但沒 ship）——這是 UX 決定，需要決定去 `/projects/:id` 還是 `/deploys/:deploymentId`，後者要等 background pipeline 創建 deployment row 才存在，留給使用者起床決定
-- 沒有 startup-time check 比對「Fastify 註冊的 routes」vs「ROUTE_PERMISSIONS 列表」，所以下次再加新 route 還是要靠人記得登記。可加 dev-only assertion 但會多一個依賴（要 introspect Fastify routes table），先靠 audit unit test 防護
 - `source-download` 標 `projects:read` 是 architect 的判斷（caveat：若未來 source 包含 `.env` 或 secrets 應升 `projects:write`）
 
 **使用者下一步**：
-1. Review 四輪 commits（pr/sync-all：round 1 RBAC fix + round 2 live build-log + round 3 LogStream wire + round 4 RBAC audit）
+1. Review 五輪 commits（pr/sync-all：round 1 RBAC fix + round 2 live build-log + round 3 LogStream wire + round 4 RBAC audit + round 5 coverage check）
 2. Migration checklist 補一條：切 enforced mode 前先確認 audit_log 沒看到 `route_not_mapped` 的 permission_denied
-3. 若有「真的不該被權限管」的 unmapped route，加進 PUBLIC_ROUTES 或 AUTHENTICATED_ROUTES，不要靠「unmapped 兜底」
+3. 若有「真的不該被權限管」的 unmapped route，加進 PUBLIC_ROUTES 或 AUTHENTICATED_ROUTES，不要靠「unmapped 兜底」（現在這條兜底已 fail-closed）
+
+---
+
+**2026-04-26（autonomous overnight 第五段）—— Startup-time RBAC coverage check（結構性補強）**
+
+第四段把當下漏掉的 17 個 route 都 map 完，但**沒解決下次再加新 route 還是會漏**的結構問題。第五段補這條：在 server boot 時透過 Fastify 的 `onRoute` hook 走過所有註冊的 route，比對 ROUTE_PERMISSIONS / PUBLIC_ROUTES / AUTHENTICATED_ROUTES，沒登記的全部一次印成 boot warning。
+
+**這段做了什麼**：
+- `apps/api/src/middleware/auth.ts`：加 `registerAuthCoverageCheck(app)`——`onRoute` hook 收集 unmapped routes，`onReady` hook 印 summary（empty → info "all routes mapped"，non-empty → warn 列出每個 method+url + hint）
+- `apps/api/src/index.ts`：在 `registerAuthHook` 之後立刻呼叫 `registerAuthCoverageCheck`（必須在 route plugins 註冊前接 hook 才能 cover 全部）
+
+**為什麼沒寫 unit test**：函式邏輯極簡（3 個 lookup 串接，每個都已被既有 test cover），它的價值是「boot log 跳出 warning 給開發者看」這個 side effect，inspect 內部 state 反而 test 錯地方。下次使用者起 dev server 看 log 就知道有沒有作用。
+
+**Test 通過率（不變）：85/85**，API build clean。
 
 ---
 
