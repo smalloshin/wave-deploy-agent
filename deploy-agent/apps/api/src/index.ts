@@ -14,7 +14,7 @@ import { infraRoutes } from './routes/infra';
 import { versioningRoutes } from './routes/versioning';
 import { webhookRoutes } from './routes/webhooks';
 import { authRoutes } from './routes/auth';
-import { registerAuthHook } from './middleware/auth';
+import { registerAuthHook, registerAuthCoverageCheck } from './middleware/auth';
 import { ensureAdmin } from './services/auth-service';
 import { startReconciler } from './services/reconciler';
 import { runMigrations } from './db/migrate';
@@ -57,6 +57,11 @@ await app.register(rateLimit, {
 
 // Auth hook (runs before all routes; skips public routes internally)
 registerAuthHook(app);
+
+// RBAC coverage check — onRoute hook walks every registered route and warns
+// at boot about any route that isn't in ROUTE_PERMISSIONS / PUBLIC / AUTHENTICATED.
+// Must be registered BEFORE route plugins so the hook catches all of them.
+registerAuthCoverageCheck(app);
 
 // Health check
 app.get('/health', async () => ({
