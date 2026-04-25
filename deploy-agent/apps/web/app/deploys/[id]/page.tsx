@@ -17,6 +17,7 @@ import { useTranslations } from 'next-intl';
 import { useParams } from 'next/navigation';
 import { DeploymentTimeline, type StageSummary } from '../../components/DeploymentTimeline';
 import { LogStream } from '../../components/LogStream';
+import { DiagnosticBlock } from '../../components/DiagnosticBlock';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -182,7 +183,9 @@ export default function DeployDetailPage() {
         }}
       />
 
-      {/* Tier 3 DiagnosticBlock slot — Commit 3 will mount DiagnosticBlock here when overall === 'failed' */}
+      {overall === 'failed' && (
+        <DiagnosticBlock deploymentId={deployment.id} kind="failure" />
+      )}
     </div>
   );
 }

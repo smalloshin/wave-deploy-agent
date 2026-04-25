@@ -248,3 +248,39 @@ CREATE TABLE IF NOT EXISTS deployment_stage_events (
 
 CREATE INDEX IF NOT EXISTS idx_dse_deployment ON deployment_stage_events(deployment_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_dse_stage_status ON deployment_stage_events(stage, status);
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- Deployment diagnostics — LLM-cached failure / slowness explanations (Commit 3)
+-- ═══════════════════════════════════════════════════════════════
+-- One row per (cache_key, kind). The cache_key encodes "what to diagnose":
+--   - kind='failure':  cache_key = 'build:' || build_id  (per build, immutable)
+--                      kind='failure':  cache_key = 'deploy:' || deployment_id (deploy-stage failures)
+--   - kind='slow':     cache_key = 'deploy:' || deployment_id (per deployment)
+--
+-- Why cache: building+pushing+running an LLM analysis costs ~$0.01 and ~5-15s.
+-- A single page load that re-triggers diagnose would otherwise re-bill every refresh.
+-- The cache key is keyed on immutable identifiers (build_id is stable across reads;
+-- deployment_id is unique per deploy attempt) so we never serve stale diagnoses.
+--
+-- Schema is best-effort: the table is independent of deployments; orphan rows are
+-- harmless. We also store the raw inputs (status_excerpt, log_excerpt) so we can
+-- re-run analysis offline without re-reading GCS.
+CREATE TABLE IF NOT EXISTS deployment_diagnostics (
+  id BIGSERIAL PRIMARY KEY,
+  deployment_id UUID REFERENCES deployments(id) ON DELETE CASCADE,
+  cache_key VARCHAR(128) NOT NULL,    -- e.g. 'build:abc-123' or 'deploy:uuid'
+  kind VARCHAR(16) NOT NULL,          -- 'failure' | 'slow'
+  summary TEXT NOT NULL,              -- one-sentence headline shown in the UI
+  root_cause TEXT,                    -- expanded explanation
+  suggestions JSONB DEFAULT '[]',     -- array of { title, body } action items
+  -- Raw inputs we fed to the LLM, kept for re-analysis without re-reading GCS:
+  log_excerpt TEXT,
+  status_excerpt JSONB,
+  model VARCHAR(64),                  -- which model produced this row
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (cache_key, kind)            -- one diagnosis per (key, kind) pair
+);
+
+CREATE INDEX IF NOT EXISTS idx_dd_deployment ON deployment_diagnostics(deployment_id);
+CREATE INDEX IF NOT EXISTS idx_dd_created ON deployment_diagnostics(created_at);

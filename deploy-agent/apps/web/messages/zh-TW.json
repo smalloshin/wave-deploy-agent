@@ -368,6 +368,21 @@
         "loadBuildLog": "載入 build log",
         "loadingBuildLog": "載入中…",
         "emptyBuildLog": "Build log 是空的。"
+      },
+      "diagnostic": {
+        "title": {
+          "failure": "發生什麼事",
+          "slow": "為什麼這次很慢？"
+        },
+        "prompt": {
+          "failure": "用 AI 分析這次部署失敗的原因並給出修復建議。第一次跑完之後會快取，下次免費。",
+          "slow": "找出哪個階段是瓶頸。第一次跑完之後會快取。"
+        },
+        "generate": "幫我分析",
+        "generating": "分析中…",
+        "cached": "（已快取）",
+        "suggestionsHeading": "試試這些：",
+        "attribution": "由 {model} 生成"
       }
     }
   },

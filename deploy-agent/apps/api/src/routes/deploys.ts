@@ -4,6 +4,7 @@ import { checkSslStatus } from '../services/ssl-monitor';
 import { getStageEvents, summarizeStages } from '../services/stage-events';
 import { replayFrom, subscribe, type DeploymentEventEnvelope } from '../services/deployment-event-stream';
 import { fetchBuildLogOnce } from '../services/build-log-poller';
+import { diagnoseDeployment, type DiagnosticKind } from '../services/deployment-diagnostics';
 
 export async function deployRoutes(app: FastifyInstance) {
   // List deployments
@@ -294,6 +295,67 @@ export async function deployRoutes(app: FastifyInstance) {
       });
     }
   });
+
+  // On-demand LLM diagnosis — explains why a deploy failed (or ran slow).
+  // Cache-first: subsequent calls for the same build/deployment return instantly.
+  // GET returns cached diagnosis (404 if none yet); POST runs the LLM (or returns cached).
+  app.get<{ Params: { id: string }; Querystring: { kind?: string } }>(
+    '/api/deploys/:id/diagnose',
+    async (request, reply) => {
+      const kind = (request.query?.kind ?? 'failure') as DiagnosticKind;
+      if (kind !== 'failure' && kind !== 'slow') {
+        return reply.status(400).send({ error: `Unknown kind: ${kind}` });
+      }
+      // Read-only: hit DB directly so we don't trigger the LLM accidentally.
+      const exists = await query('SELECT 1 FROM deployments WHERE id = $1', [request.params.id]);
+      if (exists.rows.length === 0) return reply.status(404).send({ error: 'Deployment not found' });
+
+      // We need the cache key, which depends on stage events for this deployment.
+      // Easier: just attempt diagnose() but return 404 if cache miss (we don't want
+      // GET to spend money). Implement by reading cache directly.
+      const evs = await query<{
+        cache_key: string;
+        kind: string;
+        summary: string;
+        root_cause: string | null;
+        suggestions: unknown;
+        log_excerpt: string | null;
+        model: string | null;
+        created_at: Date;
+      }>(
+        `SELECT cache_key, kind, summary, root_cause, suggestions, log_excerpt, model, created_at
+           FROM deployment_diagnostics
+          WHERE deployment_id = $1 AND kind = $2
+          ORDER BY created_at DESC LIMIT 1`,
+        [request.params.id, kind]
+      );
+      if (evs.rows.length === 0) {
+        return reply.status(404).send({ error: 'No diagnosis cached yet; POST to generate one' });
+      }
+      return { cached: true, diagnosis: evs.rows[0] };
+    }
+  );
+
+  // POST runs the LLM (or returns cached). This costs money on cache miss; gate
+  // behind explicit user click on the frontend.
+  app.post<{ Params: { id: string }; Body: { kind?: DiagnosticKind } }>(
+    '/api/deploys/:id/diagnose',
+    async (request, reply) => {
+      const kind = (request.body?.kind ?? 'failure') as DiagnosticKind;
+      if (kind !== 'failure' && kind !== 'slow') {
+        return reply.status(400).send({ error: `Unknown kind: ${kind}` });
+      }
+      const exists = await query('SELECT 1 FROM deployments WHERE id = $1', [request.params.id]);
+      if (exists.rows.length === 0) return reply.status(404).send({ error: 'Deployment not found' });
+
+      try {
+        const result = await diagnoseDeployment(request.params.id, kind);
+        return result;
+      } catch (err) {
+        return reply.status(400).send({ error: (err as Error).message });
+      }
+    }
+  );
 
   // Get deployment logs (state transitions)
   app.get<{ Params: { id: string } }>('/api/deploys/:id/logs', async (request, reply) => {
