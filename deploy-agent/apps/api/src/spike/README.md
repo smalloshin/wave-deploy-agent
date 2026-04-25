@@ -7,6 +7,16 @@ JSON to stdout. **Do not import from production code.**
 Status: scaffolding only — must be run manually with GCP creds (`gcloud auth
 application-default login` + `GCP_PROJECT` env var).
 
+> **Outcome (2026-04-26)**: Both spikes passed kill-criteria validation.
+> Production replacements shipped:
+> - SSE long-poll → `apps/api/src/routes/deploys.ts` `/api/deploys/:id/stream`
+> - GCS build-log polling → `apps/api/src/services/build-log-poller.ts`,
+>   wired live via `onBuildStarted` hook (see ADR
+>   `brain/decisions/2026-04-26-live-build-log-streaming.md`)
+>
+> These spike scripts are kept for archeology; they intentionally have no
+> imports back into the rest of the codebase.
+
 ---
 
 ## Spike A — `spike-sse.ts`: Cloud Run SSE longevity

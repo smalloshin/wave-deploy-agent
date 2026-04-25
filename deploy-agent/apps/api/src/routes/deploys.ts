@@ -154,7 +154,13 @@ export async function deployRoutes(app: FastifyInstance) {
     };
   });
 
-  // SSE stream — real-time fan-out of stage transitions and (future) build-log chunks.
+  // SSE stream — real-time fan-out of stage transitions AND live build-log chunks.
+  //
+  // As of 2026-04-26, deploy-worker fires `streamBuildLogToDeployment` from the
+  // `onBuildStarted` hook, which publishes:
+  //   - `meta` events with kind `build_log_stream_started|error|ended` (lifecycle)
+  //   - `log` events with payload `{build_id, bytes_offset, text, lag_ms, gcs_updated}`
+  //     (each chunk yielded by `pollBuildLog` → published verbatim)
   //
   // Protocol:
   //   - Client connects: GET /api/deploys/:id/stream
@@ -231,9 +237,10 @@ export async function deployRoutes(app: FastifyInstance) {
 
   // Post-mortem build-log fetch — pulls the whole Cloud Build log from GCS.
   //
-  // We don't stream live build logs yet (deferred — needs a deploy-engine refactor
-  // to expose buildId before the build returns). This endpoint reads the full log
-  // once the build is terminal so the user can scroll through it on the detail page.
+  // Live streaming is now handled by the `/stream` endpoint (see above) once the
+  // build starts. This endpoint stays useful for two recovery cases:
+  //   1. Client joined after the ring buffer evicted early chunks (N=2000 cap)
+  //   2. User wants the complete log dumped to a `<pre>` for copy/grep
   //
   // Find build_id from the build:succeeded or build:failed stage event metadata,
   // then read `gs://${gcpProject}_cloudbuild/log-{build_id}.txt`.

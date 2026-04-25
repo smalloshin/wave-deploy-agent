@@ -4,12 +4,15 @@
  * LogStream — Tier 2 of the deployment observability stack.
  *
  * Two parts:
- *   1. Live SSE feed (/api/deploys/:id/stream) — shows stage transitions as they
- *      happen. Reconnects with Last-Event-ID. Handles `gap` event by refetching
- *      the timeline (signaling the parent via onGap).
- *   2. Build log block — lazy loads the GCS log via /api/deploys/:id/build-log
- *      once the build stage has a build_id (i.e. is terminal). This is post-mortem
- *      because deploy-engine doesn't expose buildId during the build (deferred).
+ *   1. Live SSE feed (/api/deploys/:id/stream) — shows stage transitions AND
+ *      live build-log chunks as they happen. Reconnects with Last-Event-ID.
+ *      Handles `gap` event by refetching the timeline (signaling parent via onGap).
+ *      Live build-log streaming was added 2026-04-26 via the `onBuildStarted`
+ *      hook in deploy-engine; chunks land as `log` events with payload.text and
+ *      bookend `meta` events (build_log_stream_started/error/ended).
+ *   2. Build log block — once terminal, optionally lazy-load the FULL GCS log
+ *      via /api/deploys/:id/build-log. Useful when the ring buffer evicted early
+ *      chunks or the user joined mid-build.
  *
  * DS 4.0 tokens only. No external deps.
  */
@@ -303,7 +306,33 @@ function renderPayload(e: StreamEvent): string {
     return `${stage}:${status}`;
   }
   if (e.type === 'log') {
-    return (e.payload.line as string | undefined) ?? JSON.stringify(e.payload);
+    // New live-chunk shape (2026-04-26): { build_id, bytes_offset, text, lag_ms, gcs_updated }
+    // Legacy shape: { line }
+    const text =
+      (e.payload.text as string | undefined) ??
+      (e.payload.line as string | undefined);
+    if (text != null) {
+      // Strip a single trailing newline; we render one event per line already.
+      return text.replace(/\n$/, '');
+    }
+    return JSON.stringify(e.payload);
+  }
+  if (e.type === 'meta') {
+    const kind = e.payload.kind as string | undefined;
+    const buildId = e.payload.build_id as string | undefined;
+    const shortId = buildId ? buildId.slice(0, 8) : '';
+    switch (kind) {
+      case 'build_log_stream_started':
+        return shortId ? `build log stream started (${shortId})` : 'build log stream started';
+      case 'build_log_stream_ended':
+        return 'build log stream ended';
+      case 'build_log_stream_error': {
+        const err = (e.payload.error as string | undefined) ?? 'unknown';
+        return `build log stream error: ${err}`;
+      }
+      default:
+        return JSON.stringify(e.payload);
+    }
   }
   return JSON.stringify(e.payload);
 }
