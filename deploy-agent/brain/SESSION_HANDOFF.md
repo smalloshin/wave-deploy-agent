@@ -4,6 +4,67 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第九段）—— publishDeployment 原子性 + Cloud-Run/DB split detection**
+
+第八段 scan pipeline 收尾後，spawn architect agent 掃下一個高風險沉默失敗：versioning publish 路徑。回報是 production-shipped 的雙層問題：
+
+1. **`publishDeployment()` 三道 UPDATE 沒包 transaction**——`unpublish 舊版` → `publish 新版` → `update project pointer` 任意一步 throw 都會留下不一致狀態：deployments 表跟 projects.published_deployment_id 互相打架。UI 顯示 v3 live，但流量仍走 v2。最常見觸發：第 2 步 `published_at = NOW()` constraint conflict，第 3 步網路 hiccup。
+2. **versioning route 對 Cloud-Run/DB split 失聲**——`publishRevision()`（GCP 改 traffic）成功之後 `publishDeployment()`（DB 寫入）若 throw，traffic 已經切過去但 DB 不知道。原本只回 generic 500，operator 完全沒訊號。物理上 GCP 跟 DB 不可能 atomic，但 API 層至少要把這種 split 講清楚。
+
+**這段做了什麼**：
+
+A. **`apps/api/src/db/index.ts`** —— 新增 `withTransaction<T>(fn)` helper：
+   ```typescript
+   const client = await pool.connect();
+   try {
+     await client.query('BEGIN');
+     const result = await fn(client);
+     await client.query('COMMIT');
+     return result;
+   } catch (err) {
+     try { await client.query('ROLLBACK'); }
+     catch (rollbackErr) { console.error('[db] ROLLBACK failed:', ...); }
+     throw err;  // 永遠 re-throw 原始 error，不被 ROLLBACK 失敗 mask
+   } finally {
+     client.release();  // ROLLBACK 失敗也要 release
+   }
+   ```
+   註解寫清楚：不是 savepoint helper（巢狀不會真巢狀）、不是 retry layer（serialization conflict bubble up）。
+
+B. **`apps/api/src/services/orchestrator.ts:publishDeployment`** —— 三道 UPDATE 改用 `withTransaction(async client => {...})`，全部用同一個 client query。原本 module-level `query()` helper 換成 `client.query()` 共享 transaction。
+
+C. **`apps/api/src/routes/versioning.ts:publish endpoint`** —— `publishRevision()` 跟 `publishDeployment()` 中間插 try/catch：DB 失敗時 `request.log.fatal({event: 'publish_db_split', ...})` 標記 critical event，回 500 with explicit `'Partial publish: Cloud Run traffic switched to target version, but DB record could not be updated. Manual reconcile required.'` operator 一看 log/error 就知道要去哪裡 reconcile。
+
+D. **`apps/api/src/test-transaction.ts`（新檔，7 tests）** —— 兩層測試：
+   - **Unit（5 tests，無 DB）**：用 fake pg.PoolClient（記錄 query 呼叫 + 注入失敗）
+     - happy path: BEGIN → fn → COMMIT，不 ROLLBACK，client 釋放一次
+     - throw inside fn: BEGIN → ROLLBACK，原始 error re-thrown
+     - ROLLBACK 失敗不 mask 原始 error（用 console.error mock 吞 expected log）
+     - COMMIT 失敗仍 release client
+     - fn 內多次 query 共享同一 client
+   - **Integration（2 tests，DB-gated）**：建專案 + 兩 deployment，呼叫 publishDeployment，assert `deployments.is_published`、`deployments.published_at`、`projects.published_deployment_id` 三邊同步。`dbAvailable()` 檢查無 DATABASE_URL 時 SKIP（仍計 PASS）
+
+**Test 通過率（累計）：151 unit pass / 0 fail**：
+- 第七段 120 + 第八段 26 + 第九段：**5（transaction unit）+ 2（transaction integration，本地 SKIP）** = 151（含 SKIP）
+- 跑了 6 個 test 檔的 cross-check 全綠：safe-number, stage-events, auth-coverage, scan-report-schemas, scanner-safe-parse, transaction = 76
+
+**驗證**：`npx tsc --noEmit` clean。所有跑得到的 unit test 全綠。Integration test 部分需要 DATABASE_URL（CI 設好就會自動跑）。
+
+**為什麼沒寫 ADR**：transaction wrapping 是 Postgres + node-pg 的 well-known pattern，不是架構分岔。Cloud-Run/DB split 是物理上的 partial-failure trade-off，註解 + log message 說明就夠。SESSION_HANDOFF 記錄即可。
+
+**已知妥協**：
+- 物理 split 仍存在：GCP `publishRevision()` 跟 DB `publishDeployment()` 中間若 process crash 或 pod evicted，traffic 已切但 DB 沒更新且我們連 fatal log 都來不及噴。Reconciler 應該要對這種狀態做檢測修復，但現有 reconciler 還沒覆蓋這條路徑——下一輪可掃
+- `withTransaction` 不支援 nested call；現有 codebase 沒人巢狀呼叫，但未來新 caller 要注意
+- `parseFindings/parseAutoFixes`（第八段）至今 production deploy 後若有 drop 警告會浮出 LLM schema drift；尚未上線觀察
+
+**使用者下一步**：
+1. Review 第九段 1 個 commit（pr/sync-all：`abb37d0` publishDeployment atomicity + partial-publish detection + tests）
+2. Deploy 後若觀察到 `event: 'publish_db_split'` fatal log，第一時間 reconcile：要嘛重跑 `publishDeployment(projectId, targetDeploymentId)` 把 DB 補上，要嘛把 Cloud Run traffic 切回前一版
+3. SubmitModal navigate UX 決定還在等
+4. （第八段觀察項仍有效）Production deploy 後查 `[scan-report:llm]` warn log
+
+---
+
 **2026-04-26（autonomous overnight 第八段）—— scan pipeline 三個沉默漏洞（scanner JSON.parse + orchestrator type lying + DNS cleanup 失聲）**
 
 第七段做完 auth lifecycle 之後，spawn 兩個 explore agent 並行掃 codebase 殘存風險：一個審 orchestrator type cast、一個審 fire-and-forget pattern。回來三個都是**已 ship 上 production 的**沉默問題：
