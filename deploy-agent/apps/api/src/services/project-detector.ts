@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeParsePort } from '../utils/safe-number.js';
 
 export interface DetectionResult {
   language: string;
@@ -98,14 +99,17 @@ export function detectProject(projectDir: string): DetectionResult {
     if (dockerContent) {
       // Priority: ENV PORT=X > EXPOSE Y > nginx default
       // ENV PORT is what the app actually listens on at runtime
+      // (safeParsePort rejects non-port-range values; the regex always captures
+      // digits, but a giant `EXPOSE 99999999999` would produce a non-port int.)
       const envPortMatch = dockerContent.match(/^ENV\s+PORT[=\s]+(\d+)/m);
       if (envPortMatch) {
-        result.port = parseInt(envPortMatch[1], 10);
+        const parsed = safeParsePort(envPortMatch[1]);
+        if (parsed !== null) result.port = parsed;
       } else {
         const exposeMatch = dockerContent.match(/^EXPOSE\s+(\d+)/m);
         if (exposeMatch) {
-          const exposedPort = parseInt(exposeMatch[1], 10);
-          if (exposedPort !== result.port) {
+          const exposedPort = safeParsePort(exposeMatch[1]);
+          if (exposedPort !== null && exposedPort !== result.port) {
             result.port = exposedPort;
           }
         }

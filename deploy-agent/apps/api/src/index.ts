@@ -18,6 +18,7 @@ import { registerAuthHook, registerAuthCoverageCheck } from './middleware/auth';
 import { ensureAdmin } from './services/auth-service';
 import { startReconciler } from './services/reconciler';
 import { runMigrations } from './db/migrate';
+import { safePositiveInt } from './utils/safe-number';
 
 const app = Fastify({
   logger: {
@@ -50,7 +51,9 @@ await app.register(cookie, {
 // /health excluded so Cloud Run probe doesn't burn the budget.
 await app.register(rateLimit, {
   global: true,
-  max: Number(process.env.RATE_LIMIT_MAX ?? 600),
+  // safePositiveInt: env var is user-supplied → `Number("abc")` would give NaN
+  // and disable the limiter silently. Floor at 1, cap at 100k (sanity).
+  max: safePositiveInt(process.env.RATE_LIMIT_MAX, 600, { max: 100_000 }),
   timeWindow: '1 minute',
   allowList: (req) => req.url === '/health',
 });
@@ -116,7 +119,8 @@ app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => 
 });
 
 // Start
-const port = parseInt(process.env.PORT ?? '4000', 10);
+// safePositiveInt: PORT="abc" → NaN → listen() throws; fall back to 4000.
+const port = safePositiveInt(process.env.PORT, 4000, { max: 65535 });
 const host = process.env.HOST ?? '0.0.0.0';
 
 try {

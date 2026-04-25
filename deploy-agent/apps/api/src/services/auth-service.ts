@@ -1,9 +1,12 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcrypt';
 import { query, getOne } from '../db/index.js';
+import { safePositiveInt } from '../utils/safe-number.js';
 import type { AuthUser, Permission, Role, ApiKey, ApiKeyCreated } from '@deploy-agent/shared';
 
-const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS ?? 7);
+// SESSION_TTL_DAYS comes from env — guard against `Number("abc")` → NaN, which
+// would silently make every session unverifiable (TTL math becomes NaN).
+const SESSION_TTL_DAYS = safePositiveInt(process.env.SESSION_TTL_DAYS, 7, { max: 365 });
 const BCRYPT_COST = 12;
 const API_KEY_PREFIX = 'da_k_';
 

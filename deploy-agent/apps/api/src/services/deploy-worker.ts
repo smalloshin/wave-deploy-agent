@@ -28,6 +28,7 @@ import { notifyDeployComplete, notifyCanaryFailed, notifyDeployFailed } from './
 import { captureDeployedSource } from './deployed-source-capture';
 import { recordStageEvent, type StageName } from './stage-events';
 import { pollBuildLog, type BuildLogChunk } from './build-log-poller';
+import { safeParsePort } from '../utils/safe-number.js';
 import { publish as publishStreamEvent } from './deployment-event-stream';
 
 /**
@@ -39,9 +40,9 @@ import { publish as publishStreamEvent } from './deployment-event-stream';
  * connected SSE client gets near-live tail (poll interval ~1.5s, p95 lag ~3s).
  *
  * Errors are logged but never thrown — observability must NOT crash a deploy.
- * If the GCS object hasn't been created yet within ~30s of build:start, the
- * poller throws and we surface that as a `meta` event so the UI can show
- * "log not yet available" instead of silently spinning.
+ * If the GCS log object never appears within ~30s of build:start the poller
+ * throws and we emit a `build_log_stream_error` meta event; the LogStream
+ * component renders that as "build log stream error: <reason>".
  *
  * Exported for unit testing via `streamBuildLogToDeploymentForTest()`.
  */
@@ -241,16 +242,24 @@ export async function runDeployPipeline(
                   if (efs(dfPath)) {
                     const dockerContent = rfs(dfPath, 'utf8');
                     // Priority: ENV PORT=X > EXPOSE Y > nginx default
-                    // ENV PORT is what the app actually listens on at runtime
+                    // ENV PORT is what the app actually listens on at runtime.
+                    // safeParsePort rejects out-of-range values so we don't
+                    // hand Cloud Run an invalid port from a malformed Dockerfile.
                     const envPortMatch = dockerContent.match(/^ENV\s+PORT[=\s]+(\d+)/m);
                     if (envPortMatch) {
-                      port = parseInt(envPortMatch[1], 10);
-                      console.log(`[Deploy]   Port from GCS Dockerfile ENV PORT: ${port}`);
+                      const parsed = safeParsePort(envPortMatch[1]);
+                      if (parsed !== null) {
+                        port = parsed;
+                        console.log(`[Deploy]   Port from GCS Dockerfile ENV PORT: ${port}`);
+                      }
                     } else {
                       const exposeMatch = dockerContent.match(/^EXPOSE\s+(\d+)/m);
                       if (exposeMatch) {
-                        port = parseInt(exposeMatch[1], 10);
-                        console.log(`[Deploy]   Port from GCS Dockerfile EXPOSE: ${port}`);
+                        const parsed = safeParsePort(exposeMatch[1]);
+                        if (parsed !== null) {
+                          port = parsed;
+                          console.log(`[Deploy]   Port from GCS Dockerfile EXPOSE: ${port}`);
+                        }
                       } else if (dockerContent.match(/FROM\s+nginx/i)) {
                         port = 80;
                         console.log(`[Deploy]   Port from GCS Dockerfile (nginx): ${port}`);

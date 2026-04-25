@@ -9,6 +9,7 @@ import { gcpFetch } from '../services/gcp-auth';
 import { listProjects } from '../services/orchestrator';
 import { reconcileStuckProjects } from '../services/reconciler';
 import { runMigrations } from '../db/migrate';
+import { safeBytes } from '../utils/safe-number';
 
 const GCP_PROJECT = process.env.GCP_PROJECT || 'wave-deploy-agent';
 const GCP_REGION = process.env.GCP_REGION || 'asia-east1';
@@ -118,7 +119,8 @@ async function getArtifactRegistry() {
   return {
     repoName: AR_REPO,
     region: GCP_REGION,
-    sizeBytes: Number(repo.sizeBytes ?? 0),
+    // GCP returns string-encoded ints; bad values would propagate NaN to UI.
+    sizeBytes: safeBytes(repo.sizeBytes),
     cleanupPolicyCount: Object.keys(repo.cleanupPolicies ?? {}).length,
     packages: withCounts.sort((a, b) => b.versionCount - a.versionCount),
   };
@@ -137,7 +139,10 @@ async function getGcsSources() {
   const listUrl = `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o?prefix=${encodeURIComponent(GCS_SOURCES_PREFIX)}&fields=items(name,size,timeCreated),nextPageToken`;
   const objects = await fetchAllPages<GcsObject>(listUrl, 'items');
 
-  const totalBytes = objects.reduce((s, o) => s + Number(o.size ?? 0), 0);
+  // safeBytes guards against any single object returning a non-numeric size
+  // poisoning the whole accumulator into NaN (which would render as "NaN bytes"
+  // on the dashboard and break any size-based comparison downstream).
+  const totalBytes = objects.reduce((s, o) => s + safeBytes(o.size), 0);
 
   return {
     bucket: GCS_BUCKET,
@@ -147,7 +152,7 @@ async function getGcsSources() {
     lifecycleRuleCount: bucket.lifecycle?.rule?.length ?? 0,
     objects: objects.map((o) => ({
       name: o.name,
-      sizeBytes: Number(o.size ?? 0),
+      sizeBytes: safeBytes(o.size),
       timeCreated: o.timeCreated ?? null,
       slug: extractSlugFromTarball(o.name),
     })),

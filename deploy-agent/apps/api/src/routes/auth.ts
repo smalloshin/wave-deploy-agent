@@ -17,6 +17,7 @@ import {
   logAuth,
 } from '../services/auth-service.js';
 import { SESSION_COOKIE } from '../middleware/auth.js';
+import { safePositiveInt } from '../utils/safe-number.js';
 
 const VALID_PERMISSIONS: Permission[] = [
   'projects:read','projects:write','projects:deploy','projects:delete',
@@ -290,7 +291,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/auth/audit-log (users:manage)
   app.get('/api/auth/audit-log', async (request) => {
-    const limit = Math.min(Number((request.query as { limit?: string })?.limit ?? 100), 1000);
+    // ?limit=abc would give Number(...) === NaN → Math.min(NaN, 1000) === NaN
+    // → SQL `LIMIT NaN` blows up. safePositiveInt clamps to [1, 1000].
+    const limit = safePositiveInt(
+      (request.query as { limit?: string })?.limit,
+      100,
+      { max: 1000 },
+    );
     const entries = await listAuditLog(limit);
     return { entries };
   });

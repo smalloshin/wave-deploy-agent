@@ -21,6 +21,7 @@
  */
 
 import { getAccessToken } from './gcp-auth';
+import { safeBytes } from '../utils/safe-number.js';
 
 export interface BuildLogChunk {
   build_id: string;
@@ -65,7 +66,10 @@ async function statObject(bucket: string, object: string, token: string): Promis
   if (r.status === 404) return { size: 0, updated: '', exists: false };
   if (!r.ok) throw new Error(`stat ${object} failed: ${r.status}`);
   const j = (await r.json()) as { size: string; updated: string };
-  return { size: Number(j.size), updated: j.updated, exists: true };
+  // GCS returns size as a string-encoded int. safeBytes guards against a
+  // malformed payload making `meta.size` NaN, which would silently freeze the
+  // poll loop (NaN > offset is always false → no chunks ever yielded).
+  return { size: safeBytes(j.size), updated: j.updated, exists: true };
 }
 
 async function fetchRange(bucket: string, object: string, token: string, start: number): Promise<string> {
