@@ -329,7 +329,37 @@
     "customDomain": "Custom Domain",
     "cloudRunUrl": "Cloud Run URL",
     "healthStatus": "Health Status",
-    "deployTime": "Deploy Time"
+    "deployTime": "Deploy Time",
+    "viewTimeline": "View Timeline",
+    "detail": {
+      "title": "Deployment v{version}",
+      "back": "← Back to deploy history",
+      "openService": "Open service ↗",
+      "noTimeline": "No timeline events recorded yet — this deployment may have run before observability was enabled.",
+      "loading": "Loading timeline...",
+      "loadError": "Failed to load deployment: {error}",
+      "overall": {
+        "pending": "Pending",
+        "running": "Running",
+        "succeeded": "Succeeded",
+        "failed": "Failed"
+      },
+      "stage": {
+        "upload": "Upload",
+        "extract": "Extract",
+        "build": "Build",
+        "push": "Push",
+        "deploy": "Deploy",
+        "health_check": "Health check",
+        "ssl": "SSL"
+      },
+      "status": {
+        "started": "Running",
+        "succeeded": "Done",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      }
+    }
   },
   "infra": {
     "title": "Infrastructure",

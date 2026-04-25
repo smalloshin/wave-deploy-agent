@@ -329,7 +329,37 @@
     "customDomain": "自訂網域",
     "cloudRunUrl": "Cloud Run 網址",
     "healthStatus": "健康狀態",
-    "deployTime": "部署時間"
+    "deployTime": "部署時間",
+    "viewTimeline": "檢視時間軸",
+    "detail": {
+      "title": "部署 v{version}",
+      "back": "← 返回部署紀錄",
+      "openService": "開啟服務 ↗",
+      "noTimeline": "此部署尚未記錄階段事件 —— 可能是在啟用可觀測性之前完成的。",
+      "loading": "載入時間軸中...",
+      "loadError": "無法載入部署：{error}",
+      "overall": {
+        "pending": "待執行",
+        "running": "執行中",
+        "succeeded": "成功",
+        "failed": "失敗"
+      },
+      "stage": {
+        "upload": "上傳",
+        "extract": "解壓",
+        "build": "建置",
+        "push": "推送映像",
+        "deploy": "部署",
+        "health_check": "健康檢查",
+        "ssl": "SSL"
+      },
+      "status": {
+        "started": "進行中",
+        "succeeded": "完成",
+        "failed": "失敗",
+        "skipped": "略過"
+      }
+    }
   },
   "infra": {
     "title": "基礎設施",

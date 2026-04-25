@@ -81,21 +81,27 @@ export async function getStageEvents(deploymentId: string): Promise<StageEventRo
 }
 
 /**
- * Aggregate raw events into one row per stage with the most-recent status.
+ * Aggregate raw events into one row per stage with the resolved status.
  *
- * Priority order (when two events land same stage): failed > started >
- * succeeded > skipped. (A retry that succeeded after a failure should still
- * surface the failure to the user; they can re-deploy if they want a clean
- * timeline.)
+ * Resolution rule:
+ *   - If any terminal event (succeeded / failed / skipped) is present, pick
+ *     the worst-outcome terminal: failed > succeeded > skipped.
+ *     (`started` is implied complete and ignored.)
+ *   - If only `started` events exist (no terminal), status = `started` (the
+ *     stage is still in flight; the timeline UI shows a pulsing dot).
  *
- * Returns array in the canonical 7-stage order, missing stages omitted.
+ * This matches user intent: a retry that finally succeeded after one failure
+ * surfaces as `failed` (so the user can investigate), but a stage that
+ * started AND succeeded shows as `succeeded`, not "stuck running".
+ *
+ * Returns array in the canonical 7-stage order; stages with no events are
+ * omitted.
  */
 const STAGE_ORDER: StageName[] = [
   'upload', 'extract', 'build', 'push', 'deploy', 'health_check', 'ssl',
 ];
-const STATUS_PRIORITY: Record<StageStatus, number> = {
-  failed: 4,
-  started: 3,
+const TERMINAL_PRIORITY: Record<'failed' | 'succeeded' | 'skipped', number> = {
+  failed: 3,
   succeeded: 2,
   skipped: 1,
 };
@@ -122,13 +128,22 @@ export function summarizeStages(events: StageEventRow[]): StageSummary[] {
   for (const stage of STAGE_ORDER) {
     const list = byStage.get(stage);
     if (!list || list.length === 0) continue;
-    // Pick the highest-priority status, but track started/finished from raw timestamps
-    let chosen = list[0];
+
+    // Find the worst terminal event (if any). Started is ignored for status.
+    let chosenTerminal: StageEventRow | null = null;
     for (const e of list) {
-      if (STATUS_PRIORITY[e.status as StageStatus] > STATUS_PRIORITY[chosen.status as StageStatus]) {
-        chosen = e;
+      if (e.status === 'started') continue;
+      if (
+        !chosenTerminal ||
+        TERMINAL_PRIORITY[e.status as keyof typeof TERMINAL_PRIORITY] >
+          TERMINAL_PRIORITY[chosenTerminal.status as keyof typeof TERMINAL_PRIORITY]
+      ) {
+        chosenTerminal = e;
       }
     }
+    // Fall back to a started event if no terminal was emitted yet.
+    const chosen = chosenTerminal ?? list.find(e => e.status === 'started') ?? list[0];
+
     const started = list.find(e => e.status === 'started');
     const ended = [...list].reverse().find(e => e.status === 'succeeded' || e.status === 'failed' || e.status === 'skipped');
     const startedAt = started ? new Date(started.created_at).toISOString() : null;

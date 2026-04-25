@@ -78,6 +78,7 @@ export default function DeploysPage() {
                   <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('cloudRunUrl')}</th>
                   <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('healthStatus')}</th>
                   <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }}>{t('deployTime')}</th>
+                  <th style={{ padding: 'var(--sp-3) var(--sp-4)', textAlign: 'left', fontWeight: 600 }} aria-label={t('viewTimeline')} />
                 </tr>
               </thead>
               <tbody>
@@ -114,6 +115,15 @@ export default function DeploysPage() {
                     </td>
                     <td style={{ padding: 'var(--sp-4)', color: 'var(--ink-500)', fontSize: 'var(--fs-sm)' }}>
                       {d.deployed_at ? new Date(d.deployed_at).toLocaleString() : tc('waiting')}
+                    </td>
+                    <td style={{ padding: 'var(--sp-4)' }}>
+                      <a href={`/deploys/${d.id}`} style={{
+                        fontSize: 'var(--fs-sm)',
+                        color: 'var(--sea-500)',
+                        textDecoration: 'none',
+                      }}>
+                        {t('viewTimeline')} →
+                      </a>
                     </td>
                   </tr>
                 ))}

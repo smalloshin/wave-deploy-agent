@@ -65,14 +65,31 @@ async function unitTests() {
     assert.deepEqual(out.map(s => s.stage), ['extract', 'build', 'push', 'deploy', 'health_check', 'ssl']);
   });
 
-  await test('priority: failed > started > succeeded > skipped (within same stage)', () => {
+  await test('terminal priority: failed > succeeded > skipped (within same stage); started ignored if any terminal exists', () => {
     const events: StageEventRow[] = [
       row('build', 'succeeded', '2026-04-25T10:00:00Z'),
       row('build', 'failed', '2026-04-25T10:00:01Z'),
-      row('build', 'started', '2026-04-25T10:00:02Z'),
+      row('build', 'started', '2026-04-25T10:00:02Z'),  // implied complete by terminals
     ];
     const out = summarizeStages(events);
     assert.equal(out[0].status, 'failed');
+  });
+
+  await test('started + succeeded → succeeded (not stuck running)', () => {
+    const events: StageEventRow[] = [
+      row('build', 'started', '2026-04-25T10:00:00Z'),
+      row('build', 'succeeded', '2026-04-25T10:00:01Z'),
+    ];
+    const out = summarizeStages(events);
+    assert.equal(out[0].status, 'succeeded');
+  });
+
+  await test('only started (no terminal) → started', () => {
+    const events: StageEventRow[] = [
+      row('build', 'started', '2026-04-25T10:00:00Z'),
+    ];
+    const out = summarizeStages(events);
+    assert.equal(out[0].status, 'started');
   });
 
   await test('duration_ms = finished - started', () => {

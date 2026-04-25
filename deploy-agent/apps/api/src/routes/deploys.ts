@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { query } from '../db/index';
 import { checkSslStatus } from '../services/ssl-monitor';
+import { getStageEvents, summarizeStages } from '../services/stage-events';
 
 export async function deployRoutes(app: FastifyInstance) {
   // List deployments
@@ -96,6 +97,57 @@ export async function deployRoutes(app: FastifyInstance) {
       conditions: liveStatus.conditions,
       allReady: liveStatus.allReady,
       checkedAt: liveStatus.checkedAt,
+    };
+  });
+
+  // Get deployment timeline (per-stage events: extract / build / push / deploy / health_check / ssl)
+  // This is the primary observability endpoint consumed by Tier 1 (Timeline view).
+  app.get<{ Params: { id: string } }>('/api/deploys/:id/timeline', async (request, reply) => {
+    const deploy = await query<{
+      id: string;
+      project_id: string;
+      created_at: Date;
+      version: number;
+      cloud_run_url: string | null;
+      custom_domain: string | null;
+      health_status: string | null;
+      ssl_status: string | null;
+      deployed_at: Date | null;
+    }>(
+      `SELECT id, project_id, created_at, version, cloud_run_url, custom_domain,
+              health_status, ssl_status, deployed_at
+         FROM deployments WHERE id = $1`,
+      [request.params.id]
+    );
+    if (deploy.rows.length === 0) return reply.status(404).send({ error: 'Deployment not found' });
+
+    const events = await getStageEvents(request.params.id);
+    const stages = summarizeStages(events);
+
+    // Compute overall: failed > running > succeeded
+    const overall = stages.some(s => s.status === 'failed')
+      ? 'failed'
+      : stages.some(s => s.status === 'started')
+        ? 'running'
+        : stages.length > 0
+          ? 'succeeded'
+          : 'pending';
+
+    return {
+      deployment: {
+        id: deploy.rows[0].id,
+        project_id: deploy.rows[0].project_id,
+        version: deploy.rows[0].version,
+        cloud_run_url: deploy.rows[0].cloud_run_url,
+        custom_domain: deploy.rows[0].custom_domain,
+        health_status: deploy.rows[0].health_status,
+        ssl_status: deploy.rows[0].ssl_status,
+        created_at: deploy.rows[0].created_at,
+        deployed_at: deploy.rows[0].deployed_at,
+      },
+      overall,
+      stages,
+      events,
     };
   });
 
