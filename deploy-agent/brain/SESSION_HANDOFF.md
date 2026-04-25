@@ -4,6 +4,184 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-25（深夜，autonomous overnight） —— 部署可觀測性 3 層全部 ship 完成（4 commits, 39/39 tests, 等使用者起床）**
+
+使用者半夜睡前下達指令：「請你把所有的 todo 都做完，需要決定的地方 spawn 4 個 subagent 來決定（architect / eng-lead / engineer / QA）...一直做到我回來為止」。本次連跑 6 個 phase，全部 local-only 在 `pr/sync-all` branch（不 push、不 merge、不碰 production）。
+
+**Commits（按順序）**：
+- `5130777` — Phase 1: spike scaffolding（SSE + GCS poll throwaway code）
+- `12c1ed1` — Commit 0: deployment_stage_events table + worker hooks + service
+- `e1c6363` — Commit 1: timeline endpoint + DeploymentTimeline component + detail page
+- `3ccec46` — Commit 2: SSE stream + LogStream + post-mortem build log
+- `c01655d` — Commit 3: LLM-cached deployment diagnostics + DiagnosticBlock
+
+**Test 通過率：39/39**（unit tests，integration tests 因 local Postgres 未啟而 skip cleanly）：
+- `test-stage-events.ts`：10 tests（priority, ordering, duration, retries, started+succeeded→succeeded）
+- `test-timeline-route.ts`：7 tests（overall resolver edge cases, SSL provisioning state）
+- `test-event-stream.ts`：15 tests（monotonic seq, ring buffer eviction at N=2000, gap detection, subscribe lifecycle, schedulePurge）
+- `test-diagnostics.ts`：7 tests（cache key correctness across all combinations）
+
+**驗證**：兩邊 `npx tsc --noEmit` clean、`apps/api npm run build` clean、`apps/web npm run build` clean（10 routes 全綠）。
+
+**架構決策的關鍵點（詳見 `brain/decisions/2026-04-25-deployment-observability.md`）**：
+
+1. **Stage events 跟 state_transitions 分開**——抽象層不同（per-deployment sub-stage vs. orchestrator-level project state）
+2. **觀測寫入永遠 best-effort**——`recordStageEvent` 失敗只 console.warn，不能 crash deploy
+3. **SSE 不用 WebSocket**——單向、HTTP-only、自帶 Last-Event-ID resume；per-deployment in-memory ring buffer N=2000，client 落後送 synthetic `gap` event
+4. **Build log 是 post-mortem，不是 live**——deploy-engine 目前在 build 結束才 expose `buildId`，要 live tail 需要 refactor。Commit 2 範圍故意縮：stage events live + build log 點擊載入。Live build log 是 follow-up commit。
+5. **GET 跟 POST diagnose 分開**——GET 只讀 cache 不會 burn LLM；POST 才付錢，race-safe 用 `ON CONFLICT DO NOTHING + 重讀 winner`
+6. **Cache key by build_id**——同一個 build_id 的失敗診斷在 retry deploy 之間共享，使用者不會付兩次錢
+
+**已知妥協 / 未做**：
+- Live build-log streaming 留 follow-up（需 deploy-engine refactor）
+- Tier 4（成本/延遲圖表）已 kill，使用者要看歷史趨勢去 GCP billing dashboard
+- E2E 測試沒做（沒有 vitest/jest/playwright dep；走專案既有的 `test-*.ts` 模式）
+- Integration tests 沒在本機跑過（Postgres 沒啟），但 schema 跟 SQL 經 typecheck，table-existence probe + clean skip 都正確
+
+**檔案盤點（新增）**：
+- `apps/api/src/services/stage-events.ts`
+- `apps/api/src/services/deployment-event-stream.ts`
+- `apps/api/src/services/build-log-poller.ts`
+- `apps/api/src/services/deployment-diagnostics.ts`
+- `apps/api/src/test-stage-events.ts`、`test-timeline-route.ts`、`test-event-stream.ts`、`test-diagnostics.ts`
+- `apps/api/src/spike/spike-sse.ts`、`spike-buildlog.ts`（throwaway，不 import 進 prod）
+- `apps/web/app/components/DeploymentTimeline.tsx`、`LogStream.tsx`、`DiagnosticBlock.tsx`
+- `apps/web/app/deploys/[id]/page.tsx`
+- `brain/decisions/2026-04-25-deployment-observability.md`
+
+**檔案盤點（修改）**：
+- `apps/api/src/db/schema.sql`（追加 `deployment_stage_events` + `deployment_diagnostics` 兩張 table，idempotent）
+- `apps/api/src/services/deploy-worker.ts`（在 6 個 stage boundary 加 instrumentation）
+- `apps/api/src/routes/deploys.ts`（4 個新 route：/timeline /stream /build-log /diagnose 各 GET+POST）
+- `apps/web/app/deploys/page.tsx`（加「View Timeline →」link）
+- `apps/web/messages/{en,zh-TW}.json`（detail.* + logStream.* + diagnostic.*）
+- `brain/decisions/index.md`（新一列）
+
+**使用者下一步**：
+1. 起床後 review 5 個 commits（pr/sync-all branch）
+2. 跑 local Postgres 然後 `npm run db:migrate -w apps/api` 套兩張新 table
+3. 跑一次 deploy 看 timeline 真的會 tick
+4. 如果 OK 就 push + 部署 prod；如果不 OK 哪段不滿意可以單獨 revert 那一個 commit
+5. Live build-log streaming 想做就跟我講，需要 deploy-engine refactor 把 buildId 提早 expose
+
+---
+
+**2026-04-25（晚） —— 部署可觀測性設計：3-tier observability layer（office-hours 砍 Tier 4，等今晚 spike）**
+
+走 `/office-hours` 第三輪，topic: 「Upload Phase 3 / 部署可觀測性」。Diagnostic 鎖定
+wedge：submit zip 之後到 Cloud Run 取得 traffic 中間 5-15 分鐘 UI 是黑盒，user
+manual workaround 是「Discord bot 推送 + 同時三個 tab 都開著」（deploy-agent UI /
+GCP console / Discord bot）。
+
+**Approach C（Boil the Lake，第三次）**：原本 4 個 tier，**office-hours kill test 後砍掉
+Tier 4 (RuntimePanel) 剩 3 個 tier**。Single pane of glass 取代三個 tab，**對「部署
+期間」這個 wedge** boil the lake，runtime monitoring 留給 GCP console（不是我們職責）。
+
+- **Tier 1**：DeploymentTimeline，**7-stage stepper**（upload / extract / build /
+  push / deploy / health_check / **ssl** —— SSL 獨立成 stage 因為 cert provision
+  常拖 5-10 分鐘）+ ETA（專案 P50，樣本不夠 fallback 全站 P50）
+- **Tier 2**：LogStream（SSE）。底層機制是 **GCS bucket polling**（Cloud Build log
+  寫 `gs://{project_num}_cloudbuild/log-{build_id}.txt`，server 2s poll → in-process
+  EventEmitter → SSE handler fan-out）。Reconnect 走 `Last-Event-ID` + per-deployment
+  ring buffer N=2000，evict 推 `event: gap`。Stream 在 ssl finish 主動 close（沒
+  runtime 階段卡邊界，規則乾淨）。
+- **Tier 3**：DiagnosticBlock。失敗 = `(build_id, 'failure')` 跑 callLLM chain；
+  慢（duration > baseline_p95 * 1.3）= `(deployment_id, 'slow')` 比對 cache hit
+  rate / GCS throughput / queue wait。Cache 90 天 retention。
+- ~~**Tier 4**：RuntimePanel~~ —— **office-hours kill test 砍掉**。User 名不出過去 7
+  天 sparkline 或 100-line snapshot 改變動作的時刻。Sparkline = monitoring (GCP
+  console 領域)，snapshot button = debug (rare)，都不在「部署期間」wedge 裡。
+  替代方案：deployment-detail page 頂部明顯放 Cloud Run service URL，one-click 過去。
+
+**Spec Review Loop 跑兩輪 + office-hours kill 一輪**：
+- iter 1：NEEDS REVISION @ 6.5/10，13 issues（4 high + 9 medium）
+- iter 2：**PASS @ 8.5/10**。所有 high 都修：state_transitions 升 Commit 0 前置
+  verify / Cloud Build SDK 機制改寫成真 GCS poll / 6→7 stage 統一 / Cloud Logging
+  cost 量化 + scope 縮減
+- post-iter-2 office-hours：**砍 Tier 4**。Spec Review 沒問「該不該做」只問「能不能正
+  確 implement」。office-hours 補了 wedge fitness check 那刀。
+
+**Design doc**：`/Users/smalloshin/.gstack/projects/smalloshin-smalloshin.github.io/smalloshin-pr-sync-all-design-20260425-214345.md`
+（Status: APPROVED，conditional on tonight's 2-part spike）
+
+**剩 LOW-severity 項（不擋 build）**：
+- 3 處「6 stage」陳述已 cleanup
+- BuildLogPoller 邊界處理（GCS file 沒新 bytes 時的 416/empty handling）
+- Cloud Build log GCS path 是否真的是 `gs://{project_num}_cloudbuild/log-{build_id}.txt`
+  → spike Part 2 第一個 bullet 已 ask
+- ssl skipped 時 stream 怎麼 close → 用 `onDeploymentTerminal` hook（不只盯 ssl）
+
+**Effort 估**：**10-15h CC（一天半 build，從 13-19h 縮）**，spike 今晚 1-2h。Commit 3
+從 6-8h → 3-4h。砍掉 `@google-cloud/monitoring`、`@google-cloud/logging`、`recharts`
+三個依賴。Cloud Logging API egress cost 從 ~$3-10/mo → 0。
+
+**待辦（今晚 + 明天）**：
+
+1. **今晚：spike 兩 part**
+   - **Pre-step**：`gcloud run services describe deploy-agent-api --region=asia-east1 --format='value(spec.template.spec.timeoutSeconds)'`，若 < 3600 跑 `gcloud run services update --timeout=3600`
+   - **Part 1（SSE 60min）**：~30 行 spike route，client EventSource，看是不是 60 分鐘斷掉，記 reconnect 行為 + Cloud Run idle CPU billing
+   - **Part 2（GCS poll build log）**：跑一次真 deploy 拿 build_id，寫 ~50 行 GCS poll loop，驗證：(a) 路徑對不對 (b) `download({ start: offset })` 真的拿增量 (c) build done 訊號從哪 (d) 2s poll 夠即時嗎
+   - 結果寫回 SESSION_HANDOFF.md（pass / warn / fail + 數字）
+2. **明天：開工 Commit 0/1/2/3（Tier 4 砍掉，Commit 3 縮）**
+   - **Commit 0**（conditional 0-2h）：`SELECT DISTINCT stage FROM state_transitions WHERE deployment_id IN (...)` 確認 7 stage 都有寫，缺洞補 instrumentation
+   - **Commit 1**（2h）：`/api/deploys/:id/timeline` + DeploymentTimeline.tsx + detail page route + SubmitModal close 自動 navigate
+   - **Commit 2**（5-7h）：build-log-poller.ts + `/api/deploys/:id/stream` SSE + LogStream.tsx + reconnect ring buffer
+   - **Commit 3**（**3-4h**）：`POST /api/deploys/:id/diagnose` + DiagnosticBlock + `deployment_diagnostics` table + 頂部 Cloud Run service URL link（替代 RuntimePanel）
+
+---
+
+**2026-04-25（早） —— 上傳 UX Phase 2 設計：3-tier pre-flight + Issue Registry（design doc APPROVED，等 spike）**
+
+走 `/office-hours` 第二輪設計，續 04-24 ship 的 upload error UX。Diagnostic 鎖定
+wedge：「上傳前的預檢完全沒做」——使用者親口三類雷全踩過（檔太大 / zip 結構不對 /
+名字衝突），manual workaround 是「丟給 Claude Code 看」。
+
+**Approach C（Boil the Lake）**：rename `UploadFailureCode → UploadIssueCode`、加
+`severity: 'error' | 'warning' | 'info'`，pre-flight 跟 post-failure 共用同一個
+mental model + 元件 + i18n + LLM。三層：
+
+- **Tier 1（client）**：zip.js 讀 EOCD + central directory，掃 node_modules /
+  build artifacts / package.json / Dockerfile（< 3s budget）
+- **Tier 2（server）**：`POST /api/upload/precheck`，查 name / domain / quota，
+  + GCS signed-URL probe（真 PUT 0-byte，不是 getMetadata theater）（< 1.5s budget）
+- **Tier 3（LLM advisory）**：reuse `callLLM` chain，severity=info，settings 可關
+  （< 3s budget，timeout silent skip）
+
+**Spec Review Loop 跑兩輪**：
+- Iteration 1：6/10，13 issues
+- Iteration 2：**8/10 PASS**（top 3 fatal 都修：ZIP64 spike 變 gate / GCS probe
+  變真 PUT / rename + feature 切 2 commits）
+- Reviewer 結論：「ship the spike first, then build」
+
+**Design doc**：`/Users/smalloshin/.gstack/projects/smalloshin-smalloshin.github.io/smalloshin-pr-sync-all-design-20260425-200517.md`
+（Status: APPROVED，conditional on spike）
+
+**剩 7 個 execution-detail（build 時邊處理）**：
+- N1 ⚠️ `precheck_tokens` TTL 30s 太短 → 改 5min 或 refresh-on-use
+- N2 ⚠️ Tier 2 < 1.5s 裝不下 GCS probe + 3 DB queries → spike 量真實 latency
+- N3 ⚠️ Commit 2 還是大 → 切 2a（server only）/ 2b（UI wiring）
+- N4 precheck_tokens 沒 migration plan
+- N5 GCS probe 留 orphaned `__precheck/*.probe` → bucket lifecycle rule
+- N6 Commit 1 「zero behavior change」字面不對 → 改「type-compatible, additive only」
+- N7 Test plan 漏：token expiry 中途、N concurrent probe、Tier 1 過 / Tier 2 中途 cancel、Tier 3 LLM 3s timeout
+
+**待辦（明天開工順序）**：
+
+1. **Spike P2（zip.js + ZIP64 1.5GB browser）**——這是 gate，不過直接重議 Approach B：
+   ```bash
+   cd deploy-agent/apps/web && bun add @zip.js/zip.js
+   # 寫 ~80 行 spike 收 3 種 zip：50MB / 1GB+ / ZIP64
+   # 量 CD size、entry count、heap delta（DevTools Memory tab）
+   # 判準：
+   #   ✅ < 2s + heap < 100MB → Approach C 直接幹
+   #   ⚠️ < 5s + heap < 300MB → 加 progress 拆兩階段繼續
+   #   ❌ > 5s OR heap > 300MB OR OOM → 回 office-hours 重議 Approach B
+   ```
+2. Spike 結果寫回 SESSION_HANDOFF.md（pass / warn / fail + 數字）
+3. 過 spike 才開工 Commit 1（rename + severity field，~30 min CC）
+
+---
+
 **2026-04-24 —— 上傳錯誤 UX 升級：typed registry + LLM fallback + draft 保留（commit `02bf5aa`）**
 
 走 `/office-hours 幫我設計一下上傳檔案的功能` 從診斷到全量實作。使用者一句話定調：

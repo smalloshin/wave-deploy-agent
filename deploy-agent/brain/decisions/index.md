@@ -32,3 +32,4 @@
 | 2026-04-05 | [terraform-disaster-recovery](./2026-04-05-terraform-disaster-recovery.md) | Active | 用 Terraform + bootstrap.sh 實現 agent 一指令重建；secrets 搬到 Secret Manager |
 | 2026-04-13 | [netlify-like-versioning](./2026-04-13-netlify-like-versioning.md) | Active | Netlify-like 版本管理：immutable deploy、版本歷史、一鍵 publish/rollback、deploy lock |
 | 2026-04-18 | [deployed-source-capture](./2026-04-18-deployed-source-capture.md) | Active | 每次 deploy 成功後把 post-fix code + 自動生成 Dockerfile 存到 GCS (365d lifecycle)，dashboard 一鍵下載，讓使用者從安全基準繼續開發 |
+| 2026-04-25 | [deployment-observability](./2026-04-25-deployment-observability.md) | Active | 部署觀測 3 層架構：Tier 1 timeline（7-stage stepper）+ Tier 2 SSE log stream + Tier 3 LLM 診斷（cached by build_id），Tier 4 cost/latency 圖表已 kill |
