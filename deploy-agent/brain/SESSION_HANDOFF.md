@@ -4,6 +4,70 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第六段）—— 防禦性數值 coercion 集中化 + boot-time coverage check 補測試 + 過時 comment 清理**
+
+第五段把 RBAC coverage check 寫好但**只信「函式邏輯簡單就不用測」**——我自己的 review 直接點名這條沒驗證。第六段補完，順便做 codebase-wide 的 NaN-prone coercion 掃描。
+
+兩個 explore agent 並行掃出兩類問題：
+1. **NaN 傳染病**：`Number()` / `parseInt()` 用在 env vars / query strings / external API（GCS、AR）的回應上，沒驗 `Number.isFinite`，跟 04-25 split-bug 同一類 silent failure（type-check 過、runtime 錯）
+2. **過時 comment**：rounds 2-3 ship 完 live build-log 之後，三個地方的 comment 還在說「deferred / not yet」，誤導 reader
+
+**這段做了什麼**：
+
+A. **`apps/api/src/utils/safe-number.ts`（新檔）** —— 集中四個 helper：
+   - `safeNumber(value, fallback, { min?, max? })` — 任何 input → 有限數或 fallback，optional clamp
+   - `safePositiveInt(value, fallback, { max? })` — env var / pagination 用，>= 1
+   - `safeBytes(value)` — GCS / AR size accumulator，>= 0，永不 NaN
+   - `safeParsePort(value)` — Dockerfile EXPOSE / ENV PORT，1..65535 整數或 null
+
+B. **替換 8 個 unsafe call sites**：
+   - `index.ts:53,119` — `RATE_LIMIT_MAX`、`PORT` env vars
+   - `services/auth-service.ts:6` — `SESSION_TTL_DAYS` env var（NaN 會讓所有 session 過期計算 silent fail）
+   - `routes/auth.ts:293` — audit-log `?limit` query（`Math.min(NaN, 1000)` → SQL `LIMIT NaN` 直接炸）
+   - `routes/infra.ts:121,140,150` — GCS / AR `sizeBytes`（NaN 會污染 `reduce()` 累加器）
+   - `services/build-log-poller.ts:68` — `meta.size`（NaN > offset 永遠 false → poll loop 靜默卡死）
+   - `services/project-detector.ts:101-110` 和 `services/deploy-worker.ts:245-255` — Dockerfile PORT 解析
+
+C. **`apps/api/src/test-safe-number.ts`（新檔）** —— 27 個 unit test，cover 每個 helper 的 happy path / edge case / 對應實際 call site 的 fail mode
+
+D. **`apps/api/src/test-auth-coverage.ts`（新檔）** —— 6 個 unit test 補上 round-5 漏掉的 boot-time coverage check 驗證。用 custom logger 攔 Fastify log call，跑真 `app.ready()` 確認：
+   - 全部 mapped → info "all routes mapped"
+   - 漏 mapped → warn 列出 method+url
+   - HEAD/OPTIONS auto-generated 不會誤報
+   - public route 不觸發
+   - parameterised `/api/projects/:id/start`（round-4 mapping）正確匹配
+
+E. **三個 stale comment 改寫**：
+   - `services/deploy-worker.ts` `streamBuildLogToDeployment` header — 不再說「UI 顯示 not-yet-available」，改成描述實際 LogStream 的 `build_log_stream_error` 渲染
+   - `routes/deploys.ts` `/build-log` endpoint header — 不再用「Post-mortem」暗示 live tail 取代了它，改成「兩條互補的 recovery case」
+   - `apps/web/app/components/LogStream.tsx` `renderPayload` log 分支 — 「Legacy shape」改成「defensive fallback」（沒有舊 client 存在）
+
+**Test 通過率（累計）：118/118** unit tests：
+- `test-stage-events.ts`：10
+- `test-timeline-route.ts`：7
+- `test-event-stream.ts`：15
+- `test-diagnostics.ts`：7
+- `test-auth.ts`：41
+- `test-build-log-live.ts`：5
+- `test-safe-number.ts`：**27（新增）**
+- `test-auth-coverage.ts`：**6（新增）**
+
+**驗證**：API + Web build clean（10 routes 全綠）。
+
+**為什麼沒寫 ADR**：「用 helper 統一防禦性 coercion」是 code convention，不是架構分岔。decisions/ 收 ADR 應該是「在 A 跟 B 中選擇」而非「我們這裡都做 X」。SESSION_HANDOFF 記錄即可。
+
+**已知妥協**：
+- `orchestrator.ts:331,345` 的 `as any[]` / `as unknown as ScanReport['findings']` cast 還在；改要動 merge 邏輯本身、影響範圍大，這次先不碰
+- `scanner.ts` 的 JSON.parse 沒包 try-catch；scanner output 來自我們控制的工具（semgrep / trivy），但若要做完整 hardening 可以補
+- 仍未真實 deploy 驗證 live build-log（要 GCP creds + 活躍 deploy）
+
+**使用者下一步**：
+1. Review 第六段 3 個 commit（pr/sync-all：`400bc69` safe-number + `5bd6017` coverage-check tests + `6fe842f` stale-comment cleanup）
+2. 若同意 NaN-defensive 是 codebase-wide convention，PR review 之後可以把它寫進 brain/conventions（如果有這資料夾）
+3. SubmitModal navigate UX 決定還在等
+
+---
+
 **2026-04-26（autonomous overnight 第四段）—— RBAC mapping audit + fail-closed default（補一輪 production-shipped 漏洞）**
 
 第三段 ship 完之後做整體 codebase 掃，發現 RBAC 還有第二輪洞：**ROUTE_PERMISSIONS 漏掉 17 個 route**，包括破壞性的 `POST /api/projects/:id/start|stop|scan|skip-scan|force-fail|resubmit|retry-domain`、機密的 `GET|PUT /api/projects/:id/env-vars` / `github-webhook`、以及觀測性 ship 的 `/api/deploys/:id/timeline|stream|build-log` 全部沒登記。原 enforced mode 對 unmapped route 的處理是「authenticated user 一律放行」——viewer 也能 stop project、讀別人的 env-vars。
