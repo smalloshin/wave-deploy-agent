@@ -4,6 +4,64 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十段）—— reconciler 補上 Cloud-Run/DB publish-split 偵測 + 自動修復**
+
+第九段把同步 publish race 包進 transaction + 加了 partial-publish 的 fatal log。但 route handler 只能在「失敗的當下」喊。如果 operator 沒看到 log，或 API 在 publish 中途重啟，split state 會永遠卡在那邊：Cloud Run 服務 v3，DB 仍說 v2 published，UI 對使用者說謊。Architect agent 點名：reconciler 是唯一能在事後抓住這狀態的地方。
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/deploy-engine.ts`** —— 新增 `getServiceLiveTraffic(gcpProject, region, serviceName)`：
+   - Read Cloud Run v2 service 的 `trafficStatuses[]`（**觀測值**，不是 `traffic[]` 的 desired 值）
+   - 找 `percent === 100` 的 revision；若 traffic 是分裂的（canary 90/10）就回 `liveRevision: null`
+   - 失敗回 null（unreachable／quota／auth issue），caller 把 null 當「skip 這輪」處理
+
+B. **`apps/api/src/services/reconciler.ts`** —— 兩函式分開：
+   - **`analyzePublishSplit(project, deployments, liveRevision)`** —— **純函式**，回傳 discriminated `SplitVerdict`：
+     - `skipped` (含 reason)
+     - `no-split`
+     - `split-unknown-revision`（Cloud Run 跑在 DB 沒記錄的 revision，**不自動修**）
+     - `split-known-revision`（Cloud Run 跑在 DB 知道的另一個 deployment 上，**自動修**）
+     - 故意把決策邏輯抽成純函式：bug 都長在這裡，不該被 mock pg + GCP REST 擋住測試
+   - **`detectAndReconcilePublishSplit(project)`** —— IO orchestrator，薄薄一層：read state → analyze → dispatch（log + publishDeployment）
+   - **`reconcileStuckProjects()`** 每輪除了原本的 stuck-state walk，新增掃描所有 `live` projects 跑 split detection；stats 加 `splitsDetected` / `splitsReconciled`
+
+C. **修復策略**：
+   - 「Cloud Run 跑 known DB revision」→ Auto-fix。寫 `[CRITICAL] publish_split_detected` log + 呼叫 `publishDeployment(project.id, cloudRunDeploymentId)` 把 DB 對齊到 Cloud Run 真實狀態
+   - 「Cloud Run 跑 unknown revision」→ **不修**。寫 `[CRITICAL] publish_split_unknown_revision` log，等 operator 處理。最常見原因：有人手動 `gcloud run services update-traffic`、或 deployment row 被刪除但 traffic 還黏在那 revision
+   - **Why Cloud Run = truth**：使用者實際打的就是 Cloud Run 在 serve 的那個 revision；DB 只是描述我們以為的狀態。兩邊不一致時，該追上的是 DB（除非 Cloud Run 在我們完全沒記錄的 revision 上，那時亂寫 DB 會更糟）
+   - **Mid-canary safety**：canary rollout 進行中 Cloud Run 會回 split traffic，`getServiceLiveTraffic` 回 null，`analyzePublishSplit` 視為 `skipped`。**永遠不在 rollout 中自動修**，否則會 clobber 掉 canary
+
+D. **`apps/api/src/test-publish-split.ts`（新檔，14 tests）** —— 純函式測試 `analyzePublishSplit`，全 SplitVerdict 路徑覆蓋：
+   - **6 skip cases**：no GCP project / no deployments / no published row / 缺 cloudRunService / 缺 revisionName / liveRevision=null（Cloud Run unreachable 或 mid-canary）
+   - **2 healthy**：matches / matches with multiple unpublished siblings
+   - **2 split-known-revision**：「v3 published 失敗」（round 9 主場景）+「operator 手動 rollback 到 v2」
+   - **1 split-unknown-revision**：DB 完全不認識的 revision
+   - **3 edge cases**：env GCP_PROJECT fallback、多個 is_published=true（不該發生但要 graceful）、空 config 不 crash
+
+**Test 通過率（累計）：165 unit pass / 0 fail**：
+- 第七段 120 + 第八段 26 + 第九段 5 + 第十段：**14（publish-split）** = 165
+- 跑了 7 個 test 檔的 cross-check 全綠：safe-number, stage-events, auth-coverage, scan-report-schemas, scanner-safe-parse, transaction, publish-split = 90
+
+**驗證**：`npx tsc --noEmit` clean。所有跑得到的 unit test 全綠。
+
+**為什麼不寫 ADR**：「服務狀態用 reconciler 對齊到單一真相源」是 distributed-system industry standard，不是架構分岔。註解 + log message 講清楚 Cloud Run = truth 的理由就夠。SESSION_HANDOFF 記錄即可。
+
+**已知妥協**：
+- Reconciler 每 2 分鐘才掃一次，所以 split state 最多會存活 2 分鐘才被自動修。Round 9 的 fatal log 仍是第一道防線；Round 10 是 fallback
+- 純物理 split（API process 在 publishRevision 跟 publishDeployment 之間 crash）依然會留下 `[CRITICAL]` log 來不及噴出 stdout 的可能性。但下一輪 reconciler 會接手；recovery time bounded by RECONCILE_INTERVAL_MS
+- `analyzePublishSplit` 在「DB 有多個 is_published=true row」這種異常狀態下用 `find()` 拿第一個——這狀態理論上不該發生（round 9 transaction 確保了），但若真的發生（pre-round-9 deploy 留下的腐爛狀態），verdict 仍 sane 不 crash
+
+**使用者下一步**：
+1. Review 第十段 1 個 commit（pr/sync-all：`7b73c0e` reconciler split detection + auto-fix + 14 tests）
+2. Production deploy 後 grep `publish_split_detected` 跟 `publish_split_unknown_revision`：
+   - 前者代表 round-9 partial-publish 真的有發生而被 round-10 救回來——表示 round-9 + round-10 雙層防護啟用了
+   - 後者代表有人手動 gcloud 改 traffic 或 row 被刪——operator 該介入
+3. SubmitModal navigate UX 決定還在等
+4. （第八段觀察項仍有效）`[scan-report:llm]` warn log
+5. （第九段觀察項仍有效）`event: 'publish_db_split'` fatal log
+
+---
+
 **2026-04-26（autonomous overnight 第九段）—— publishDeployment 原子性 + Cloud-Run/DB split detection**
 
 第八段 scan pipeline 收尾後，spawn architect agent 掃下一個高風險沉默失敗：versioning publish 路徑。回報是 production-shipped 的雙層問題：
