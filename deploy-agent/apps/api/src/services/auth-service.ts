@@ -269,6 +269,28 @@ export async function logAuth(entry: {
   }
 }
 
+/**
+ * Delete audit log rows older than `retentionDays`.
+ *
+ * Why: every login / API call / permission_denied / api_key_used appends one
+ * row. Without retention this table grows forever — at moderate traffic it
+ * hits 100MB/month, and the listAuditLog query gets slower with every row.
+ *
+ * Default 90 days is enough for security forensics (typical breach-detection
+ * window is 30-60d) without storing years of routine "user x logged in" noise.
+ *
+ * Returns deleted row count for observability.
+ */
+export async function cleanupAuditLog(retentionDays = 90): Promise<number> {
+  // Sanity-clamp: < 7 days is dangerous (no forensics), > 10 years is silly.
+  const days = Math.max(7, Math.min(retentionDays, 3650));
+  const result = await query(
+    `DELETE FROM auth_audit_log WHERE created_at < NOW() - ($1 || ' days')::interval`,
+    [String(days)],
+  );
+  return result.rowCount ?? 0;
+}
+
 export async function listAuditLog(limit = 100): Promise<unknown[]> {
   const result = await query(
     `SELECT al.id, al.user_id, u.email, al.action, al.resource,

@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyBaseLogger } from 'fastify';
 import { registerAuthCoverageCheck } from './middleware/auth.js';
 
 let passed = 0;
@@ -61,7 +61,7 @@ function buildAppWithCapture(): { app: FastifyInstance; logs: CapturedLog[] } {
     silent: () => {},
     child: () => captureLogger,
   };
-  const app = Fastify({ loggerInstance: captureLogger as never });
+  const app = Fastify({ loggerInstance: captureLogger as unknown as FastifyBaseLogger });
   return { app, logs };
 }
 

@@ -17,6 +17,7 @@ import { authRoutes } from './routes/auth';
 import { registerAuthHook, registerAuthCoverageCheck } from './middleware/auth';
 import { ensureAdmin } from './services/auth-service';
 import { startReconciler } from './services/reconciler';
+import { startAuthCleanup } from './services/auth-cleanup';
 import { runMigrations } from './db/migrate';
 import { safePositiveInt } from './utils/safe-number';
 
@@ -150,6 +151,10 @@ try {
   // Start the pipeline reconciler (recovers projects stuck in intermediate
   // states after a container restart). Non-blocking.
   startReconciler();
+  // Periodic auth-table cleanup (expired sessions + old audit log rows).
+  // Without this, both tables grow unbounded — sessions because the rows
+  // outlive the cookie; audit log because every request adds a row.
+  startAuthCleanup();
 } catch (err) {
   app.log.fatal(err);
   process.exit(1);
