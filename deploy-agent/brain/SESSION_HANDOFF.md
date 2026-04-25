@@ -4,6 +4,59 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第八段）—— scan pipeline 三個沉默漏洞（scanner JSON.parse + orchestrator type lying + DNS cleanup 失聲）**
+
+第七段做完 auth lifecycle 之後，spawn 兩個 explore agent 並行掃 codebase 殘存風險：一個審 orchestrator type cast、一個審 fire-and-forget pattern。回來三個都是**已 ship 上 production 的**沉默問題：
+
+1. **`scanner.ts` 兩處 naked JSON.parse**（line 27 semgrep、line 72 trivy）。Subprocess stdout 假設一定是合法 JSON，但實際上可能是：被 maxBuffer 截斷的半行 JSON、Go runtime panic dump（OOM）、binary core blob、lib 把 stderr 噴到 stdout。任何一種都會讓 uncaught `SyntaxError` 冒出來 → unhandledRejection → pod restart → 該 project 卡在 `scanning` 直到 reconciler 5min 後 timeout。
+2. **`orchestrator.ts:345` 的 `as unknown as ScanReport['findings']` 騙 type system**。Cast 隱藏三種 drift：severity 大小寫漂移（'WARNING' 直接漏進 UI）、LLM output 結構不穩產生缺欄位的 finding、schema migration 後舊 DB row 形狀不對。Cast 過了 type check，UI 渲染破洞但無 log。
+3. **`dns-manager.ts:241` 的 `.catch(() => {})`** 把 GCP domain-mapping DELETE 失敗完全吞掉。慢性 leak：每次 retry 留下一個 broken mapping，最終耗盡 GCP project quota 或讓 DNS 指向 stale Cloud Run service。
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/scanner.ts`** —— 新增 `safeParseJson(stdout, tool)` helper（exported 供測試）：
+   ```typescript
+   try { return JSON.parse(stdout); }
+   catch (err) {
+     console.error(`[${tool}] JSON.parse failed (${errMsg}); preview: ${preview}`);
+     return null;  // caller 退回 empty findings，scan 繼續
+   }
+   ```
+   兩處 `JSON.parse(stdout)` 改 `safeParseJson(...)`；error 路徑的 catch 區塊也改用同一個 helper。stdout preview 跟 err message 都做 whitespace collapse 方便 stackdriver / dashboard grep。
+
+B. **`apps/api/src/schemas/scan-report.ts`（新檔）** —— zod schemas + `parseFindings(raw, context)` / `parseAutoFixes(raw, context)` helper。Per-item `safeParse`、drop-and-warn（不 throw），回傳只含有效 entries 的 array。Schema 比照 `@deploy-agent/shared` types：
+   - `severity`: literal union `'critical'|'high'|'medium'|'low'|'info'`（拒絕 'WARNING' 等漂移值）
+   - `tool`: literal union `'semgrep'|'trivy'|'llm'`
+   - `lineStart/lineEnd`: `z.number().finite()`（NaN 會炸 UI math）
+   - `AutoFixRecord.explanation`: required；其餘 optional
+
+C. **`apps/api/src/services/orchestrator.ts:rowToScanReport`** —— 完全砍掉 `as any[]` 跟 `as unknown as ScanReport['findings']` 兩個 cast，改用 `parseFindings(...)` / `parseAutoFixes(...)`。註解寫清楚為什麼這樣換。
+
+D. **`apps/api/src/services/dns-manager.ts:241`** —— `.catch(() => {})` 改 `.catch(err => console.warn(...))`。Parent flow 行為不變（不 fail rollback），只是不再失聲。
+
+E. **兩個新 test 檔**：
+   - `test-scanner-safe-parse.ts`（11 tests）—— valid JSON、garbage、empty stdout、truncated maxBuffer overflow、OOM dump、binary noise、log preview 格式、tool label、JSON null edge case。Test helper 把 FAIL 寫到 stderr 而非 console.error 因為 console.error 被 mock 起來蒐集 safeParseJson log
+   - `test-scan-report-schemas.ts`（15 tests）—— valid pass-through、missing severity、drift detection（'WARNING' 拒收）、bogus tool、NaN lineStart、optional `fix` field、mixed valid+invalid array、AutoFixRecord required-field、context label 出現在 warn 訊息
+
+**Test 通過率（累計）：146 unit pass / 0 fail**：
+- 第七段 120 + 第八段：**11（scanner-safe-parse）+ 15（scan-report-schemas）** = 146
+
+**驗證**：`npm run build` clean。所有 unit test 跑過綠燈。
+
+**為什麼沒寫 ADR**：「外部工具 output 用 zod 驗證 + try/catch 包 JSON.parse」是 industry-standard parsing-untrusted-input pattern，不是架構分岔。SESSION_HANDOFF 記錄即可。
+
+**已知妥協**：
+- `scanner.ts` 的 `as Record<string, unknown>` cast 還在 trivy 迴圈裡——做完整 zod 驗證需要重寫整個 mapper，scope 比這次 round 大；先做 JSON.parse hardening 抓住主要 production 風險
+- `dns-manager.ts:241` 是已知最後一個明顯失聲的 catch；其他 fire-and-forget patterns 經 audit 全部評為 SAFE（Discord 通知、stage event observability log，state machine 都已 sync 推進）
+- LLM analysis 的 schema validation 現在會把 LLM 產的 free-form finding 全部丟掉如果結構不對；如果之後想容忍 LLM 結構漂移可以加 `.passthrough()` 或寫 transformer——目前 strict 比較安全
+
+**使用者下一步**：
+1. Review 第八段 1 個 commit（pr/sync-all：`a33bb31` scan-pipeline 三道修補 + tests）
+2. Production deploy 後查 `[scan-report:llm]` warn log——若有 drop 就知道 LLM output schema 漂了，可以決定是調 prompt 還是放寬 schema
+3. SubmitModal navigate UX 決定還在等
+
+---
+
 **2026-04-26（autonomous overnight 第七段）—— auth tables 生命週期管理（expired sessions 清理 + audit log 留存政策）**
 
 第六段做完 NaN 防禦之後，把 auth subsystem 完整重審一輪——這次掃 lifecycle hygiene，不是 coercion。Spawn 一個 Explore agent 跑 auth-service 全表 audit，回來兩個 production-shipped 的 silent issue：
