@@ -9,6 +9,7 @@ import {
   type Review,
   type Deployment,
 } from '@deploy-agent/shared';
+import { parseFindings, parseAutoFixes } from '../schemas/scan-report';
 
 export async function createProject(input: {
   name: string;
@@ -305,45 +306,51 @@ function rowToProject(row: Record<string, unknown>): Project {
 }
 
 function rowToScanReport(row: Record<string, unknown>): ScanReport {
-  // Parse findings from DB JSON columns
-  const semgrepFindings = parseJsonField(row.semgrep_findings) as Array<Record<string, unknown>> ?? [];
-  const trivyFindings = parseJsonField(row.trivy_findings) as Array<Record<string, unknown>> ?? [];
+  // Parse findings from DB JSON columns. Each column came from scanner.ts (semgrep/
+  // trivy normalized output) or LLM analysis (unpredictable shape). We previously
+  // cast the merged result with `as unknown as ScanReport['findings']` which hid
+  // schema-drift bugs (severity enum drift, missing fields, malformed LLM output).
+  // Now: zod-validate per item via parseFindings/parseAutoFixes, drop-and-warn on
+  // malformed entries instead of letting them crash the UI downstream.
+  const semgrepRaw = (parseJsonField(row.semgrep_findings) as unknown[]) ?? [];
+  const trivyRaw = (parseJsonField(row.trivy_findings) as unknown[]) ?? [];
   const llmAnalysis = parseJsonField(row.llm_analysis) as {
-    findings?: Array<Record<string, unknown>>;
-    autoFixes?: Array<Record<string, unknown>>;
+    findings?: unknown[];
+    autoFixes?: unknown[];
     summary?: string;
   } | null;
   // auto_fixes column stores apply results: {applied, diff, explanation, verificationPassed}
   const applyResults = (parseJsonField(row.auto_fixes) as Array<Record<string, unknown>>) ?? [];
   // LLM auto-fix suggestions: {findingId, filePath, originalCode, fixedCode, explanation}
-  const llmAutoFixes = llmAnalysis?.autoFixes ?? [];
+  const llmAutoFixes = (llmAnalysis?.autoFixes ?? []) as Array<Record<string, unknown>>;
 
-  // Merge all findings into one list
-  const allFindings = [
-    ...semgrepFindings,
-    ...trivyFindings,
-    ...(llmAnalysis?.findings ?? []),
+  // Validate and merge findings. Each pass drops malformed entries with a warn
+  // log (per item, not summary — easier to grep when something breaks).
+  const validatedFindings = [
+    ...parseFindings(semgrepRaw, 'semgrep'),
+    ...parseFindings(trivyRaw, 'trivy'),
+    ...parseFindings(llmAnalysis?.findings ?? [], 'llm'),
   ];
 
-  // Merge auto-fix data: combine LLM suggestions with apply results
-  // Each LLM suggestion may have a corresponding apply result
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mergedAutoFixes: any[] = llmAutoFixes.map((suggestion, i) => ({
+  // Merge auto-fix data: combine LLM suggestions with apply results.
+  // Each LLM suggestion may have a corresponding apply result at the same index.
+  const rawMerged: Array<Record<string, unknown>> = llmAutoFixes.map((suggestion, i) => ({
     ...suggestion,
     applied: applyResults[i]?.applied ?? false,
     diff: applyResults[i]?.diff ?? '',
   }));
   // If there are more apply results than suggestions (shouldn't happen, but safe)
   for (let i = llmAutoFixes.length; i < applyResults.length; i++) {
-    mergedAutoFixes.push(applyResults[i]);
+    rawMerged.push(applyResults[i]);
   }
+  const validatedAutoFixes = parseAutoFixes(rawMerged, 'merged');
 
   return {
     id: row.id as string,
     projectId: row.project_id as string,
     version: row.version as number,
-    findings: allFindings as unknown as ScanReport['findings'],
-    autoFixes: mergedAutoFixes as unknown as ScanReport['autoFixes'],
+    findings: validatedFindings,
+    autoFixes: validatedAutoFixes,
     threatSummary: (row.threat_summary as string) ?? '',
     costEstimate: row.cost_estimate as ScanReport['costEstimate'],
     resourcePlan: (parseJsonField(row.resource_plan) as ScanReport['resourcePlan']) ?? null,

@@ -236,9 +236,18 @@ async function createDomainMapping(
         const conditions = mapping.status?.conditions ?? [];
         const denied = conditions.find(c => c.reason === 'PermissionDenied');
         if (denied) {
-          // Clean up the broken mapping
+          // Clean up the broken mapping. We don't fail the parent flow if this
+          // DELETE fails — the caller already returns success:false with a
+          // user-actionable error — but we DO want to log it. A silent .catch(() => {})
+          // here would hide a slow leak: every retry leaves a stale broken
+          // mapping behind, eventually exhausting the GCP project's domain-mapping
+          // quota or — worse — leaving DNS pointing at a stale Cloud Run service.
           const deleteUrl = `https://${gcpRegion}-run.googleapis.com/apis/domains.cloudrun.com/v1/namespaces/${gcpProject}/domainmappings/${domain}`;
-          await gcpFetch(deleteUrl, { method: 'DELETE' }).catch(() => {});
+          await gcpFetch(deleteUrl, { method: 'DELETE' }).catch(err => {
+            console.warn(
+              `[dns-manager] failed to clean up broken domain mapping for ${domain}: ${(err as Error).message}`,
+            );
+          });
           return {
             success: false,
             error: `Domain ownership not verified: ${domain}. Verify ownership of "${domain.split('.').slice(-2).join('.')}" in Google Search Console (https://search.google.com/search-console), then re-deploy.`,
