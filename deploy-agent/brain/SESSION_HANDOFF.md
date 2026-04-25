@@ -43,7 +43,12 @@ project_quota_exceeded, unknown — 每個都帶 retryable flag + recoveryHint i
 **驗證**：`npx tsc --noEmit` 全部 clean（api / web / shared）。Bot 有 pre-existing TS error
 （sendTyping on PartialGroupDMChannel）跟此次無關。
 
-**狀態**：Local commit done, **prod deploy + remote push 待使用者授權**（沒有未經授權地 deploy）。
+**狀態**：✅ 已 push + prod deploy（使用者授權「都做」）。
+- Push：`pr/sync-all` → `wave-deploy-agent/main` (`0e2fd85..cd03341`，2 commits)
+- Build：`3ec0da84-7b11-4fa4-b606-452a3f264c1b` SUCCESS（9 分 6 秒，SHORT_SHA=`cd03341`）
+- Cloud Run revisions：api `00130-kw4` / web `00093-kpb` / bot `00041-28d`（traffic 100% 新 rev）
+- Smoke：`/health` 200 / `/api/projects` 200 / web home 200
+- Envelope live：`POST /api/upload/init` 空 body 回 `{ok:false, stage:"init", code:"init_session_failed", retryable:false, error:"fileName is required"}`（新 schema + legacy 欄位都在）
 
 接續前一天 polish batch 2 後使用者回 `推 prod 推 prod`，先推 batch 2（build `9870625d` SUCCESS，
 revision 00088-76x → 00089-cvc，CSS hash 維持 `e925b539b76f20bc.css`），然後走 backlog：
