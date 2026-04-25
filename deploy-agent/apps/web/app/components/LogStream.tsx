@@ -306,8 +306,10 @@ function renderPayload(e: StreamEvent): string {
     return `${stage}:${status}`;
   }
   if (e.type === 'log') {
-    // New live-chunk shape (2026-04-26): { build_id, bytes_offset, text, lag_ms, gcs_updated }
-    // Legacy shape: { line }
+    // Live build-log chunk shape (since 2026-04-26):
+    //   { build_id, bytes_offset, text, lag_ms, gcs_updated }
+    // We also accept a `line` field defensively in case other code paths emit
+    // log events with that shape; current backend only emits `text`.
     const text =
       (e.payload.text as string | undefined) ??
       (e.payload.line as string | undefined);

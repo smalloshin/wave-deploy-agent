@@ -235,15 +235,16 @@ export async function deployRoutes(app: FastifyInstance) {
     // Don't return anything — connection stays open until the client disconnects.
   });
 
-  // Post-mortem build-log fetch — pulls the whole Cloud Build log from GCS.
+  // Full build-log dump — pulls the whole Cloud Build log from GCS.
   //
-  // Live streaming is now handled by the `/stream` endpoint (see above) once the
-  // build starts. This endpoint stays useful for two recovery cases:
+  // The /stream endpoint above tails the same log live (chunk by chunk via
+  // `pollBuildLog`), so this dump endpoint is for the cases live tail can't
+  // cover:
   //   1. Client joined after the ring buffer evicted early chunks (N=2000 cap)
   //   2. User wants the complete log dumped to a `<pre>` for copy/grep
   //
-  // Find build_id from the build:succeeded or build:failed stage event metadata,
-  // then read `gs://${gcpProject}_cloudbuild/log-{build_id}.txt`.
+  // Build_id is read from the build:succeeded or build:failed stage event
+  // metadata, then we fetch `gs://${gcpProject}_cloudbuild/log-{build_id}.txt`.
   app.get<{ Params: { id: string } }>('/api/deploys/:id/build-log', async (request, reply) => {
     const deploy = await query<{ project_id: string }>(
       'SELECT project_id FROM deployments WHERE id = $1',
