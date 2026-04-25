@@ -308,6 +308,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [domainConflict, setDomainConflict] = useState<{ fqdn: string; existingRoute: string } | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
 
   const t = useTranslations('projects.submitModal');
   const td = useTranslations('projects.domainConflict');
@@ -341,26 +342,40 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
 
         const initRes = await fetch(`${API}/api/upload/init`, { credentials: 'include', method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fileName: file.name, contentType: file.type || 'application/octet-stream' }),
+          body: JSON.stringify({
+            fileName: file.name,
+            fileSize: file.size,
+            contentType: file.type || 'application/octet-stream',
+          }),
         });
         if (!initRes.ok) {
           const data = await initRes.json();
           throw new Error(data.error ?? `Init failed: HTTP ${initRes.status}`);
         }
-        const { uploadUrl, accessToken, gcsUri, contentType } = await initRes.json();
+        const { uploadUrl, gcsUri, contentType } = await initRes.json();
 
-        const uploadRes = await fetch(uploadUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': contentType || file.type || 'application/octet-stream',
-            'Authorization': `Bearer ${accessToken}`,
-          },
-          body: file,
+        // PUT directly to GCS resumable session URI. No Authorization header
+        // (auth embedded in URI) → no CORS preflight, no token expiry mid-upload.
+        // Use XHR for upload progress events (fetch doesn't expose them).
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('PUT', uploadUrl);
+          xhr.setRequestHeader('Content-Type', contentType || file.type || 'application/octet-stream');
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const pct = Math.round((e.loaded / e.total) * 100);
+              setUploadProgress(pct);
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) resolve();
+            else reject(new Error(t('gcsUploadFailed', { status: String(xhr.status), detail: xhr.responseText.slice(0, 200) })));
+          };
+          xhr.onerror = () => reject(new Error(t('gcsUploadFailed', { status: 'network', detail: 'connection failed' })));
+          xhr.ontimeout = () => reject(new Error(t('gcsUploadFailed', { status: 'timeout', detail: 'upload timed out' })));
+          xhr.send(file);
         });
-        if (!uploadRes.ok) {
-          const errText = await uploadRes.text().catch(() => '');
-          throw new Error(t('gcsUploadFailed', { status: String(uploadRes.status), detail: errText.slice(0, 200) }));
-        }
+        setUploadProgress(null);
 
         const submitRes = await fetch(`${API}/api/projects/submit-gcs`, { credentials: 'include', method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -424,6 +439,7 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
     } catch (err) {
       setError((err as Error).message);
       setSubmitting(false);
+      setUploadProgress(null);
     }
   };
 
@@ -666,6 +682,30 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
             fontSize: 'var(--fs-sm)',
           }}>
             {error}
+          </div>
+        )}
+
+        {uploadProgress !== null && (
+          <div style={{
+            padding: 'var(--sp-3)',
+            marginBottom: 'var(--sp-3)',
+            background: 'var(--info-bg)',
+            border: '1px solid var(--info)',
+            borderRadius: 'var(--r-md)',
+            fontSize: 'var(--fs-sm)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, color: 'var(--info)' }}>
+              <span>上傳到 GCS</span>
+              <span style={{ fontVariantNumeric: 'tabular-nums', fontFamily: 'var(--font-mono, monospace)' }}>{uploadProgress}%</span>
+            </div>
+            <div style={{ height: 6, background: 'var(--ink-100)', borderRadius: 'var(--r-pill)', overflow: 'hidden' }}>
+              <div style={{
+                width: `${uploadProgress}%`,
+                height: '100%',
+                background: 'var(--info)',
+                transition: 'width 200ms ease',
+              }} />
+            </div>
           </div>
         )}
 

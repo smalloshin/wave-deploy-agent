@@ -221,42 +221,60 @@ export async function projectRoutes(app: FastifyInstance) {
     return reply.status(201).send({ project: { ...project, status: 'scanning' }, scanReport });
   });
 
-  // ── Get a GCS signed upload URL (for large files that exceed Cloud Run's 32MB limit) ──
-  // Uses V4 signed URL via GCS JSON API — browser PUTs directly to GCS XML API
+  // ── Initiate a GCS resumable upload session (for files that exceed Cloud Run's 32MB limit) ──
+  // Server-side initiates the session via GCS JSON API, returns the signed session URI.
+  // Browser PUTs the file body directly to the session URI — no Authorization header
+  // needed (auth is embedded in URI), so no CORS preflight, no token expiry mid-upload.
+  // Resumable sessions are valid for ~7 days and support chunked PUT with Content-Range.
   app.post('/api/upload/init', async (request, reply) => {
-    const { fileName, contentType } = request.body as { fileName: string; contentType?: string };
+    const { fileName, contentType, fileSize } = request.body as {
+      fileName: string;
+      contentType?: string;
+      fileSize?: number;
+    };
     if (!fileName) return reply.status(400).send({ error: 'fileName is required' });
 
     const objectName = `uploads/${Date.now()}-${fileName}`;
     const mimeType = contentType || 'application/octet-stream';
 
-    // Generate a V4 signed URL for direct browser upload (15 min expiry)
-    const signUrl = `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o/${encodeURIComponent(objectName)}` +
-      `?X-Goog-SignedHeaders=content-type%3Bhost` +
-      `&uploadType=none`;
-
-    // Use the JSON API to generate a signed URL
-    const genSignedUrlEndpoint = `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o/${encodeURIComponent(objectName)}?uploadType=media`;
-
-    // Alternative approach: upload via API relay endpoint
-    // Since GCS signed URLs from service accounts on Cloud Run are complex,
-    // we'll use a simpler approach: the API stores the upload URL and acts as relay
-    // But the relay still has 32MB limit...
-
-    // Best approach: use GCS JSON API "createUploadUri" which returns a session URI
-    // that works without additional auth headers (auth is embedded in the URI)
-    const uploadUri = `https://storage.googleapis.com/upload/storage/v1/b/${GCS_BUCKET}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
-
-    // Get an access token the browser can use temporarily
+    // Initiate resumable upload session
     const { getAccessToken } = await import('../services/gcp-auth');
     const token = await getAccessToken();
+    const initUrl = `https://storage.googleapis.com/upload/storage/v1/b/${GCS_BUCKET}/o?uploadType=resumable&name=${encodeURIComponent(objectName)}`;
+
+    const initHeaders: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': mimeType,
+    };
+    if (fileSize && fileSize > 0) {
+      initHeaders['X-Upload-Content-Length'] = String(fileSize);
+    }
+
+    const initRes = await fetch(initUrl, {
+      method: 'POST',
+      headers: initHeaders,
+      body: JSON.stringify({ name: objectName, contentType: mimeType }),
+    });
+
+    if (!initRes.ok) {
+      const errText = await initRes.text().catch(() => '');
+      return reply.status(500).send({
+        error: `Failed to initiate resumable session: HTTP ${initRes.status} ${errText.slice(0, 300)}`,
+      });
+    }
+
+    const sessionUri = initRes.headers.get('location');
+    if (!sessionUri) {
+      return reply.status(500).send({ error: 'GCS did not return a session Location header' });
+    }
 
     return {
-      uploadUrl: uploadUri,
-      accessToken: token,  // Short-lived token for browser to use
+      uploadUrl: sessionUri,             // browser PUTs file body here, no auth header needed
       gcsUri: `gs://${GCS_BUCKET}/${objectName}`,
       objectName,
       contentType: mimeType,
+      // accessToken intentionally omitted — session URI embeds auth
     };
   });
 

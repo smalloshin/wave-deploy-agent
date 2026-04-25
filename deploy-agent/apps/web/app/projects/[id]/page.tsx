@@ -155,6 +155,7 @@ export default function ProjectDetailPage() {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [upgradeFile, setUpgradeFile] = useState<File | null>(null);
   const [upgrading, setUpgrading] = useState(false);
+  const [upgradeProgress, setUpgradeProgress] = useState<number | null>(null);
   const [upgradeDragOver, setUpgradeDragOver] = useState(false);
   // GitHub webhook state
   const [webhookConfig, setWebhookConfig] = useState<{
@@ -308,15 +309,25 @@ export default function ProjectDetailPage() {
         body: JSON.stringify({ fileName: upgradeFile.name, fileSize: upgradeFile.size, contentType: upgradeFile.type || 'application/zip' }),
       });
       if (!initRes.ok) throw new Error(t('upgradeModal.uploadInitFailed'));
-      const { uploadUrl, gcsUri, token } = await initRes.json();
+      const { uploadUrl, gcsUri, contentType } = await initRes.json();
 
-      // Step 2: Upload to GCS
-      const uploadRes = await fetch(uploadUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': upgradeFile.type || 'application/zip', Authorization: `Bearer ${token}` },
-        body: upgradeFile,
+      // Step 2: PUT to GCS resumable session URI (no auth header — auth embedded in URI)
+      // XHR for progress events.
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadUrl);
+        xhr.setRequestHeader('Content-Type', contentType || upgradeFile.type || 'application/zip');
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) setUpgradeProgress(Math.round((e.loaded / e.total) * 100));
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error(t('upgradeModal.gcsUploadFailed')));
+        };
+        xhr.onerror = () => reject(new Error(t('upgradeModal.gcsUploadFailed')));
+        xhr.send(upgradeFile);
       });
-      if (!uploadRes.ok) throw new Error(t('upgradeModal.gcsUploadFailed'));
+      setUpgradeProgress(null);
 
       // Step 3: Trigger new version
       const newVerRes = await fetch(`${API}/api/projects/${id}/new-version`, { credentials: 'include', method: 'POST',
@@ -331,6 +342,7 @@ export default function ProjectDetailPage() {
       loadVersions();
     } catch (err) {
       alert((err as Error).message);
+      setUpgradeProgress(null);
     }
     setUpgrading(false);
   };
@@ -1072,6 +1084,17 @@ export default function ProjectDetailPage() {
                 </div>
               )}
             </div>
+            {upgradeProgress !== null && (
+              <div style={{ marginTop: 12, padding: 'var(--sp-3)', background: 'var(--info-bg)', border: '1px solid var(--info)', borderRadius: 'var(--r-md)', fontSize: 'var(--fs-xs)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, color: 'var(--info)' }}>
+                  <span>上傳到 GCS</span>
+                  <span style={{ fontVariantNumeric: 'tabular-nums', fontFamily: 'var(--font-mono, monospace)' }}>{upgradeProgress}%</span>
+                </div>
+                <div style={{ height: 6, background: 'var(--ink-100)', borderRadius: 'var(--r-pill)', overflow: 'hidden' }}>
+                  <div style={{ width: `${upgradeProgress}%`, height: '100%', background: 'var(--info)', transition: 'width 200ms ease' }} />
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
               <button onClick={() => { setShowUpgradeModal(false); setUpgradeFile(null); }}
                 style={{ fontSize: 'var(--fs-xs)', padding: '8px 16px', borderRadius: 'var(--r-sm)', background: 'var(--bg-primary)', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-primary)' }}>
