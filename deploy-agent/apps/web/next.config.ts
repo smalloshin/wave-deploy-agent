@@ -5,6 +5,7 @@ const withNextIntl = createNextIntlPlugin('./i18n/request.ts');
 
 const nextConfig: NextConfig = {
   output: 'standalone',
+  transpilePackages: ['@deploy-agent/shared'],
 };
 
 export default withNextIntl(nextConfig);

@@ -1,7 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import type { UploadErrorEnvelope, UploadFailure } from '@deploy-agent/shared';
+import { mapEnvelope, mapClientError, fetchDiagnostic } from '@/lib/upload-error-mapper';
+import { saveDraft, loadDraft, clearDraft, gcExpiredDrafts, makeDebouncedSave } from '@/lib/upload-draft-storage';
+import { UploadErrorBlock } from '@/app/components/UploadErrorBlock';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -309,10 +313,38 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
   const [dragOver, setDragOver] = useState(false);
   const [domainConflict, setDomainConflict] = useState<{ fqdn: string; existingRoute: string } | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [failure, setFailure] = useState<UploadFailure | null>(null);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [draftRestored, setDraftRestored] = useState(false);
+  const debouncedSaveRef = useRef(makeDebouncedSave(500));
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
 
   const t = useTranslations('projects.submitModal');
   const td = useTranslations('projects.domainConflict');
   const tc = useTranslations('common');
+  const tErr = useTranslations('projectDetail.uploadErrors');
+
+  // 載入草稿（只跑一次）
+  useEffect(() => {
+    gcExpiredDrafts();
+    const draft = loadDraft('new');
+    if (draft) {
+      if (draft.formData.name) setName(draft.formData.name);
+      if (draft.formData.domain) setCustomDomain(draft.formData.domain);
+      if (draft.formData.githubUrl) setGitUrl(draft.formData.githubUrl);
+      if (draft.formData.envVars) setEnvVarsText(draft.formData.envVars);
+      setDraftRestored(true);
+    }
+  }, []);
+
+  // 表單變動時 debounced 存草稿
+  useEffect(() => {
+    debouncedSaveRef.current(
+      'new',
+      { name, domain: customDomain, githubUrl: gitUrl, envVars: envVarsText },
+      file ? { name: file.name, size: file.size, lastModified: file.lastModified } : undefined,
+    );
+  }, [name, customDomain, gitUrl, envVarsText, file]);
 
   const handleFile = (f: File) => {
     const validTypes = ['.zip', '.tar.gz', '.tgz', '.tar'];
@@ -331,78 +363,178 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
 
   const GCS_UPLOAD_THRESHOLD = 30 * 1024 * 1024;
 
+  const handleEnvelopeFailure = async (envelope: UploadErrorEnvelope) => {
+    let mapped = mapEnvelope(envelope);
+    setFailure(mapped);
+    if (envelope.code === 'unknown') {
+      setDiagnosing(true);
+      try {
+        mapped = await fetchDiagnostic(envelope, API);
+        setFailure(mapped);
+      } finally {
+        setDiagnosing(false);
+      }
+    }
+  };
+
   const doSubmit = async (forceDomain: boolean) => {
     setSubmitting(true);
     setError(null);
     setDomainConflict(null);
+    setFailure(null);
 
     try {
       if (sourceType === 'upload' && file && file.size > GCS_UPLOAD_THRESHOLD) {
-        setError(null);
-
-        const initRes = await fetch(`${API}/api/upload/init`, { credentials: 'include', method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fileName: file.name,
-            fileSize: file.size,
-            contentType: file.type || 'application/octet-stream',
-          }),
-        });
-        if (!initRes.ok) {
-          const data = await initRes.json();
-          throw new Error(data.error ?? `Init failed: HTTP ${initRes.status}`);
+        // Stage: init
+        let initData: { uploadUrl: string; gcsUri: string; contentType?: string };
+        try {
+          const initRes = await fetch(`${API}/api/upload/init`, {
+            credentials: 'include',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: file.name,
+              fileSize: file.size,
+              contentType: file.type || 'application/octet-stream',
+            }),
+          });
+          if (!initRes.ok) {
+            const data = (await initRes.json()) as Partial<UploadErrorEnvelope> & { error?: string };
+            const env: UploadErrorEnvelope = {
+              ok: false,
+              stage: data.stage ?? 'init',
+              code: data.code ?? 'init_session_failed',
+              message: data.message ?? data.error ?? `Init failed: HTTP ${initRes.status}`,
+              detail: data.detail,
+              retryable: data.retryable ?? true,
+            };
+            await handleEnvelopeFailure(env);
+            setSubmitting(false);
+            setUploadProgress(null);
+            return;
+          }
+          initData = await initRes.json();
+        } catch (err) {
+          await handleEnvelopeFailure(mapClientError(err, { stage: 'init' }).raw);
+          setSubmitting(false);
+          setUploadProgress(null);
+          return;
         }
-        const { uploadUrl, gcsUri, contentType } = await initRes.json();
 
-        // PUT directly to GCS resumable session URI. No Authorization header
-        // (auth embedded in URI) → no CORS preflight, no token expiry mid-upload.
-        // Use XHR for upload progress events (fetch doesn't expose them).
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('PUT', uploadUrl);
-          xhr.setRequestHeader('Content-Type', contentType || file.type || 'application/octet-stream');
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              const pct = Math.round((e.loaded / e.total) * 100);
-              setUploadProgress(pct);
-            }
-          };
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) resolve();
-            else reject(new Error(t('gcsUploadFailed', { status: String(xhr.status), detail: xhr.responseText.slice(0, 200) })));
-          };
-          xhr.onerror = () => reject(new Error(t('gcsUploadFailed', { status: 'network', detail: 'connection failed' })));
-          xhr.ontimeout = () => reject(new Error(t('gcsUploadFailed', { status: 'timeout', detail: 'upload timed out' })));
-          xhr.send(file);
-        });
+        const { uploadUrl, gcsUri, contentType } = initData;
+
+        // Stage: upload (XHR for progress events)
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhrRef.current = xhr;
+            xhr.open('PUT', uploadUrl);
+            xhr.setRequestHeader('Content-Type', contentType || file.type || 'application/octet-stream');
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable) {
+                const pct = Math.round((e.loaded / e.total) * 100);
+                setUploadProgress(pct);
+              }
+            };
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) resolve();
+              else {
+                const code = xhr.status === 401 || xhr.status === 403 ? 'gcs_auth_failed' : 'submit_failed';
+                const env: UploadErrorEnvelope = {
+                  ok: false,
+                  stage: 'upload',
+                  code,
+                  message: `GCS PUT failed: HTTP ${xhr.status}`,
+                  detail: { gcsStatus: xhr.status, body: xhr.responseText.slice(0, 200) },
+                  retryable: true,
+                };
+                reject(env);
+              }
+            };
+            xhr.onerror = () => {
+              reject({
+                ok: false,
+                stage: 'upload',
+                code: 'network_error',
+                message: 'Network error during GCS upload',
+                retryable: true,
+              } satisfies UploadErrorEnvelope);
+            };
+            xhr.ontimeout = () => {
+              reject({
+                ok: false,
+                stage: 'upload',
+                code: 'gcs_timeout',
+                message: 'Upload timed out',
+                retryable: true,
+              } satisfies UploadErrorEnvelope);
+            };
+            xhr.send(file);
+          });
+        } catch (errOrEnv) {
+          const env =
+            errOrEnv && typeof errOrEnv === 'object' && 'code' in errOrEnv
+              ? (errOrEnv as UploadErrorEnvelope)
+              : mapClientError(errOrEnv, { stage: 'upload' }).raw;
+          await handleEnvelopeFailure(env);
+          setSubmitting(false);
+          setUploadProgress(null);
+          return;
+        } finally {
+          xhrRef.current = null;
+        }
         setUploadProgress(null);
 
-        const submitRes = await fetch(`${API}/api/projects/submit-gcs`, { credentials: 'include', method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: name.trim(),
-            gcsUri,
-            fileName: file.name,
-            customDomain: customDomain.trim(),
-            forceDomain,
-            allowUnauthenticated: allowUnauth,
-            envVars: envVarsText.trim() || undefined,
-          }),
-        });
-        if (!submitRes.ok) {
-          const data = await submitRes.json();
-          if (data.error === 'domain_conflict') {
-            setDomainConflict(data);
+        // Stage: submit
+        try {
+          const submitRes = await fetch(`${API}/api/projects/submit-gcs`, {
+            credentials: 'include',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: name.trim(),
+              gcsUri,
+              fileName: file.name,
+              customDomain: customDomain.trim(),
+              forceDomain,
+              allowUnauthenticated: allowUnauth,
+              envVars: envVarsText.trim() || undefined,
+            }),
+          });
+          if (!submitRes.ok) {
+            const data = (await submitRes.json()) as Partial<UploadErrorEnvelope> & {
+              error?: string;
+              conflict?: { fqdn: string; existingRoute: string };
+            };
+            if (data.code === 'domain_conflict' || data.error === 'domain_conflict') {
+              setDomainConflict(data.conflict ?? null);
+              setSubmitting(false);
+              return;
+            }
+            const env: UploadErrorEnvelope = {
+              ok: false,
+              stage: data.stage ?? 'submit',
+              code: data.code ?? 'submit_failed',
+              message: data.message ?? data.error ?? `HTTP ${submitRes.status}`,
+              detail: data.detail,
+              retryable: data.retryable ?? true,
+            };
+            await handleEnvelopeFailure(env);
             setSubmitting(false);
             return;
           }
-          throw new Error(data.error ?? data.message ?? `HTTP ${submitRes.status}`);
+        } catch (err) {
+          await handleEnvelopeFailure(mapClientError(err, { stage: 'submit' }).raw);
+          setSubmitting(false);
+          return;
         }
 
+        clearDraft('new');
         onSubmitted();
         return;
       }
 
+      // 走舊的 multipart upload route（檔案 < 30MB 或 git）
       const formData = new FormData();
       formData.append('name', name.trim());
       formData.append('sourceType', sourceType);
@@ -421,23 +553,47 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         formData.append('dbDump', dbDumpFile);
       }
 
-      const res = await fetch(`${API}/api/projects/upload`, { credentials: 'include', method: 'POST',
-        body: formData,
-      });
+      let res: Response;
+      try {
+        res = await fetch(`${API}/api/projects/upload`, {
+          credentials: 'include',
+          method: 'POST',
+          body: formData,
+        });
+      } catch (err) {
+        await handleEnvelopeFailure(mapClientError(err, { stage: 'upload' }).raw);
+        setSubmitting(false);
+        return;
+      }
 
       if (!res.ok) {
-        const data = await res.json();
-        if (data.error === 'domain_conflict') {
-          setDomainConflict(data);
+        const data = (await res.json()) as Partial<UploadErrorEnvelope> & {
+          error?: string;
+          conflict?: { fqdn: string; existingRoute: string };
+        };
+        if (data.code === 'domain_conflict' || data.error === 'domain_conflict') {
+          setDomainConflict(data.conflict ?? null);
           setSubmitting(false);
           return;
         }
-        throw new Error(data.error ?? `HTTP ${res.status}`);
+        const env: UploadErrorEnvelope = {
+          ok: false,
+          stage: data.stage ?? 'submit',
+          code: data.code ?? 'submit_failed',
+          message: data.message ?? data.error ?? `HTTP ${res.status}`,
+          detail: data.detail,
+          retryable: data.retryable ?? true,
+        };
+        await handleEnvelopeFailure(env);
+        setSubmitting(false);
+        return;
       }
 
+      clearDraft('new');
       onSubmitted();
     } catch (err) {
-      setError((err as Error).message);
+      // 兜底：把不認識的 err 也走 mapper
+      await handleEnvelopeFailure(mapClientError(err, { stage: 'submit' }).raw);
       setSubmitting(false);
       setUploadProgress(null);
     }
@@ -671,6 +827,47 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
           )}
         </div>
 
+        {draftRestored && !failure && (
+          <div
+            style={{
+              padding: 'var(--sp-2) var(--sp-3)',
+              marginBottom: 'var(--sp-3)',
+              background: 'var(--info-bg)',
+              border: '1px solid var(--info)',
+              borderRadius: 'var(--r-md)',
+              color: 'var(--info)',
+              fontSize: 'var(--fs-xs)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 'var(--sp-2)',
+            }}
+          >
+            <span>{tErr('draftRestored')}</span>
+            <button
+              type="button"
+              onClick={() => {
+                clearDraft('new');
+                setName('');
+                setCustomDomain('');
+                setGitUrl('');
+                setEnvVarsText('');
+                setDraftRestored(false);
+              }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--info)',
+                textDecoration: 'underline',
+                cursor: 'pointer',
+                fontSize: 'var(--fs-xs)',
+              }}
+            >
+              {tErr('draftDiscard')}
+            </button>
+          </div>
+        )}
+
         {error && (
           <div style={{
             padding: 'var(--sp-3)',
@@ -683,6 +880,29 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
           }}>
             {error}
           </div>
+        )}
+
+        {failure && (
+          <UploadErrorBlock
+            failure={failure}
+            context={{
+              projectId: 'new',
+              fileMeta: file ? { name: file.name, size: file.size } : undefined,
+            }}
+            diagnosing={diagnosing}
+            onRetry={() => {
+              setFailure(null);
+              void doSubmit(false);
+            }}
+            onCancel={() => {
+              setFailure(null);
+              setSubmitting(false);
+              if (xhrRef.current) {
+                try { xhrRef.current.abort(); } catch { /* ignore */ }
+                xhrRef.current = null;
+              }
+            }}
+          />
         )}
 
         {uploadProgress !== null && (

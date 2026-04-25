@@ -26,8 +26,34 @@ import { runPipeline } from '../services/pipeline-worker';
 import { deleteService, deleteDomainMapping, deleteContainerImage, updateServiceEnvVars, getServiceEnvVars, listCloudRunRevisions } from '../services/deploy-engine';
 import { deleteCname, setupCustomDomainWithDns, type DnsConfig } from '../services/dns-manager';
 import { stopProjectService, startProjectService } from '../services/service-lifecycle';
+import { analyzeUploadFailure } from '../services/upload-diagnostic';
+import type { UploadErrorEnvelope, UploadFailureCode, UploadStage } from '@deploy-agent/shared';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * 統一格式：所有上傳相關的錯誤都用這個 envelope。
+ * Client 端的 mapEnvelope() 會 normalize 成 UploadFailure 並渲染。
+ *
+ * 同時保留舊的 `error: 'xxx'` 欄位來維持向後相容。
+ */
+function uploadError(
+  stage: UploadStage,
+  code: UploadFailureCode,
+  message: string,
+  opts: { detail?: Record<string, unknown>; retryable?: boolean; requestId?: string; legacyError?: string } = {},
+): UploadErrorEnvelope & { error: string } {
+  return {
+    ok: false,
+    stage,
+    code,
+    message,
+    detail: opts.detail,
+    retryable: opts.retryable ?? true,
+    requestId: opts.requestId,
+    error: opts.legacyError ?? code, // 向後相容
+  };
+}
 
 const GCP_PROJECT = process.env.GCP_PROJECT || 'wave-deploy-agent';
 const GCP_REGION = process.env.GCP_REGION || 'asia-east1';
@@ -191,8 +217,11 @@ export async function projectRoutes(app: FastifyInstance) {
       const conflict = await checkDomainConflict(sub);
       if (conflict) {
         return reply.status(409).send({
-          error: 'domain_conflict',
-          message: `Domain "${conflict.fqdn}" is already mapped to service "${conflict.existingRoute}". Set forceDomain=true to override.`,
+          ...uploadError('submit', 'domain_conflict', `Domain "${conflict.fqdn}" is already mapped to service "${conflict.existingRoute}". Set forceDomain=true to override.`, {
+            detail: { domain: conflict.fqdn, existingRoute: conflict.existingRoute },
+            retryable: false,
+            legacyError: 'domain_conflict',
+          }),
           conflict,
         });
       }
@@ -232,14 +261,32 @@ export async function projectRoutes(app: FastifyInstance) {
       contentType?: string;
       fileSize?: number;
     };
-    if (!fileName) return reply.status(400).send({ error: 'fileName is required' });
+    if (!fileName) {
+      return reply.status(400).send(
+        uploadError('init', 'init_session_failed', 'fileName is required', {
+          retryable: false,
+          legacyError: 'fileName is required',
+        }),
+      );
+    }
 
     const objectName = `uploads/${Date.now()}-${fileName}`;
     const mimeType = contentType || 'application/octet-stream';
 
     // Initiate resumable upload session
     const { getAccessToken } = await import('../services/gcp-auth');
-    const token = await getAccessToken();
+    let token: string;
+    try {
+      token = await getAccessToken();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(500).send(
+        uploadError('init', 'gcs_auth_failed', `Failed to obtain GCS access token: ${msg}`, {
+          detail: { stage: 'access_token' },
+          legacyError: 'Failed to initiate resumable session',
+        }),
+      );
+    }
     const initUrl = `https://storage.googleapis.com/upload/storage/v1/b/${GCS_BUCKET}/o?uploadType=resumable&name=${encodeURIComponent(objectName)}`;
 
     const initHeaders: Record<string, string> = {
@@ -259,14 +306,24 @@ export async function projectRoutes(app: FastifyInstance) {
 
     if (!initRes.ok) {
       const errText = await initRes.text().catch(() => '');
-      return reply.status(500).send({
-        error: `Failed to initiate resumable session: HTTP ${initRes.status} ${errText.slice(0, 300)}`,
-      });
+      const code: UploadFailureCode = initRes.status === 401 || initRes.status === 403
+        ? 'gcs_auth_failed'
+        : 'init_session_failed';
+      return reply.status(500).send(
+        uploadError('init', code, `Failed to initiate resumable session: HTTP ${initRes.status}`, {
+          detail: { gcsStatus: initRes.status, gcsBody: errText.slice(0, 300) },
+          legacyError: `Failed to initiate resumable session: HTTP ${initRes.status} ${errText.slice(0, 300)}`,
+        }),
+      );
     }
 
     const sessionUri = initRes.headers.get('location');
     if (!sessionUri) {
-      return reply.status(500).send({ error: 'GCS did not return a session Location header' });
+      return reply.status(500).send(
+        uploadError('init', 'init_session_failed', 'GCS did not return a session Location header', {
+          legacyError: 'GCS did not return a session Location header',
+        }),
+      );
     }
 
     return {
@@ -276,6 +333,37 @@ export async function projectRoutes(app: FastifyInstance) {
       contentType: mimeType,
       // accessToken intentionally omitted — session URI embeds auth
     };
+  });
+
+  // ── Diagnose an upload failure with LLM fallback ──
+  // Client calls this when it receives an envelope with code === 'unknown'.
+  // Returns a UploadLLMDiagnostic that the UI can render directly.
+  app.post('/api/upload/diagnose', async (request, reply) => {
+    const body = request.body as { envelope?: UploadErrorEnvelope } | undefined;
+    const envelope = body?.envelope;
+    if (!envelope || typeof envelope !== 'object' || !envelope.stage || !envelope.code) {
+      return reply.status(400).send({
+        error: 'envelope is required',
+        message: 'Body must include { envelope: UploadErrorEnvelope }',
+      });
+    }
+    try {
+      const llmDiagnostic = await analyzeUploadFailure(envelope);
+      return { llmDiagnostic };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[upload/diagnose] LLM 分析最終失敗：', msg);
+      return reply.status(500).send({
+        error: 'diagnose_failed',
+        message: msg,
+        llmDiagnostic: {
+          category: 'unknown',
+          userFacingMessage: '無法分析錯誤原因',
+          suggestedFix: '請複製錯誤報告聯絡管理員',
+          provider: 'rule_based',
+        },
+      });
+    }
   });
 
   // ── Submit project from a GCS-uploaded file (no multipart, JSON body only) ──
@@ -292,9 +380,30 @@ export async function projectRoutes(app: FastifyInstance) {
       dbDumpFileName?: string;
     };
 
-    if (!body.name?.trim()) return reply.status(400).send({ error: 'name is required' });
-    if (!body.gcsUri?.trim()) return reply.status(400).send({ error: 'gcsUri is required' });
-    if (!body.customDomain?.trim()) return reply.status(400).send({ error: 'customDomain is required' });
+    if (!body.name?.trim()) {
+      return reply.status(400).send(
+        uploadError('submit', 'submit_failed', 'name is required', {
+          retryable: false,
+          legacyError: 'name is required',
+        }),
+      );
+    }
+    if (!body.gcsUri?.trim()) {
+      return reply.status(400).send(
+        uploadError('submit', 'submit_failed', 'gcsUri is required', {
+          retryable: false,
+          legacyError: 'gcsUri is required',
+        }),
+      );
+    }
+    if (!body.customDomain?.trim()) {
+      return reply.status(400).send(
+        uploadError('submit', 'submit_failed', 'customDomain is required', {
+          retryable: false,
+          legacyError: 'customDomain is required',
+        }),
+      );
+    }
 
     // Domain conflict check
     if (body.customDomain && !body.forceDomain) {
@@ -303,7 +412,14 @@ export async function projectRoutes(app: FastifyInstance) {
       for (const s of subsToCheck) {
         const conflict = await checkDomainConflict(s);
         if (conflict) {
-          return reply.status(409).send({ error: 'domain_conflict', message: `Domain "${conflict.fqdn}" already mapped to "${conflict.existingRoute}".`, conflict });
+          return reply.status(409).send({
+            ...uploadError('submit', 'domain_conflict', `Domain "${conflict.fqdn}" already mapped to "${conflict.existingRoute}".`, {
+              detail: { domain: conflict.fqdn, existingRoute: conflict.existingRoute },
+              retryable: false,
+              legacyError: 'domain_conflict',
+            }),
+            conflict,
+          });
         }
       }
     }
@@ -319,7 +435,15 @@ export async function projectRoutes(app: FastifyInstance) {
     const downloadUrl = `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o/${encodeURIComponent(objectName)}?alt=media`;
     const dlRes = await gcpFetch(downloadUrl);
     if (!dlRes.ok) {
-      return reply.status(500).send({ error: `Failed to download from GCS: HTTP ${dlRes.status}` });
+      const code: UploadFailureCode = dlRes.status === 401 || dlRes.status === 403
+        ? 'gcs_auth_failed'
+        : 'submit_failed';
+      return reply.status(500).send(
+        uploadError('submit', code, `Failed to download from GCS: HTTP ${dlRes.status}`, {
+          detail: { gcsStatus: dlRes.status, objectName },
+          legacyError: `Failed to download from GCS: HTTP ${dlRes.status}`,
+        }),
+      );
     }
     const fileBuffer = Buffer.from(await dlRes.arrayBuffer());
     const archivePath = join(uploadDir, body.fileName);
@@ -335,10 +459,30 @@ export async function projectRoutes(app: FastifyInstance) {
       } else if (lowerName.endsWith('.tar')) {
         await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
       } else {
-        return reply.status(400).send({ error: 'Unsupported file type' });
+        const ext = lowerName.includes('.') ? lowerName.slice(lowerName.lastIndexOf('.')) : 'unknown';
+        return reply.status(400).send(
+          uploadError('extract', 'file_extension_invalid', 'Unsupported file type', {
+            detail: { ext, fileName: body.fileName },
+            retryable: false,
+            legacyError: 'Unsupported file type',
+          }),
+        );
       }
     } catch (err) {
-      return reply.status(400).send({ error: `Extract failed: ${(err as Error).message}` });
+      const msg = (err as Error).message;
+      const isBufferOverflow = msg.toLowerCase().includes('maxbuffer');
+      return reply.status(400).send(
+        uploadError(
+          'extract',
+          isBufferOverflow ? 'extract_buffer_overflow' : 'extract_failed',
+          `Extract failed: ${msg}`,
+          {
+            detail: { fileName: body.fileName, errorSnippet: msg.slice(0, 300) },
+            retryable: false,
+            legacyError: `Extract failed: ${msg}`,
+          },
+        ),
+      );
     }
 
     // Cleanup junk
@@ -553,11 +697,21 @@ export async function projectRoutes(app: FastifyInstance) {
     }
 
     if (!name.trim()) {
-      return reply.status(400).send({ error: 'Project name is required' });
+      return reply.status(400).send(
+        uploadError('submit', 'submit_failed', 'Project name is required', {
+          retryable: false,
+          legacyError: 'Project name is required',
+        }),
+      );
     }
 
     if (!customDomain.trim()) {
-      return reply.status(400).send({ error: 'Custom domain is required' });
+      return reply.status(400).send(
+        uploadError('submit', 'submit_failed', 'Custom domain is required', {
+          retryable: false,
+          legacyError: 'Custom domain is required',
+        }),
+      );
     }
 
     // Domain conflict check (unless forceDomain is set)
@@ -569,8 +723,11 @@ export async function projectRoutes(app: FastifyInstance) {
         const conflict = await checkDomainConflict(s);
         if (conflict) {
           return reply.status(409).send({
-            error: 'domain_conflict',
-            message: `Domain "${conflict.fqdn}" is already mapped to service "${conflict.existingRoute}". Use forceDomain=true to override, or choose a different domain.`,
+            ...uploadError('submit', 'domain_conflict', `Domain "${conflict.fqdn}" is already mapped to service "${conflict.existingRoute}". Use forceDomain=true to override, or choose a different domain.`, {
+              detail: { domain: conflict.fqdn, existingRoute: conflict.existingRoute },
+              retryable: false,
+              legacyError: 'domain_conflict',
+            }),
             conflict,
           });
         }
@@ -619,7 +776,12 @@ export async function projectRoutes(app: FastifyInstance) {
 
     // Upload source type — need a file
     if (!fileBuffer || !fileName) {
-      return reply.status(400).send({ error: 'File upload is required for upload source type' });
+      return reply.status(400).send(
+        uploadError('upload', 'submit_failed', 'File upload is required for upload source type', {
+          retryable: false,
+          legacyError: 'File upload is required for upload source type',
+        }),
+      );
     }
 
     // Save uploaded file to temp dir and extract
@@ -641,10 +803,30 @@ export async function projectRoutes(app: FastifyInstance) {
       } else if (lowerName.endsWith('.tar')) {
         await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
       } else {
-        return reply.status(400).send({ error: 'Unsupported file type. Please upload .zip, .tar.gz, or .tar' });
+        const ext = lowerName.includes('.') ? lowerName.slice(lowerName.lastIndexOf('.')) : 'unknown';
+        return reply.status(400).send(
+          uploadError('extract', 'file_extension_invalid', 'Unsupported file type. Please upload .zip, .tar.gz, or .tar', {
+            detail: { ext, fileName },
+            retryable: false,
+            legacyError: 'Unsupported file type. Please upload .zip, .tar.gz, or .tar',
+          }),
+        );
       }
     } catch (err) {
-      return reply.status(400).send({ error: `Failed to extract archive: ${(err as Error).message}` });
+      const msg = (err as Error).message;
+      const isBufferOverflow = msg.toLowerCase().includes('maxbuffer');
+      return reply.status(400).send(
+        uploadError(
+          'extract',
+          isBufferOverflow ? 'extract_buffer_overflow' : 'extract_failed',
+          `Failed to extract archive: ${msg}`,
+          {
+            detail: { fileName, errorSnippet: msg.slice(0, 300) },
+            retryable: false,
+            legacyError: `Failed to extract archive: ${msg}`,
+          },
+        ),
+      );
     }
 
     // ── Defensive cleanup: remove macOS/OS junk directories ──

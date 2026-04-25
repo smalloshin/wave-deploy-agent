@@ -148,6 +148,98 @@
       "uploadInitFailed": "Upload initialization failed",
       "gcsUploadFailed": "Upload to GCS failed"
     },
+    "uploadProgress": {
+      "preparing": "Preparing...",
+      "uploading": "Uploading {percent}%",
+      "uploadingWithSpeed": "Uploading {percent}% ({speed})",
+      "extracting": "Extracting...",
+      "analyzing": "Analyzing...",
+      "submitting": "Submitting...",
+      "elapsed": "Elapsed {seconds}s",
+      "cancel": "Cancel upload"
+    },
+    "uploadErrors": {
+      "title": "Upload failed",
+      "stage": "Stage",
+      "code": "Code",
+      "stageLabels": {
+        "validate": "File validation",
+        "init": "Init upload",
+        "upload": "Uploading file",
+        "submit": "Submitting",
+        "extract": "Extracting",
+        "analyze": "Analyzing project",
+        "deploy": "Triggering deploy"
+      },
+      "fileTooLargeForDirect": {
+        "message": "File {fileSize} exceeds direct-upload limit of {maxSize}",
+        "hint": "We've switched to chunked upload automatically. Click Retry to continue."
+      },
+      "fileExtensionInvalid": {
+        "message": "Only .zip is accepted (you picked {ext})",
+        "hint": "Please repackage as .zip and try again."
+      },
+      "initSessionFailed": {
+        "message": "Could not get upload credential",
+        "hint": "Usually a session expiry or network glitch. Refresh the page and retry."
+      },
+      "gcsAuthFailed": {
+        "message": "Upload credential expired",
+        "hint": "Upload credentials are time-limited. Click Retry to get a fresh one."
+      },
+      "gcsTimeout": {
+        "message": "Upload timed out",
+        "hint": "Network may be unstable. Check connection and retry. Use a stable network for large files."
+      },
+      "networkError": {
+        "message": "Network connection lost",
+        "hint": "Your form is auto-saved. Retry once the network is back."
+      },
+      "submitFailed": {
+        "message": "Server processing failed",
+        "hint": "File uploaded but the server failed to process it. Retry or contact admin."
+      },
+      "extractFailed": {
+        "message": "Archive extraction failed",
+        "hint": "The zip may be corrupted or have an unusual structure. Verify it extracts locally first."
+      },
+      "extractBufferOverflow": {
+        "message": "Archive content too large",
+        "hint": "Extraction output exceeded the limit. Split the project or exclude node_modules / .git."
+      },
+      "analyzeFailed": {
+        "message": "Project analysis failed",
+        "hint": "AI analysis is temporarily unavailable. Your file is preserved. Retry later or contact admin."
+      },
+      "domainConflict": {
+        "message": "Domain {domain} is already used by another project",
+        "hint": "Choose a different domain, or release the existing project from the admin page first."
+      },
+      "projectQuotaExceeded": {
+        "message": "Project quota exceeded",
+        "hint": "Stop or delete an old project first."
+      },
+      "unknown": {
+        "message": "Upload failed",
+        "hint": "Analyzing the cause..."
+      },
+      "llmAnalyzing": "AI is analyzing the cause...",
+      "llmCategory": {
+        "user": "Fixable by you",
+        "platform": "Platform issue (admin notified)",
+        "unknown": "Needs further diagnosis"
+      },
+      "actions": {
+        "retry": "Retry",
+        "cancel": "Cancel",
+        "copyReport": "Copy error report",
+        "copied": "Copied",
+        "contactSupport": "Contact admin"
+      },
+      "draftRestored": "Restored form from a previous unfinished upload",
+      "draftDiscard": "Discard draft",
+      "draftSavedAt": "Draft saved at {time}"
+    },
     "envVars": {
       "title": "Environment Variables",
       "editVars": "Edit Variables",

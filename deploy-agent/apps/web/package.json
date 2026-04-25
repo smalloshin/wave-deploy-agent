@@ -8,6 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@deploy-agent/shared": "*",
     "next": "^15.3.0",
     "next-intl": "^4.9.1",
     "react": "^19.0.0",

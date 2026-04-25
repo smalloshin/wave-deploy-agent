@@ -148,6 +148,98 @@
       "uploadInitFailed": "上傳初始化失敗",
       "gcsUploadFailed": "上傳至 GCS 失敗"
     },
+    "uploadProgress": {
+      "preparing": "準備中...",
+      "uploading": "上傳中 {percent}%",
+      "uploadingWithSpeed": "上傳中 {percent}%（{speed}）",
+      "extracting": "解壓縮中...",
+      "analyzing": "分析中...",
+      "submitting": "送出中...",
+      "elapsed": "已耗時 {seconds}s",
+      "cancel": "取消上傳"
+    },
+    "uploadErrors": {
+      "title": "上傳遇到問題",
+      "stage": "階段",
+      "code": "錯誤碼",
+      "stageLabels": {
+        "validate": "檔案驗證",
+        "init": "初始化上傳",
+        "upload": "上傳檔案",
+        "submit": "送出處理",
+        "extract": "解壓縮",
+        "analyze": "分析專案",
+        "deploy": "觸發部署"
+      },
+      "fileTooLargeForDirect": {
+        "message": "檔案 {fileSize} 超過 {maxSize} 直傳上限",
+        "hint": "我們已自動切換到分塊上傳，請點「重試」繼續。"
+      },
+      "fileExtensionInvalid": {
+        "message": "只接受 .zip 格式（你選的是 {ext}）",
+        "hint": "請打包成 .zip 後再上傳。"
+      },
+      "initSessionFailed": {
+        "message": "無法取得上傳憑證",
+        "hint": "通常是登入過期或網路問題。請重新整理頁面後再試。"
+      },
+      "gcsAuthFailed": {
+        "message": "上傳憑證已失效",
+        "hint": "上傳憑證有時效性。請點「重試」重新取得憑證。"
+      },
+      "gcsTimeout": {
+        "message": "上傳逾時",
+        "hint": "可能是網路不穩。請檢查連線後重試，大檔案建議用穩定的網路。"
+      },
+      "networkError": {
+        "message": "網路連線中斷",
+        "hint": "你的表單已自動保存。網路恢復後點「重試」即可繼續。"
+      },
+      "submitFailed": {
+        "message": "送出處理失敗",
+        "hint": "檔案已上傳成功，但伺服器處理失敗。請點「重試」或聯絡管理員。"
+      },
+      "extractFailed": {
+        "message": "壓縮檔解壓縮失敗",
+        "hint": "可能是 zip 檔損壞或結構異常。請確認 zip 可正常解壓後再上傳。"
+      },
+      "extractBufferOverflow": {
+        "message": "壓縮檔內容過多",
+        "hint": "解壓縮輸出超過上限。請拆分專案或排除不必要的檔案（node_modules、.git 等）。"
+      },
+      "analyzeFailed": {
+        "message": "專案分析失敗",
+        "hint": "AI 分析服務暫時不可用。檔案已保留，請稍後重試或聯絡管理員。"
+      },
+      "domainConflict": {
+        "message": "Domain {domain} 已被其他專案使用",
+        "hint": "請改用其他 domain，或先在管理頁面釋出原本占用的專案。"
+      },
+      "projectQuotaExceeded": {
+        "message": "已達專案數上限",
+        "hint": "請先停用或刪除舊專案。"
+      },
+      "unknown": {
+        "message": "上傳失敗",
+        "hint": "我們正在分析原因..."
+      },
+      "llmAnalyzing": "AI 正在分析錯誤原因...",
+      "llmCategory": {
+        "user": "可由你修正",
+        "platform": "平台問題（已通報管理員）",
+        "unknown": "需進一步診斷"
+      },
+      "actions": {
+        "retry": "重試",
+        "cancel": "取消",
+        "copyReport": "複製錯誤報告",
+        "copied": "已複製",
+        "contactSupport": "聯絡管理員"
+      },
+      "draftRestored": "已從上次未完成的上傳還原表單",
+      "draftDiscard": "捨棄草稿",
+      "draftSavedAt": "草稿保存於 {time}"
+    },
     "envVars": {
       "title": "環境變數 / Environment Variables",
       "editVars": "編輯環境變數",

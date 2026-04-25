@@ -36,7 +36,7 @@ export interface AutoFixAttempt {
 
 // ─── Unified LLM call with automatic fallback ───
 
-async function callLLM(system: string, userMessage: string, maxTokens: number): Promise<{ text: string; provider: 'claude' | 'gpt' }> {
+export async function callLLM(system: string, userMessage: string, maxTokens: number): Promise<{ text: string; provider: 'claude' | 'gpt' }> {
   // Try Claude first
   if (anthropic) {
     try {

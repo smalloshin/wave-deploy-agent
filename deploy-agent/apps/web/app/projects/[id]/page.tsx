@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '../../../lib/auth';
+import type { UploadErrorEnvelope, UploadFailure } from '@deploy-agent/shared';
+import { mapEnvelope, mapClientError, fetchDiagnostic } from '@/lib/upload-error-mapper';
+import { UploadErrorBlock } from '@/app/components/UploadErrorBlock';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -156,6 +159,9 @@ export default function ProjectDetailPage() {
   const [upgradeFile, setUpgradeFile] = useState<File | null>(null);
   const [upgrading, setUpgrading] = useState(false);
   const [upgradeProgress, setUpgradeProgress] = useState<number | null>(null);
+  const [upgradeFailure, setUpgradeFailure] = useState<UploadFailure | null>(null);
+  const [upgradeDiagnosing, setUpgradeDiagnosing] = useState(false);
+  const upgradeXhrRef = useRef<XMLHttpRequest | null>(null);
   const [upgradeDragOver, setUpgradeDragOver] = useState(false);
   // GitHub webhook state
   const [webhookConfig, setWebhookConfig] = useState<{
@@ -299,22 +305,68 @@ export default function ProjectDetailPage() {
     }
   };
 
+  const handleUpgradeFailure = async (envelope: UploadErrorEnvelope) => {
+    let mapped = mapEnvelope(envelope);
+    setUpgradeFailure(mapped);
+    if (envelope.code === 'unknown') {
+      setUpgradeDiagnosing(true);
+      try {
+        mapped = await fetchDiagnostic(envelope, API);
+        setUpgradeFailure(mapped);
+      } finally {
+        setUpgradeDiagnosing(false);
+      }
+    }
+  };
+
   const handleUpgrade = async () => {
     if (!upgradeFile) return;
     setUpgrading(true);
-    try {
-      // Step 1: Init upload
-      const initRes = await fetch(`${API}/api/upload/init`, { credentials: 'include', method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: upgradeFile.name, fileSize: upgradeFile.size, contentType: upgradeFile.type || 'application/zip' }),
-      });
-      if (!initRes.ok) throw new Error(t('upgradeModal.uploadInitFailed'));
-      const { uploadUrl, gcsUri, contentType } = await initRes.json();
+    setUpgradeFailure(null);
 
-      // Step 2: PUT to GCS resumable session URI (no auth header — auth embedded in URI)
-      // XHR for progress events.
+    // Stage: init
+    let initData: { uploadUrl: string; gcsUri: string; contentType?: string };
+    try {
+      const initRes = await fetch(`${API}/api/upload/init`, {
+        credentials: 'include',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: upgradeFile.name,
+          fileSize: upgradeFile.size,
+          contentType: upgradeFile.type || 'application/zip',
+        }),
+      });
+      if (!initRes.ok) {
+        const data = (await initRes.json()) as Partial<UploadErrorEnvelope> & { error?: string };
+        const env: UploadErrorEnvelope = {
+          ok: false,
+          stage: data.stage ?? 'init',
+          code: data.code ?? 'init_session_failed',
+          message: data.message ?? data.error ?? `Init failed: HTTP ${initRes.status}`,
+          detail: data.detail,
+          retryable: data.retryable ?? true,
+        };
+        await handleUpgradeFailure(env);
+        setUpgrading(false);
+        setUpgradeProgress(null);
+        return;
+      }
+      initData = await initRes.json();
+    } catch (err) {
+      await handleUpgradeFailure(mapClientError(err, { stage: 'init' }).raw);
+      setUpgrading(false);
+      setUpgradeProgress(null);
+      return;
+    }
+
+    const { uploadUrl, gcsUri, contentType } = initData;
+
+    // Stage: upload
+    try {
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
+        upgradeXhrRef.current = xhr;
         xhr.open('PUT', uploadUrl);
         xhr.setRequestHeader('Content-Type', contentType || upgradeFile.type || 'application/zip');
         xhr.upload.onprogress = (e) => {
@@ -322,28 +374,83 @@ export default function ProjectDetailPage() {
         };
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else reject(new Error(t('upgradeModal.gcsUploadFailed')));
+          else {
+            const code = xhr.status === 401 || xhr.status === 403 ? 'gcs_auth_failed' : 'submit_failed';
+            reject({
+              ok: false,
+              stage: 'upload',
+              code,
+              message: `GCS PUT failed: HTTP ${xhr.status}`,
+              detail: { gcsStatus: xhr.status, body: xhr.responseText.slice(0, 200) },
+              retryable: true,
+            } satisfies UploadErrorEnvelope);
+          }
         };
-        xhr.onerror = () => reject(new Error(t('upgradeModal.gcsUploadFailed')));
+        xhr.onerror = () =>
+          reject({
+            ok: false,
+            stage: 'upload',
+            code: 'network_error',
+            message: 'Network error during GCS upload',
+            retryable: true,
+          } satisfies UploadErrorEnvelope);
+        xhr.ontimeout = () =>
+          reject({
+            ok: false,
+            stage: 'upload',
+            code: 'gcs_timeout',
+            message: 'Upload timed out',
+            retryable: true,
+          } satisfies UploadErrorEnvelope);
         xhr.send(upgradeFile);
       });
+    } catch (errOrEnv) {
+      const env =
+        errOrEnv && typeof errOrEnv === 'object' && 'code' in errOrEnv
+          ? (errOrEnv as UploadErrorEnvelope)
+          : mapClientError(errOrEnv, { stage: 'upload' }).raw;
+      await handleUpgradeFailure(env);
+      setUpgrading(false);
       setUpgradeProgress(null);
+      return;
+    } finally {
+      upgradeXhrRef.current = null;
+    }
+    setUpgradeProgress(null);
 
-      // Step 3: Trigger new version
-      const newVerRes = await fetch(`${API}/api/projects/${id}/new-version`, { credentials: 'include', method: 'POST',
+    // Stage: submit (new-version)
+    try {
+      const newVerRes = await fetch(`${API}/api/projects/${id}/new-version`, {
+        credentials: 'include',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ gcsUri, fileName: upgradeFile.name }),
       });
-      if (!newVerRes.ok) { const d = await newVerRes.json(); throw new Error(d.error); }
-
-      setShowUpgradeModal(false);
-      setUpgradeFile(null);
-      loadDetail();
-      loadVersions();
+      if (!newVerRes.ok) {
+        const data = (await newVerRes.json()) as Partial<UploadErrorEnvelope> & { error?: string };
+        const env: UploadErrorEnvelope = {
+          ok: false,
+          stage: data.stage ?? 'submit',
+          code: data.code ?? 'submit_failed',
+          message: data.message ?? data.error ?? `HTTP ${newVerRes.status}`,
+          detail: data.detail,
+          retryable: data.retryable ?? true,
+        };
+        await handleUpgradeFailure(env);
+        setUpgrading(false);
+        return;
+      }
     } catch (err) {
-      alert((err as Error).message);
-      setUpgradeProgress(null);
+      await handleUpgradeFailure(mapClientError(err, { stage: 'submit' }).raw);
+      setUpgrading(false);
+      return;
     }
+
+    setShowUpgradeModal(false);
+    setUpgradeFile(null);
+    setUpgradeFailure(null);
+    loadDetail();
+    loadVersions();
     setUpgrading(false);
   };
 
@@ -1094,6 +1201,28 @@ export default function ProjectDetailPage() {
                   <div style={{ width: `${upgradeProgress}%`, height: '100%', background: 'var(--info)', transition: 'width 200ms ease' }} />
                 </div>
               </div>
+            )}
+            {upgradeFailure && (
+              <UploadErrorBlock
+                failure={upgradeFailure}
+                context={{
+                  projectId: id as string,
+                  fileMeta: upgradeFile ? { name: upgradeFile.name, size: upgradeFile.size } : undefined,
+                }}
+                diagnosing={upgradeDiagnosing}
+                onRetry={() => {
+                  setUpgradeFailure(null);
+                  void handleUpgrade();
+                }}
+                onCancel={() => {
+                  setUpgradeFailure(null);
+                  setUpgrading(false);
+                  if (upgradeXhrRef.current) {
+                    try { upgradeXhrRef.current.abort(); } catch { /* ignore */ }
+                    upgradeXhrRef.current = null;
+                  }
+                }}
+              />
             )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
               <button onClick={() => { setShowUpgradeModal(false); setUpgradeFile(null); }}
