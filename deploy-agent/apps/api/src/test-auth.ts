@@ -239,6 +239,93 @@ async function unitRouteMatchingTests() {
     assert.equal(lookupRequiredPermission('POST', '/mcp/tools/list'), 'mcp:access');
     assert.equal(lookupRequiredPermission('POST', '/mcp/tools/call'), 'mcp:access');
   });
+
+  // ─── 2026-04-26 RBAC mapping audit fix ──────────────────────────
+  // Verify every previously-unmapped route now has the correct permission.
+  // These were the 17 routes that fell through to "any authenticated user
+  // passes" in enforced mode before the round-3 audit.
+
+  await test('rbac-audit: project lifecycle routes require projects:deploy', () => {
+    assert.equal(lookupRequiredPermission('POST', '/api/projects/p-uuid/start'), 'projects:deploy');
+    assert.equal(lookupRequiredPermission('POST', '/api/projects/p-uuid/stop'), 'projects:deploy');
+    assert.equal(lookupRequiredPermission('POST', '/api/projects/p-uuid/scan'), 'projects:deploy');
+    assert.equal(lookupRequiredPermission('POST', '/api/projects/p-uuid/resubmit'), 'projects:deploy');
+    assert.equal(lookupRequiredPermission('POST', '/api/projects/p-uuid/retry-domain'), 'projects:deploy');
+  });
+
+  await test('rbac-audit: scan-bypass routes require reviews:decide (separation of duties)', () => {
+    // skip-scan and force-fail bypass the security gate. They must NOT collapse to
+    // projects:deploy — that would let any deployer override the reviewer's role.
+    assert.equal(lookupRequiredPermission('POST', '/api/projects/p-uuid/skip-scan'), 'reviews:decide');
+    assert.equal(lookupRequiredPermission('POST', '/api/projects/p-uuid/force-fail'), 'reviews:decide');
+  });
+
+  await test('rbac-audit: project read-detail routes require projects:read', () => {
+    assert.equal(lookupRequiredPermission('GET', '/api/projects/p-uuid/detail'), 'projects:read');
+    assert.equal(lookupRequiredPermission('GET', '/api/projects/p-uuid/scan/report'), 'projects:read');
+    assert.equal(lookupRequiredPermission('GET', '/api/projects/p-uuid/source-download'), 'projects:read');
+  });
+
+  await test('rbac-audit: env-vars + webhook URL gated on projects:write (per-project secrets)', () => {
+    // Plaintext env vars and webhook secrets must not be readable at viewer level.
+    assert.equal(lookupRequiredPermission('GET', '/api/projects/p-uuid/env-vars'), 'projects:write');
+    assert.equal(lookupRequiredPermission('PUT', '/api/projects/p-uuid/env-vars'), 'projects:write');
+    assert.equal(lookupRequiredPermission('GET', '/api/projects/p-uuid/github-webhook'), 'projects:write');
+  });
+
+  await test('rbac-audit: deploy observability endpoints require deploys:read', () => {
+    assert.equal(lookupRequiredPermission('GET', '/api/deploys/d-uuid/timeline'), 'deploys:read');
+    assert.equal(lookupRequiredPermission('GET', '/api/deploys/d-uuid/stream'), 'deploys:read');
+    assert.equal(lookupRequiredPermission('GET', '/api/deploys/d-uuid/build-log'), 'deploys:read');
+  });
+
+  await test('rbac-audit: upload diagnose requires projects:write (matches upload/init)', () => {
+    assert.equal(lookupRequiredPermission('POST', '/api/upload/diagnose'), 'projects:write');
+    assert.equal(lookupRequiredPermission('POST', '/api/upload/init'), 'projects:write');
+  });
+
+  await test('rbac-audit: viewer cannot reach any newly-mapped route', () => {
+    // viewer = ['projects:read', 'reviews:read', 'deploys:read', 'versions:read',
+    //          'infra:read', 'settings:read', 'mcp:access']  (per RBAC ADR)
+    const viewerPerms: Permission[] = [
+      'projects:read', 'reviews:read', 'deploys:read', 'versions:read',
+      'infra:read', 'settings:read', 'mcp:access',
+    ];
+    const dangerousRoutes: Array<[string, string]> = [
+      ['POST', '/api/projects/p-uuid/start'],
+      ['POST', '/api/projects/p-uuid/stop'],
+      ['POST', '/api/projects/p-uuid/skip-scan'],
+      ['POST', '/api/projects/p-uuid/force-fail'],
+      ['GET',  '/api/projects/p-uuid/env-vars'],
+      ['PUT',  '/api/projects/p-uuid/env-vars'],
+      ['GET',  '/api/projects/p-uuid/github-webhook'],
+      ['POST', '/api/upload/diagnose'],
+    ];
+    for (const [method, url] of dangerousRoutes) {
+      const required = lookupRequiredPermission(method, url);
+      assert.notEqual(required, null, `${method} ${url} must be mapped`);
+      assert.equal(
+        hasPermission(viewerPerms, required!),
+        false,
+        `viewer must NOT have ${required} → ${method} ${url}`
+      );
+    }
+  });
+
+  await test('rbac-audit: reviewer can decide but cannot deploy', () => {
+    // reviewer = ['projects:read', 'reviews:read', 'reviews:decide', 'deploys:read',
+    //             'versions:read', 'mcp:access']
+    const reviewerPerms: Permission[] = [
+      'projects:read', 'reviews:read', 'reviews:decide', 'deploys:read',
+      'versions:read', 'mcp:access',
+    ];
+    // reviewer CAN skip-scan (separation of duties: they're the security gate)
+    assert.equal(hasPermission(reviewerPerms, 'reviews:decide'), true);
+    // reviewer CANNOT start a project (needs projects:deploy)
+    assert.equal(hasPermission(reviewerPerms, 'projects:deploy'), false);
+    // reviewer CANNOT read env-vars (needs projects:write)
+    assert.equal(hasPermission(reviewerPerms, 'projects:write'), false);
+  });
 }
 
 // ─── Unit tests: public / authenticated route classification ────────────

@@ -79,6 +79,23 @@ const ROUTE_PERMISSIONS: Array<[string, Permission]> = [
 - **AUTHENTICATED_ROUTES**：`/api/auth/me`、`/api/auth/api-keys/*`——任何登入用戶都可以
 - **ROUTE_PERMISSIONS**：其餘需要對應 permission
 
+#### 2026-04-26 audit fix：17 個漏掉的 route + fail-closed 預設
+
+第一刀 ship 後實際盤點發現 ROUTE_PERMISSIONS 漏了 17 個 route——包括破壞性的 `POST /api/projects/:id/start|stop|scan|skip-scan|force-fail|resubmit|retry-domain`、機密的 `GET|PUT /api/projects/:id/env-vars` / `github-webhook`、唯讀的 `GET /api/projects/:id/detail|source-download|scan/report`、以及觀測性新 ship 的 `GET /api/deploys/:id/timeline|stream|build-log` + `POST /api/upload/diagnose`。原本 enforced mode 對 unmapped route 的處理是「authenticated user 一律放行」——viewer 也能 stop project、改 env-vars。已加全部 mapping，**並改 enforced mode 預設為 fail-closed**：
+
+```
+unmapped route in enforced mode → 403 { reason: 'route_not_mapped' } + audit log
+unmapped route in permissive mode → log warn + 放行（migration 階段保持寬鬆）
+```
+
+關鍵 separation-of-duties 決策：
+
+- `skip-scan` / `force-fail` → **`reviews:decide`** 而非 `projects:deploy`——deployer 不能繞過 reviewer 的安全把關
+- `env-vars` / `github-webhook` → **`projects:write`** 而非 `projects:read`——含密碼/secrets 不能 viewer 級可讀
+- `start` / `stop` / `scan` / `resubmit` / `retry-domain` → **`projects:deploy`**——destructive but reversible，跟其他 deploy-grade action 對齊
+
+新增 8 個 RBAC audit unit test 把上面這些都驗起來，包括「viewer 對 8 個危險 route 都拿不到 permission」+「reviewer 不能 deploy / 不能讀 env-vars」的 separation-of-duties test。
+
 ### AUTH_MODE：permissive → enforced 兩段切換
 
 | 模式 | 無 credentials request | 有但權限不足 |

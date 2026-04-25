@@ -18,13 +18,29 @@ export const ROUTE_PERMISSIONS: Array<[string, Permission]> = [
   // Projects
   ['GET:/api/projects', 'projects:read'],
   ['GET:/api/projects/:id', 'projects:read'],
+  ['GET:/api/projects/:id/detail', 'projects:read'],
+  ['GET:/api/projects/:id/scan/report', 'projects:read'],
+  ['GET:/api/projects/:id/source-download', 'projects:read'],
   ['POST:/api/projects', 'projects:write'],
   ['POST:/api/upload/init', 'projects:write'],
+  ['POST:/api/upload/diagnose', 'projects:write'],
   ['POST:/api/projects/submit-gcs', 'projects:write'],
+  // env-vars + webhook URL contain per-project secrets — gate on write, not read
+  ['GET:/api/projects/:id/env-vars', 'projects:write'],
+  ['PUT:/api/projects/:id/env-vars', 'projects:write'],
+  ['GET:/api/projects/:id/github-webhook', 'projects:write'],
+  ['POST:/api/projects/:id/start', 'projects:deploy'],
+  ['POST:/api/projects/:id/stop', 'projects:deploy'],
+  ['POST:/api/projects/:id/scan', 'projects:deploy'],
+  ['POST:/api/projects/:id/resubmit', 'projects:deploy'],
+  ['POST:/api/projects/:id/retry-domain', 'projects:deploy'],
   ['POST:/api/projects/:id/new-version', 'projects:deploy'],
   ['POST:/api/projects/:id/deploy-lock', 'projects:deploy'],
   ['POST:/api/projects/:id/versions/cleanup', 'projects:deploy'],
   ['POST:/api/projects/:id/reanalyze-failure', 'projects:deploy'],
+  // Risk-bypass endpoints — separation of duties: reviewer-only, NOT projects:deploy
+  ['POST:/api/projects/:id/skip-scan', 'reviews:decide'],
+  ['POST:/api/projects/:id/force-fail', 'reviews:decide'],
   ['POST:/api/projects/:id/versions/:did/publish', 'versions:publish'],
   ['GET:/api/projects/:id/versions', 'versions:read'],
   ['GET:/api/projects/:id/versions/:did/download', 'versions:read'],
@@ -40,6 +56,9 @@ export const ROUTE_PERMISSIONS: Array<[string, Permission]> = [
   ['GET:/api/deploys/:id', 'deploys:read'],
   ['GET:/api/deploys/:id/ssl-status', 'deploys:read'],
   ['GET:/api/deploys/:id/logs', 'deploys:read'],
+  ['GET:/api/deploys/:id/timeline', 'deploys:read'],
+  ['GET:/api/deploys/:id/stream', 'deploys:read'],
+  ['GET:/api/deploys/:id/build-log', 'deploys:read'],
 
   // Reviews
   ['GET:/api/reviews', 'reviews:read'],
@@ -215,9 +234,34 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply): Promis
 
   const required = lookupRequiredPermission(method, url);
   if (!required) {
-    // Unmapped routes: permissive mode lets them through, enforced mode requires auth
-    if (mode === 'enforced' && !authenticated) {
-      return reply.code(401).send({ error: 'Authentication required' });
+    // Unmapped routes: this is a developer error — every route should declare its
+    // required permission. Behavior:
+    //   - permissive mode: log loudly, allow (migration aid)
+    //   - enforced mode: fail closed with 403 — refuse to silently grant access
+    //
+    // Rationale: the previous "any authenticated user passes" default let viewers
+    // hit /api/projects/:id/start and /env-vars before those routes were mapped.
+    // Fail-closed means adding a new route without an RBAC entry surfaces as a
+    // loud 403 in staging instead of a silent privilege escalation in prod.
+    if (mode === 'enforced') {
+      await logAuth({
+        user_id: req.auth.user?.id ?? null,
+        action: 'permission_denied',
+        resource: `${method} ${url}`,
+        ip_address: req.ip,
+        metadata: { reason: 'route_not_mapped', via: req.auth.via, mode },
+      });
+      return reply.code(403).send({
+        error: 'Forbidden',
+        reason: 'route_not_mapped',
+        hint: 'This route is missing from ROUTE_PERMISSIONS — file a bug.',
+      });
+    }
+    // Permissive: log + allow
+    if (!authenticated) {
+      req.log.warn({ method, url }, '[auth] unmapped anonymous request allowed (permissive mode)');
+    } else {
+      req.log.warn({ method, url, user: req.auth.user?.email }, '[auth] unmapped authenticated request allowed (permissive mode)');
     }
     return;
   }

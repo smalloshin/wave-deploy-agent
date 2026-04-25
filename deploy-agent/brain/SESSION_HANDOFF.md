@@ -4,6 +4,44 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第四段）—— RBAC mapping audit + fail-closed default（補一輪 production-shipped 漏洞）**
+
+第三段 ship 完之後做整體 codebase 掃，發現 RBAC 還有第二輪洞：**ROUTE_PERMISSIONS 漏掉 17 個 route**，包括破壞性的 `POST /api/projects/:id/start|stop|scan|skip-scan|force-fail|resubmit|retry-domain`、機密的 `GET|PUT /api/projects/:id/env-vars` / `github-webhook`、以及觀測性 ship 的 `/api/deploys/:id/timeline|stream|build-log` 全部沒登記。原 enforced mode 對 unmapped route 的處理是「authenticated user 一律放行」——viewer 也能 stop project、讀別人的 env-vars。
+
+按使用者指示 spawn 1 位 system architect agent 做 separation-of-duties 判斷（不需要四個——decision 範圍清楚、reasoning 扎實），收到精準對應表後執行：
+
+**這段做了什麼**：
+- `apps/api/src/middleware/auth.ts`：補齊 17 個 route mapping，並把 unmapped-route 預設改為 enforced mode → 403 + audit log（fail-closed），permissive mode → log warn + 放行
+- `apps/api/src/test-auth.ts`：加 8 個 RBAC audit unit test，cover 每個新 mapping + viewer 拒絕測試 + reviewer separation-of-duties 測試
+- `brain/decisions/2026-04-25-rbac-system-permissive-then-enforced.md`：在 Auth Middleware section 補一段 2026-04-26 audit fix，記錄 separation-of-duties 三個關鍵判斷
+
+**Architect 判斷的關鍵 separation-of-duties**：
+1. `skip-scan` / `force-fail` → **`reviews:decide`** 而非 `projects:deploy`——deployer 不能繞過 reviewer 的安全把關
+2. `env-vars` / `github-webhook` → **`projects:write`** 而非 `projects:read`——含 secrets 不能 viewer 級可讀
+3. `start` / `stop` / `scan` / `resubmit` / `retry-domain` → **`projects:deploy`**
+
+**Test 通過率（累計）：85/85** unit tests：
+- `test-stage-events.ts`：10
+- `test-timeline-route.ts`：7
+- `test-event-stream.ts`：15
+- `test-diagnostics.ts`：7
+- `test-auth.ts`：**41**（+8 audit tests）
+- `test-build-log-live.ts`：5
+
+**驗證**：API `npm run build` clean。
+
+**已知妥協 / 待 follow-up**：
+- Web 端 SubmitModal 仍未自動 navigate to detail page（commit 1 spec 提過但沒 ship）——這是 UX 決定，需要決定去 `/projects/:id` 還是 `/deploys/:deploymentId`，後者要等 background pipeline 創建 deployment row 才存在，留給使用者起床決定
+- 沒有 startup-time check 比對「Fastify 註冊的 routes」vs「ROUTE_PERMISSIONS 列表」，所以下次再加新 route 還是要靠人記得登記。可加 dev-only assertion 但會多一個依賴（要 introspect Fastify routes table），先靠 audit unit test 防護
+- `source-download` 標 `projects:read` 是 architect 的判斷（caveat：若未來 source 包含 `.env` 或 secrets 應升 `projects:write`）
+
+**使用者下一步**：
+1. Review 四輪 commits（pr/sync-all：round 1 RBAC fix + round 2 live build-log + round 3 LogStream wire + round 4 RBAC audit）
+2. Migration checklist 補一條：切 enforced mode 前先確認 audit_log 沒看到 `route_not_mapped` 的 permission_denied
+3. 若有「真的不該被權限管」的 unmapped route，加進 PUBLIC_ROUTES 或 AUTHENTICATED_ROUTES，不要靠「unmapped 兜底」
+
+---
+
 **2026-04-26（autonomous overnight 第三段）—— Live build-log streaming refactor（completion of deferred Tier 2 follow-up）**
 
 接續使用者「請做到結束、決定找 subagents 商量」的指示，把 `2026-04-25-deployment-observability` ADR 裡刻意 defer 的 **live build-log tail** 補完。原本 build log 是 post-mortem（要等 build 整個結束才能下載一次），這刀讓使用者在 build 進行中就看到 GCS append-only log 即時 tail 出來。
@@ -65,7 +103,7 @@
 - `test-diagnostics.ts`：7
 - `test-auth.ts`：33（新增）
 
-> _2026-04-26 update：第三段 live build-log refactor 後，累計升到 77/77_
+> _2026-04-26 update：第三段 live build-log refactor 後，累計升到 77/77；第四段 RBAC audit 後升到 85/85_
 
 **驗證**：API `npx tsc --noEmit` clean、`npm run build` clean；Web `npm run build` clean（10 routes 全綠，含 /admin、/login）。
 
