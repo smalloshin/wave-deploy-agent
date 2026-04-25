@@ -34,3 +34,4 @@
 | 2026-04-18 | [deployed-source-capture](./2026-04-18-deployed-source-capture.md) | Active | 每次 deploy 成功後把 post-fix code + 自動生成 Dockerfile 存到 GCS (365d lifecycle)，dashboard 一鍵下載，讓使用者從安全基準繼續開發 |
 | 2026-04-25 | [deployment-observability](./2026-04-25-deployment-observability.md) | Active | 部署觀測 3 層架構：Tier 1 timeline（7-stage stepper）+ Tier 2 SSE log stream + Tier 3 LLM 診斷（cached by build_id），Tier 4 cost/latency 圖表已 kill |
 | 2026-04-25 | [rbac-system-permissive-then-enforced](./2026-04-25-rbac-system-permissive-then-enforced.md) | Active | 全站 RBAC：3 角色（admin/reviewer/viewer）+ 16 權限 + bcrypt password + SHA-256 session + API key + audit log；零停機 permissive→enforced 兩段切換 |
+| 2026-04-26 | [live-build-log-streaming](./2026-04-26-live-build-log-streaming.md) | Active | Build log 從 post-mortem 升級成 live tail：`onBuildStarted` callback 早 leak buildId，背景 task 把 `pollBuildLog` chunks 透過 SSE 廣播到既有 deployment-event-stream |

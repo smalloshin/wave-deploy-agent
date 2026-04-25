@@ -4,6 +4,50 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第三段）—— Live build-log streaming refactor（completion of deferred Tier 2 follow-up）**
+
+接續使用者「請做到結束、決定找 subagents 商量」的指示，把 `2026-04-25-deployment-observability` ADR 裡刻意 defer 的 **live build-log tail** 補完。原本 build log 是 post-mortem（要等 build 整個結束才能下載一次），這刀讓使用者在 build 進行中就看到 GCS append-only log 即時 tail 出來。
+
+**這段做了什麼**：
+
+- `apps/api/src/services/deploy-engine.ts` — 加 `BuildHooks` interface + `onBuildStarted` callback，buildId 拿到當下立刻 fire（早 5-10 分鐘）；`buildId` 進 return type（成功 / timeout / failure 三條路徑都帶回）
+- `apps/api/src/services/deploy-worker.ts` — exported `streamBuildLogToDeployment()` helper：consume `pollBuildLog` async-generator，每個 chunk publish 成 `log` event，bookend `meta` events（`build_log_stream_started/error/ended`）；wire 進 `buildAndPushImage` 呼叫處用 AbortController 收尾，silent await 避免 unhandled rejection
+- `apps/api/src/test-build-log-live.ts` — 新增 5 個 unit tests，用 `__pollerForTest` 注入 fake async-generator（不依賴 GCS 也不需要 mocking framework，符合既有 `test-*.ts` 風格）
+- `brain/decisions/2026-04-26-live-build-log-streaming.md` — 新 ADR，明確說 supersedes 04-25 那份的 Tier 2 follow-up 段落
+- `brain/decisions/index.md` — 加一列
+
+**Test 通過率（累計）：77/77** unit tests，integration 全部 clean skip：
+- `test-stage-events.ts`：10
+- `test-timeline-route.ts`：7
+- `test-event-stream.ts`：15
+- `test-diagnostics.ts`：7
+- `test-auth.ts`：33
+- `test-build-log-live.ts`：**5（新增）**
+
+**驗證**：API `npm run build` clean、Web `npm run build` clean（10 routes 全綠，沒動 web 程式碼，純 sanity check）。
+
+**架構決策關鍵點**（詳見 ADR）：
+1. **Hook timing**：`onBuildStarted` 在拿到 buildId 「之後 / polling loop 之前」fire——比 build 結束早 5-10 分鐘
+2. **背景 task 不 await**：streaming 跟 polling 並行，AbortController 主導生命週期，build 結束就 abort
+3. **共享 SSE stream**：log events 跟 stage events 走同一條，前端不用第二個 connection；ring buffer + Last-Event-ID 那套自動繼承
+4. **best-effort 鐵則**：publish 失敗、poller throw、hook throw 全部 catch + warn，不能炸 deploy
+5. **Aborted 不 emit ended-meta**：`finally` guard `!aborted`，避免使用者看到誤導訊息
+6. **Test 注入點不用 mocking framework**：`__pollerForTest?` parameter，跟既有 test 風格一致
+
+**已知妥協**：
+- 沒 e2e test（依賴真 Cloud Build），unit + 手動驗證 + 04-25 spike 結果為證
+- 沒拍螢幕截圖驗證——等使用者起床 review
+- 4-agent council 沒 spawn——所有決策都低風險（hook timing / abort lifecycle / test pattern 都跟既有架構一致），spawn 反而 over-engineer
+
+**使用者下一步**：
+1. Review 三輪 commits（pr/sync-all branch 上的 round 1 RBAC + round 2 live build-log）
+2. 跑 local Postgres 套兩張新 table（schema 沒動，原本那兩張就好）
+3. 起一次真 deploy 看 build 期間 LogStream 是不是真的會 tick
+4. 看到 `build_log_stream_started` / `log` chunks 流出來 / `build_log_stream_ended` 三段都正常 → ship
+5. 任何 SubmitModal / ETA polish 都另開議題
+
+---
+
 **2026-04-25（深夜後續，autonomous overnight 第二段）—— RBAC 系統補測試 + 修一個 production bug + ADR**
 
 繼觀測性 3 層 ship 完之後，回頭補 RBAC（commit `34a8671` 早就上了）的 test coverage 跟 ADR。順便發現一個 **production-shipped bug**：`middleware/auth.ts` 的 `lookupRequiredPermission()` 用 `key.split(':')[1]` 取 path，但 path 裡本來就有 `:param`，多冒號 split 會把 path 截斷——所以任何 `/api/projects/:id` 之類的 route lookup 永遠回傳 null，permission check 失效。改成 `indexOf(':')` 切第一個冒號即可。test-auth.ts 有 cover 這個 case。
@@ -14,12 +58,14 @@
 - `brain/decisions/2026-04-25-rbac-system-permissive-then-enforced.md` 新 ADR
 - `brain/decisions/index.md` 加一列
 
-**Test 通過率（累計）：72/72** unit tests，所有 integration tests 因 local Postgres 未啟而 skip cleanly：
+**Test 通過率（當下）：72/72** unit tests，所有 integration tests 因 local Postgres 未啟而 skip cleanly：
 - `test-stage-events.ts`：10
 - `test-timeline-route.ts`：7
 - `test-event-stream.ts`：15
 - `test-diagnostics.ts`：7
 - `test-auth.ts`：33（新增）
+
+> _2026-04-26 update：第三段 live build-log refactor 後，累計升到 77/77_
 
 **驗證**：API `npx tsc --noEmit` clean、`npm run build` clean；Web `npm run build` clean（10 routes 全綠，含 /admin、/login）。
 

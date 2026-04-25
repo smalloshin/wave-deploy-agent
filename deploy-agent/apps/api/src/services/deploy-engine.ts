@@ -49,11 +49,23 @@ export interface DeployResult {
 // Accepts either a GCS URI (gs://bucket/object) or a local directory path.
 // GCS URI is preferred since Cloud Run /tmp is ephemeral.
 
+/**
+ * Optional build-time hooks. The `onBuildStarted` callback fires AS SOON AS
+ * Cloud Build returns the operation metadata (i.e. before the build polls to
+ * completion), so callers can spin up a live log poller against
+ * `gs://{bucket}/log-{buildId}.txt`. If the callback throws, the error is
+ * swallowed (logged only) — observability must never crash a deploy.
+ */
+export interface BuildHooks {
+  onBuildStarted?: (info: { buildId: string; bucket: string }) => void;
+}
+
 export async function buildAndPushImage(
   projectDir: string,
   config: DeployConfig,
   gcsSourceUri?: string,
-): Promise<{ success: boolean; imageUri: string; error: string | null; buildLog?: string }> {
+  hooks?: BuildHooks,
+): Promise<{ success: boolean; imageUri: string; error: string | null; buildLog?: string; buildId?: string }> {
   const imageUri = `${config.gcpRegion}-docker.pkg.dev/${config.gcpProject}/deploy-agent/${config.imageName}:${config.imageTag}`;
 
   try {
@@ -150,6 +162,17 @@ export async function buildAndPushImage(
     const buildId = buildData.metadata.build.id;
     console.log(`[Deploy]   Cloud Build started: ${buildId}`);
 
+    // Fire the onBuildStarted hook BEFORE the polling loop so callers can
+    // start streaming GCS log chunks immediately. Errors here are swallowed —
+    // observability must never crash a deploy.
+    if (hooks?.onBuildStarted) {
+      try {
+        hooks.onBuildStarted({ buildId, bucket: gcsBucket });
+      } catch (err) {
+        console.warn(`[Deploy]   onBuildStarted hook threw: ${(err as Error).message}`);
+      }
+    }
+
     // Poll build status
     const pollUrl = `https://cloudbuild.googleapis.com/v1/projects/${config.gcpProject}/builds/${buildId}`;
     const maxWait = 10 * 60 * 1000;
@@ -164,7 +187,7 @@ export async function buildAndPushImage(
       const status = await statusRes.json() as { status: string; statusDetail?: string; logUrl?: string; results?: { buildStepOutputs?: string[] }; steps?: Array<{ status: string; args?: string[] }> };
 
       if (status.status === 'SUCCESS') {
-        return { success: true, imageUri, error: null };
+        return { success: true, imageUri, error: null, buildId };
       }
       if (status.status === 'FAILURE' || status.status === 'INTERNAL_ERROR' || status.status === 'TIMEOUT' || status.status === 'CANCELLED') {
         // Try to fetch build log for detailed error — failures here must NOT be silent,
@@ -207,18 +230,22 @@ export async function buildAndPushImage(
         // detailMsg alone is useful — LLM can still reason about the Cloud Build API response.
         const err = new Error(`Cloud Build ${status.status}: ${detailMsg}`);
         (err as Error & { buildLog?: string }).buildLog = fullBuildLog;
+        (err as Error & { buildId?: string }).buildId = buildId;
         throw err;
       }
       console.log(`[Deploy]   Cloud Build status: ${status.status}`);
     }
 
-    throw new Error('Cloud Build timed out after 10 minutes');
+    const timeoutErr = new Error('Cloud Build timed out after 10 minutes');
+    (timeoutErr as Error & { buildId?: string }).buildId = buildId;
+    throw timeoutErr;
   } catch (err) {
     return {
       success: false,
       imageUri,
       error: (err as Error).message,
       buildLog: (err as Error & { buildLog?: string }).buildLog,
+      buildId: (err as Error & { buildId?: string }).buildId,
     };
   }
 }

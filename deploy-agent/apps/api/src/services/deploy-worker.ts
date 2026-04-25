@@ -27,6 +27,90 @@ import { restoreDbDump } from './db-restore';
 import { notifyDeployComplete, notifyCanaryFailed, notifyDeployFailed } from './discord-notifier';
 import { captureDeployedSource } from './deployed-source-capture';
 import { recordStageEvent, type StageName } from './stage-events';
+import { pollBuildLog, type BuildLogChunk } from './build-log-poller';
+import { publish as publishStreamEvent } from './deployment-event-stream';
+
+/**
+ * Stream live build-log chunks from GCS to a deployment's SSE channel.
+ *
+ * Runs in the background (caller fires-and-forgets). The async-generator
+ * `pollBuildLog` is driven to completion or until `abortSignal` is fired.
+ * Each chunk is published as a `log` event on the deployment's stream so any
+ * connected SSE client gets near-live tail (poll interval ~1.5s, p95 lag ~3s).
+ *
+ * Errors are logged but never thrown — observability must NOT crash a deploy.
+ * If the GCS object hasn't been created yet within ~30s of build:start, the
+ * poller throws and we surface that as a `meta` event so the UI can show
+ * "log not yet available" instead of silently spinning.
+ *
+ * Exported for unit testing via `streamBuildLogToDeploymentForTest()`.
+ */
+export async function streamBuildLogToDeployment(opts: {
+  deploymentId: string;
+  buildId: string;
+  bucket: string;
+  abortSignal: AbortSignal;
+  /** Test seam — inject a fake async-generator instead of calling GCS. */
+  __pollerForTest?: (o: { buildId: string; bucket: string; abortSignal: AbortSignal }) => AsyncGenerator<BuildLogChunk>;
+}): Promise<void> {
+  const poller = opts.__pollerForTest
+    ? opts.__pollerForTest({ buildId: opts.buildId, bucket: opts.bucket, abortSignal: opts.abortSignal })
+    : pollBuildLog({ buildId: opts.buildId, bucket: opts.bucket, abortSignal: opts.abortSignal });
+
+  // Announce on the stream so the UI knows live-tail is now active.
+  try {
+    publishStreamEvent(opts.deploymentId, 'meta', {
+      kind: 'build_log_stream_started',
+      build_id: opts.buildId,
+      bucket: opts.bucket,
+    });
+  } catch (err) {
+    console.warn(`[deploy-worker] publish stream-started failed: ${(err as Error).message}`);
+  }
+
+  try {
+    for await (const chunk of poller) {
+      if (opts.abortSignal.aborted) break;
+      try {
+        publishStreamEvent(opts.deploymentId, 'log', {
+          build_id: chunk.build_id,
+          bytes_offset: chunk.bytes_offset,
+          text: chunk.text,
+          lag_ms: chunk.observed_lag_ms,
+          gcs_updated: chunk.gcs_updated_iso,
+        });
+      } catch (err) {
+        // Publish failed (ring buffer / emitter issue) — keep polling, just log.
+        console.warn(`[deploy-worker] publish log chunk failed: ${(err as Error).message}`);
+      }
+    }
+  } catch (err) {
+    // Poller itself threw (e.g. object missing > maxMissingPolls).
+    if (!opts.abortSignal.aborted) {
+      console.warn(`[deploy-worker] build-log stream ended: ${(err as Error).message}`);
+      try {
+        publishStreamEvent(opts.deploymentId, 'meta', {
+          kind: 'build_log_stream_error',
+          build_id: opts.buildId,
+          error: (err as Error).message,
+        });
+      } catch {
+        // Best-effort
+      }
+    }
+  } finally {
+    if (!opts.abortSignal.aborted) {
+      try {
+        publishStreamEvent(opts.deploymentId, 'meta', {
+          kind: 'build_log_stream_ended',
+          build_id: opts.buildId,
+        });
+      } catch {
+        // Best-effort
+      }
+    }
+  }
+}
 
 export async function runDeployPipeline(
   projectId: string,
@@ -590,6 +674,13 @@ export async function runDeployPipeline(
         }
       : undefined;
 
+    // Live build-log streaming: when Cloud Build returns the operation, fire
+    // up a GCS poller that publishes chunks to the deployment's SSE channel.
+    // Aborted as soon as buildAndPushImage returns (success OR failure) so the
+    // poller doesn't keep running past the build.
+    const buildLogAbort = new AbortController();
+    let buildLogPromise: Promise<void> | null = null;
+
     const buildResult = await buildAndPushImage(projectDir, {
       projectSlug: project.slug,
       gcpProject,
@@ -599,13 +690,43 @@ export async function runDeployPipeline(
       envVars: finalEnvVars,
       port,
       preflight,
-    }, gcsSourceUri);
+    }, gcsSourceUri, {
+      onBuildStarted: ({ buildId, bucket }) => {
+        // Record build_id on the active build stage so timeline metadata
+        // can show it AND so /api/deploys/:id/build-log can find it without
+        // waiting for the build to finish.
+        if (deploymentIdForStages) {
+          void recordStageEvent(deploymentIdForStages, 'build', 'started', {
+            build_id: buildId,
+            bucket,
+            live_log: true,
+          });
+        }
+        // Spawn the poller. Fire-and-forget; we'll await on cleanup.
+        if (deploymentIdForStages) {
+          buildLogPromise = streamBuildLogToDeployment({
+            deploymentId: deploymentIdForStages,
+            buildId,
+            bucket,
+            abortSignal: buildLogAbort.signal,
+          });
+        }
+      },
+    });
+
+    // Stop the poller (if any) — build is now terminal and we don't want to
+    // keep hitting GCS. The poller itself respects the abort signal.
+    buildLogAbort.abort();
+    if (buildLogPromise) {
+      // Don't let a poller bug propagate to the deploy. Best-effort wait.
+      try { await buildLogPromise; } catch { /* ignore */ }
+    }
 
     if (!buildResult.success) {
       // Build failed — record failure for both build and (implicit) push stages.
       stageEnd('build', 'failed', {
         error: buildResult.error,
-        build_id: (buildResult as unknown as { buildId?: string }).buildId,
+        build_id: buildResult.buildId,
       });
       // LLM 分析 build 失敗原因。無論 buildLog 有沒有拿到，都呼叫 LLM —
       // 就算只有 error message，LLM 仍能從 Cloud Build API 的文字中判斷大方向。
@@ -635,7 +756,7 @@ export async function runDeployPipeline(
     // Cloud Build atomically builds AND pushes; record both with 0-duration push.
     stageEnd('build', 'succeeded', {
       imageUri: buildResult.imageUri,
-      build_id: (buildResult as unknown as { buildId?: string }).buildId,
+      build_id: buildResult.buildId,
     });
     stageStart('push', { imageUri: buildResult.imageUri });
     stageEnd('push', 'succeeded', { imageUri: buildResult.imageUri });
