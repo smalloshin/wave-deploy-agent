@@ -4,6 +4,69 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27（autonomous overnight 第二十七段）—— Round 27: discord_audit lake completion（180d TTL + GET endpoints + admin tab）**
+
+緊急修完 426 MB upload bug 後（commits 19af9c1 + ac4d58b），接著 unpark round 27——round 26 把 Discord NL UX hardening 整套做完了，但 discord_audit 這張 table 寫入 surface 補完之後只有 POST/PATCH，**沒有 read endpoint、沒有 retention 排程**。一個 forensic table 不能讀也不能淘汰，等同沒做完。這個 round 把整條 lake boil 完。
+
+**這次做的事**：
+
+A) **180-day retention 排程**（`apps/api/src/services/discord-audit-cleanup.ts`，167 LOC）：
+- 沿用 `auth-cleanup.ts` 的 boot-then-interval pattern（在 round 25 期間加的 retention 排程）：`startDiscordAuditCleanup()` idempotent + `INITIAL_DELAY_MS` setTimeout + `INTERVAL_MS` setInterval + `wrappedRun` 用 `isRunning` flag 防 overlap
+- `clampRetentionDays(input, defaultDays=180)` 純函式 export 出來——`safeNumber` coerce → `Math.trunc` → clamp 到 [7, 3650]
+- 三個 env var：`DISCORD_AUDIT_RETENTION_DAYS`（default 180）、`DISCORD_AUDIT_CLEANUP_INTERVAL_HRS`（default 24）、`DISCORD_AUDIT_CLEANUP_INITIAL_DELAY_MS`（default 30000）
+- `cleanupDiscordAudit(retentionDays)` 用 `DELETE FROM discord_audit WHERE created_at < NOW() - ($1 || ' days')::interval` parameterized query——避免 SQL injection（safeNumber 雖然已 sanitize，但這裡再加一道）
+- `apps/api/src/index.ts` boot 時在 `startAuthCleanup()` 旁邊接上 `startDiscordAuditCleanup()`
+
+B) **Read 面 + filter**（`apps/api/src/services/discord-audit-query.ts` 183 LOC + `apps/api/src/routes/discord-audit.ts` +52 LOC）：
+- `GET /api/discord-audit`：limit/offset 分頁 + `status` / `toolName` / `discordUserId` / `since` / `until` filter
+- `GET /api/discord-audit/:id`：drill-down 單列查詢，404 處理
+- `parseDiscordAuditQuery(raw)` 純函式 verdict（`{ kind: 'valid', query }` | `{ kind: 'invalid', reason }`）：
+  - zod coerce: `z.coerce.number().int().min(1).max(200).default(50)`
+  - ISO 8601 second-pass：zod 過了再 `new Date(s)` 檢查 NaN
+  - 空字串視為「未提供」（不要對 empty form fields 回 400）
+  - **`since > until` 檢查**：避免 silently 回空 row（user 不知道為什麼）
+  - extra unknown keys 自動 strip（zod 預設行為）
+  - regex bound：`toolName` `[a-z_]{1,64}` / `discordUserId` `\d{1,64}`——`tool1` 含數字會被擋
+- `buildListSql(query)` / `buildCountSql(query)` 純函式 SQL composer：
+  - 完全 parameterized（`$1`, `$2`, ...），filter value **不會**進 SQL text
+  - LIMIT/OFFSET 動態 placeholder 編號（`$${values.length + 1}`）
+  - WHERE clause 動態組（沒 filter → 沒 WHERE）
+- `middleware/auth.ts` 加 `['GET:/api/discord-audit', 'users:manage']` + `['GET:/api/discord-audit/:id', 'users:manage']`——跟 auth audit log 同 sensitivity（reviewer 不該看）
+
+C) **Admin dashboard tab**（`apps/web/app/admin/discord-audit-section.tsx` 521 LOC + `apps/web/app/admin/page.tsx` 改）：
+- 第 4 個 tab「Discord 紀錄」（i18n: zh-TW / en，30 個 string per locale）
+- 列表：時間 / 使用者 / 工具 / 意圖 / 狀態 + filter UI（5 種 filter）
+- Detail modal：完整 `tool_input` JSON + `result_text` + LLM provider + 完整時間戳
+- 分頁：prev / next + counter `{start}-{end} of {total}`
+- 狀態 badge 顏色：pending=yellow / success=green / error=red / denied=gray / cancelled=gray
+
+D) **Tests**（106 個新 zero-dep test）：
+- `test-discord-audit-cleanup.ts` 36 PASS：clampRetentionDays happy path + 上下界 + decimal truncate + bad input fallback + env var 字串 coerce + 自訂 default + 「silly default 5 仍 floor 到 7 / silly default 5000 仍 ceil 到 3650」regression
+- `test-discord-audit-query.ts` 70 PASS：parseDiscordAuditQuery defaults / limit & offset 邊界（含 200 / 0 / -1 / non-numeric）/ status enum 5 種 + case-sensitivity / toolName regex（snake_case + 64 char + 拒數字 + 拒大寫 + 拒 hyphen）/ discordUserId snowflake / ISO date 含 yesterday/soon 拒絕 / since>until 失敗 / since==until 過 / 空字串視為 missing / unknown key strip / buildListSql 多 filter parameter 編號 / buildCountSql 不含 LIMIT/OFFSET / **security: filter value 從不出現在 SQL text**
+
+E) **Cumulative sweep**：1504 passed / 0 failed across 27 zero-dep test files（+106 from round 27）。`apps/api` 跟 `apps/web` 兩個 tsc 都全綠。
+
+**架構決策**：
+- 為什麼 cleanup 不寫 INSERT INTO `discord_audit_archive`？因為 forensic horizon 是 180 天，過了就是過了——保留 archive 等於把問題 push 到「下次再來決定 archive 又該保留多久」。需要的話 op 可以 `pg_dump` 出去。一致性：跟 `auth-cleanup` 也是直接 DELETE
+- 為什麼 GET 限 `users:manage` 不是 `reviewer` 也能看？Discord 紀錄會包含 LLM intent text + 完整 `tool_input`（含 project name、env var 名稱 etc），跟 auth audit 同 sensitivity bar。reviewer 只看 review queue 不該看別人下什麼指令
+- 為什麼拆兩個 module（cleanup vs query）？關注點不一樣：cleanup 是 schedule + DB write、query 是 input validation + read。分開好測也好 reuse（MCP 將來想 expose discord_audit query 直接重用 parser）
+- 為什麼 `since` 跟 `until` 的空字串要視為 missing 而不是 invalid？Browser form 預設 send 空字串，user 沒填日期不該回 400——這是 round 22 source-upload-verdict 早就釘下的 UX 規矩
+
+**遇到的坑**：
+- 沒太多。零依賴 pure-function pattern 第三十次驗證沒問題了。寫 admin section.tsx 比較花時間（detail modal + filter UI + i18n 都要做）但沒卡到
+- 第一版測試把 `parseDiscordAuditQuery({ toolName: 'tool1' })` 預期成 valid，結果 regex 是 `[a-z_]+` 不接受數字——把 test assertion 翻過來，順便釘住「toolName 不能有數字」這條 invariant。如果 bot 將來新增 tool 命名要含數字，test 會立刻紅燈提醒去調 regex
+
+**沒做的事 / 下一步**：
+- discord_audit detail modal 的 `tool_input` 用 `<pre>` 直接 dump JSON，沒做 syntax highlight——夠用
+- 沒寫 `runDiscordAuditCleanupOnce()` 的整合測試（這個會 hit DB）。auth-cleanup 也沒寫，pattern 一致；後續想 cover 的話用 test-auth-cleanup.ts 的 docker-compose seam
+- emergency upload fix（commits 19af9c1 + ac4d58b）需要 user 實機驗證 426 MB Firefox 真的能 resume
+
+**Future direction（user explicit priority order）**：
+1. **AUTH_MODE=enforced 切換 + listProjects filter**（RBAC Phase 2）：要先驗證 Discord bot / MCP / web dashboard 都帶 credentials 再切；同步加 owner-scoped list 避免 viewer 看到別人 project
+2. **更多 silent-bug rounds**：deferred 到 RBAC Phase 2 收完之後，spawn fresh architect scout 重排序
+
+---
+
 **2026-04-26（emergency fix 緊急修復）—— 426 MB Firefox 上傳 network_error 修掉（chunked GCS resumable upload）**
 
 User 在半夜 23:29 回報緊急 bug：legal_flow_build.zip（426.5 MB）在 Firefox 149/macOS 上傳失敗，error envelope 顯示 `stage=upload, code=network_error, retryable=true`。整段 overnight 暫停 round 27，先處理線上問題。
