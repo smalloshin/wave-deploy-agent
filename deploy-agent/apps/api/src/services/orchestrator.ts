@@ -17,6 +17,11 @@ export async function createProject(input: {
   sourceType: string;
   sourceUrl?: string;
   config?: Record<string, unknown>;
+  /** RBAC Phase 1: user UUID who owns this project. Set from
+   *  req.auth.user.id at the route boundary. NULL only when called from
+   *  internal/system contexts (none currently — all callers have a
+   *  request). */
+  ownerId?: string | null;
 }): Promise<Project> {
   const baseSlug = input.name
     .toLowerCase()
@@ -44,10 +49,17 @@ export async function createProject(input: {
   }
 
   const result = await query(
-    `INSERT INTO projects (name, slug, source_type, source_url, config)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO projects (name, slug, source_type, source_url, config, owner_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
-    [input.name, slug, input.sourceType, input.sourceUrl ?? null, JSON.stringify(input.config ?? {})]
+    [
+      input.name,
+      slug,
+      input.sourceType,
+      input.sourceUrl ?? null,
+      JSON.stringify(input.config ?? {}),
+      input.ownerId ?? null,
+    ]
   );
 
   // Ensure every project belongs to a group — singleton projects group by themselves.
@@ -358,6 +370,9 @@ function rowToProject(row: Record<string, unknown>): Project {
     config: (typeof row.config === 'string' ? JSON.parse(row.config) : row.config) as Project['config'],
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
+    // RBAC Phase 1: NULL on legacy rows (pre-2026-04-26 backfill missed); set
+    // for new rows from createProject(req.auth.user.id).
+    ownerId: (row.owner_id ?? null) as string | null,
   };
 }
 

@@ -58,6 +58,7 @@ function project(overrides: Partial<Project> = {}): Project {
     },
     createdAt: new Date(),
     updatedAt: new Date(),
+    ownerId: null,
     ...overrides,
   };
 }

@@ -23,6 +23,7 @@ import {
 import { runPipeline } from '../services/pipeline-worker';
 import { publishRevision, deleteRevision } from '../services/deploy-engine';
 import { generateDownloadSignedUrl } from '../services/deployed-source-capture';
+import { requireOwnerOrAdmin } from '../services/owner-check';
 
 const execFileAsync = promisify(execFile);
 
@@ -64,6 +65,9 @@ export async function versioningRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const project = await getProject(request.params.id);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
+      // RBAC Phase 1: publishing routes 100% live traffic — owner OR admin only.
+      const owner = await requireOwnerOrAdmin(request, reply, project, 'version_publish');
+      if (!owner.ok) return;
 
       const deployments = await getDeploymentsByProject(project.id);
       const target = deployments.find((d) => d.id === request.params.deployId);
@@ -146,6 +150,9 @@ export async function versioningRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const project = await getProject(request.params.id);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
+      // RBAC Phase 1: new-version triggers a fresh build+deploy pipeline — owner OR admin only.
+      const owner = await requireOwnerOrAdmin(request, reply, project, 'version_new');
+      if (!owner.ok) return;
 
       if (project.status !== 'live' && project.status !== 'failed' && project.status !== 'stopped') {
         return reply.status(400).send({
@@ -249,6 +256,9 @@ export async function versioningRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const project = await getProject(request.params.id);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
+      // RBAC Phase 1: deploy lock blocks/unblocks auto-publish — owner OR admin only.
+      const owner = await requireOwnerOrAdmin(request, reply, project, 'deploy_lock_toggle');
+      if (!owner.ok) return;
 
       const body = (request.body ?? {}) as { locked?: boolean };
       const locked = body.locked !== undefined ? body.locked : !project.config?.deployLocked;
@@ -268,6 +278,9 @@ export async function versioningRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const project = await getProject(request.params.id);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
+      // RBAC Phase 1: cleanup deletes Cloud Run revisions — owner OR admin only.
+      const owner = await requireOwnerOrAdmin(request, reply, project, 'version_cleanup');
+      if (!owner.ok) return;
 
       const body = (request.body ?? {}) as { keep?: number };
       const keep = body.keep ?? 5;
@@ -312,6 +325,9 @@ export async function versioningRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const project = await getProject(request.params.id);
       if (!project) return reply.status(404).send({ error: 'Project not found' });
+      // RBAC Phase 1: deployed source snapshot may include secrets/env — owner OR admin only.
+      const owner = await requireOwnerOrAdmin(request, reply, project, 'version_download');
+      if (!owner.ok) return;
 
       const deployments = await getDeploymentsByProject(project.id);
       const target = deployments.find((d) => d.id === request.params.deployId);

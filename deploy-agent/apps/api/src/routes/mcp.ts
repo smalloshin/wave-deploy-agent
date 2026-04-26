@@ -158,7 +158,15 @@ const TOOLS = [
   },
 ];
 
-async function handleToolCall(call: MCPToolCall): Promise<MCPToolResult> {
+/** RBAC Phase 1: MCP submitter context. The route handler captures
+ *  request.auth.user?.id and forwards it into handleToolCall so submit_project
+ *  can stamp ownership on the new row. The MCP tool handler itself never sees
+ *  FastifyRequest — keep it small/typed. */
+interface McpActor {
+  userId: string | null;
+}
+
+async function handleToolCall(call: MCPToolCall, actor: McpActor): Promise<MCPToolResult> {
   try {
     switch (call.name) {
       case 'submit_project': {
@@ -268,6 +276,10 @@ async function handleToolCall(call: MCPToolCall): Promise<MCPToolResult> {
             gcsDbDumpUri,
             dbDumpFileName,
           },
+          // RBAC Phase 1: MCP submitters are typically API-key authenticated;
+          // stamp their user_id as owner so subsequent destructive MCP calls
+          // (or Discord/web calls on the same project) pass owner-check.
+          ownerId: actor.userId,
         });
         const dbMsg = gcsDbDumpUri ? ' Database dump will be restored during deployment.' : '';
         return text(`Project "${project.name}" submitted (ID: ${project.id}). Status: ${project.status}. Security scanning will begin shortly.${dbMsg}`);
@@ -506,7 +518,11 @@ export async function mcpRoutes(app: FastifyInstance) {
   // Call a tool
   app.post('/mcp/tools/call', async (request) => {
     const body = request.body as { name: string; arguments: Record<string, unknown> };
-    const result = await handleToolCall({ name: body.name, arguments: body.arguments ?? {} });
+    // RBAC Phase 1: capture MCP caller identity (api_key / session) once
+    // and pass it into handleToolCall — only submit_project needs it today
+    // but every future destructive MCP tool will go through the same channel.
+    const actor: McpActor = { userId: request.auth.user?.id ?? null };
+    const result = await handleToolCall({ name: body.name, arguments: body.arguments ?? {} }, actor);
     return result;
   });
 }

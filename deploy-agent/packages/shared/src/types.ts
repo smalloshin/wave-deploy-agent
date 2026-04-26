@@ -67,6 +67,9 @@ export interface Project {
   config: ProjectConfig;
   createdAt: Date;
   updatedAt: Date;
+  /** RBAC Phase 1: user UUID who owns this project. NULL = legacy
+   *  unbackfilled row (admin-only). Set on createProject from req.auth. */
+  ownerId: string | null;
 }
 
 export interface ProjectConfig {

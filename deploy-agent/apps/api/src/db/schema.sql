@@ -284,3 +284,61 @@ CREATE TABLE IF NOT EXISTS deployment_diagnostics (
 
 CREATE INDEX IF NOT EXISTS idx_dd_deployment ON deployment_diagnostics(deployment_id);
 CREATE INDEX IF NOT EXISTS idx_dd_created ON deployment_diagnostics(created_at);
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- RBAC Phase 1.5 — Resource ownership (projects.owner_id)
+-- ═══════════════════════════════════════════════════════════════
+-- Adds owner_id to projects so destructive routes (DELETE / publish /
+-- env-vars / new-version / deploy-lock / cleanup / start / stop / scan
+-- / resubmit / skip-scan / force-fail / project-groups actions) can be
+-- gated to (owner OR admin), not just (has role-permission). Phase 1.5
+-- is the per-resource second hop that complements the per-route first
+-- hop (`ROUTE_PERMISSIONS` in middleware/auth.ts).
+--
+-- Schema design:
+--   - UUID FK to users(id), NULLABLE, ON DELETE SET NULL.
+--     · Nullable: legacy rows pre-Phase-1.5 may not be backfilled if
+--       the bootstrap admin user wasn't seeded yet. Allows graceful
+--       degradation — `granted-legacy-unowned` verdict path is
+--       admin-only, so legacy rows aren't a privilege escalation.
+--     · SET NULL on user delete: deleting an admin teammate should NOT
+--       cascade-delete their projects. Their projects become "admin-
+--       only" (granted-legacy-unowned) until reassigned.
+--   - FK to users(id), not text email: emails change, primary keys
+--     don't.
+--   - Indexed for owner-filtered list queries (Phase 2).
+--
+-- Backfill: assign every NULL-owner project to the first active admin,
+-- ordered by created_at. Idempotent (only updates NULLs). The Phase 2
+-- bootstrap admin (smalloshin@wavenet.com.tw) resolves correctly here
+-- without hardcoding emails.
+--
+-- This block is append-only; never edit existing rows.
+
+ALTER TABLE projects
+  ADD COLUMN IF NOT EXISTS owner_id UUID REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id);
+
+-- Backfill legacy rows. Idempotent: only touches NULLs. Resolves owner
+-- to the first active admin user; in single-operator deployments this
+-- is the operator's own user. In multi-admin deployments, "first
+-- active admin" is a deterministic fallback (operator can re-assign
+-- via psql later). If no admin exists yet (fresh DB), backfill is a
+-- no-op — owner_id stays NULL and Phase-1.5 verdict treats it as
+-- legacy unowned (admin-only access).
+UPDATE projects p
+   SET owner_id = (
+     SELECT u.id FROM users u
+       JOIN roles r ON r.id = u.role_id
+      WHERE r.name = 'admin' AND u.is_active = true
+      ORDER BY u.created_at ASC
+      LIMIT 1
+   )
+ WHERE p.owner_id IS NULL
+   AND EXISTS (
+     SELECT 1 FROM users u
+       JOIN roles r ON r.id = u.role_id
+      WHERE r.name = 'admin' AND u.is_active = true
+   );

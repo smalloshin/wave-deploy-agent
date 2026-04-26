@@ -22,6 +22,12 @@ import {
   type TeardownStepOutcome,
   type TeardownVerdict,
 } from '../services/teardown-verdict';
+import {
+  buildAccessVerdict,
+  logAccessVerdict,
+  isGranted,
+  type AccessCheckInput,
+} from '../services/access-denied-verdict';
 import type { Project, ProjectResource, ProjectWithResources, ProjectGroup } from '@deploy-agent/shared';
 
 async function enrichProjectWithResources(project: Project): Promise<ProjectWithResources> {
@@ -195,6 +201,51 @@ export async function projectGroupRoutes(app: FastifyInstance) {
       const targets = body.serviceIds
         ? members.filter((p) => body.serviceIds!.includes(p.id))
         : members;
+
+      // RBAC Phase 1: bulk action refuses the WHOLE batch if any target is
+      // not owned by the actor (and the actor isn't admin). This matches the
+      // single-resource contract — bulk is not a privilege-escalation surface.
+      // Compute verdicts for every target up front, then short-circuit if any
+      // deny. We don't use requireOwnerOrAdmin() because it sends a reply per
+      // call; here we want a single consolidated 403 with rejectedIds[].
+      const mode = (process.env.AUTH_MODE ?? 'permissive') as 'permissive' | 'enforced';
+      const auth = request.auth;
+      const rejected: Array<{ serviceId: string; name: string; reason: string }> = [];
+      for (const p of targets) {
+        const v = buildAccessVerdict({
+          mode,
+          via: auth.via,
+          actorUserId: auth.user?.id ?? null,
+          actorEmail: auth.user?.email ?? null,
+          actorRoleName: auth.user?.role_name ?? null,
+          resourceOwnerId: p.ownerId,
+          resourceId: p.id,
+          resourceKind: 'project',
+          action: `group_${body.action}`,
+        } satisfies AccessCheckInput);
+        logAccessVerdict(v);
+        if (!isGranted(v)) {
+          rejected.push({
+            serviceId: p.id,
+            name: p.name,
+            reason: v.kind === 'denied-anonymous' ? 'auth_required' : 'not_owner',
+          });
+        }
+      }
+      if (rejected.length > 0) {
+        // Mirror single-route shape: 401 if any anonymous in enforced mode, else 403.
+        const status = rejected.some((r) => r.reason === 'auth_required') ? 401 : 403;
+        return reply.status(status).send({
+          error: status === 401 ? 'auth_required' : 'not_owner',
+          message:
+            `Bulk ${body.action} refused: ${rejected.length} of ${targets.length} target service(s) ` +
+            `are not owned by the caller. Bulk actions require ownership of every target (or admin). ` +
+            `Resubmit with serviceIds[] limited to your owned services.`,
+          groupId: request.params.groupId,
+          action: body.action,
+          rejected,
+        });
+      }
 
       const results: Array<{ serviceId: string; name: string; success: boolean; message: string }> = [];
 

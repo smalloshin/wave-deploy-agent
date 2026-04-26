@@ -40,6 +40,7 @@ import {
   uploadAndPersistDbDumpWithVerdict,
 } from '../services/db-dump-upload-verdict';
 import { releaseProjectRedis } from '../services/redis-provisioner';
+import { requireOwnerOrAdmin } from '../services/owner-check';
 import type { UploadErrorEnvelope, UploadFailureCode, UploadStage } from '@deploy-agent/shared';
 
 const execFileAsync = promisify(execFile);
@@ -245,6 +246,10 @@ export async function projectRoutes(app: FastifyInstance) {
       sourceType: body.sourceType,
       sourceUrl: body.sourceUrl,
       config: body.config,
+      // RBAC Phase 1: stamp the creating actor as owner. Anonymous (permissive
+      // mode) → null, which leaves the row "unowned" and only admins can act
+      // on it later (granted-legacy-unowned guard in access-denied-verdict).
+      ownerId: request.auth.user?.id ?? null,
     });
 
     // Transition to scanning and create scan report
@@ -580,6 +585,9 @@ export async function projectRoutes(app: FastifyInstance) {
               serviceDirName: svc.dirName,
               siblings: siblings.map(s => ({ name: s.projectName, role: s.role, dirName: s.dirName })),
             },
+            // RBAC Phase 1: every sibling in the monorepo group inherits the
+            // submitter as owner so each service can be acted on individually.
+            ownerId: request.auth.user?.id ?? null,
           });
           await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
           const scanReport = await createScanReport(project.id);
@@ -663,6 +671,8 @@ export async function projectRoutes(app: FastifyInstance) {
           gcsDbDumpUri: body.dbDumpGcsUri,
           dbDumpFileName: body.dbDumpFileName,
         },
+        // RBAC Phase 1: stamp owner from auth context (single-service path).
+        ownerId: request.auth.user?.id ?? null,
       });
 
       await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
@@ -835,6 +845,8 @@ export async function projectRoutes(app: FastifyInstance) {
           gcsDbDumpUri,
           dbDumpFileName: dbDumpFileName || undefined,
         },
+        // RBAC Phase 1: stamp owner from auth context (multipart git path).
+        ownerId: request.auth.user?.id ?? null,
       });
       await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
       const scanReport = await createScanReport(project.id);
@@ -1074,6 +1086,8 @@ export async function projectRoutes(app: FastifyInstance) {
               serviceDirName: svc.dirName,
               siblings: siblings.map(s => ({ name: s.projectName, role: s.role, dirName: s.dirName })),
             },
+            // RBAC Phase 1: stamp owner from auth context (multipart monorepo sibling).
+            ownerId: request.auth.user?.id ?? null,
           });
 
           await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
@@ -1155,6 +1169,8 @@ export async function projectRoutes(app: FastifyInstance) {
         allowUnauthenticated,
         envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
       },
+      // RBAC Phase 1: stamp owner from auth context (multipart single-service path).
+      ownerId: request.auth.user?.id ?? null,
     });
 
     await transitionProject(project.id, 'scanning', 'system', { trigger: 'auto' });
@@ -1433,6 +1449,10 @@ export async function projectRoutes(app: FastifyInstance) {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
 
+    // RBAC Phase 1: reanalyze burns LLM budget — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'reanalyze-failure');
+    if (!owner.ok) return;
+
     const { query: dbQuery } = await import('../db/index');
     const latestFailed = await dbQuery(
       `SELECT * FROM state_transitions
@@ -1549,6 +1569,10 @@ export async function projectRoutes(app: FastifyInstance) {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
 
+    // RBAC Phase 1: only owner OR admin may resubmit a project (re-triggers pipeline + spend).
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'resubmit');
+    if (!owner.ok) return;
+
     if (project.status !== 'needs_revision' && project.status !== 'failed' && project.status !== 'live') {
       return reply.status(400).send({ error: `Cannot retry from status: ${project.status}` });
     }
@@ -1576,6 +1600,10 @@ export async function projectRoutes(app: FastifyInstance) {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
 
+    // RBAC Phase 1: force-fail bypasses normal lifecycle — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'force-fail');
+    if (!owner.ok) return;
+
     if (project.status !== 'scanning' && project.status !== 'deploying') {
       return reply.status(400).send({ error: `Project is not stuck (status: ${project.status})` });
     }
@@ -1591,6 +1619,10 @@ export async function projectRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/api/projects/:id/skip-scan', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    // RBAC Phase 1: skip-scan bypasses security gate — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'skip-scan');
+    if (!owner.ok) return;
 
     if (project.status !== 'scanning' && project.status !== 'failed') {
       return reply.status(400).send({ error: `Cannot skip scan from status: ${project.status}` });
@@ -1627,6 +1659,10 @@ export async function projectRoutes(app: FastifyInstance) {
   app.delete<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    // RBAC Phase 1: only owner OR admin may delete a project.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'delete');
+    if (!owner.ok) return;
 
     const gcpProject = project.config?.gcpProject || process.env.GCP_PROJECT || '';
     const gcpRegion = project.config?.gcpRegion || process.env.GCP_REGION || 'asia-east1';
@@ -1758,6 +1794,10 @@ export async function projectRoutes(app: FastifyInstance) {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
 
+    // RBAC Phase 1: env-var keys leak per-project secret shape — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'read-env-vars');
+    if (!owner.ok) return;
+
     // Try to read live env vars from Cloud Run service first
     const deployments = await getDeploymentsByProject(project.id);
     const activeDeployment = deployments.find((d) => d.cloudRunService);
@@ -1792,6 +1832,10 @@ export async function projectRoutes(app: FastifyInstance) {
   app.patch<{ Params: { id: string } }>('/api/projects/:id/env-vars', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    // RBAC Phase 1: PATCH env-vars writes to live service — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'update-env-vars');
+    if (!owner.ok) return;
 
     // Validate request body
     const body = request.body as { envVars?: Record<string, string> };
@@ -1925,6 +1969,12 @@ export async function projectRoutes(app: FastifyInstance) {
 
   // Stop a single project's Cloud Run service (delete service, keep image)
   app.post<{ Params: { id: string } }>('/api/projects/:id/stop', async (request, reply) => {
+    const project = await getProject(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    // RBAC Phase 1: stopping deletes the running Cloud Run service — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'project_stop');
+    if (!owner.ok) return;
+
     const result = await stopProjectService(request.params.id, 'api-user');
     if (!result.success) return reply.status(400).send({ error: result.message });
     return result;
@@ -1932,6 +1982,12 @@ export async function projectRoutes(app: FastifyInstance) {
 
   // Start a stopped project (redeploy from cached Artifact Registry image)
   app.post<{ Params: { id: string } }>('/api/projects/:id/start', async (request, reply) => {
+    const project = await getProject(request.params.id);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    // RBAC Phase 1: starting redeploys live traffic — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'project_start');
+    if (!owner.ok) return;
+
     const result = await startProjectService(request.params.id, 'api-user');
     if (!result.success) return reply.status(400).send({ error: result.message });
     return result;
@@ -1941,6 +1997,9 @@ export async function projectRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>('/api/projects/:id/source-download', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+    // RBAC Phase 1: source tarball may contain secrets — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'project_source_download');
+    if (!owner.ok) return;
 
     const gcsUri = project.config?.gcsSourceUri as string | undefined;
     if (!gcsUri) return reply.status(404).send({ error: 'No source archive on record for this project' });
@@ -1973,6 +2032,9 @@ export async function projectRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/api/projects/:id/retry-domain', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+    // RBAC Phase 1: domain mapping touches DNS + Cloud Run — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'project_retry_domain');
+    if (!owner.ok) return;
 
     const customDomain = project.config?.customDomain as string | undefined;
     if (!customDomain) return reply.status(400).send({ error: 'No customDomain configured for this project' });
@@ -2045,6 +2107,9 @@ export async function projectRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/api/projects/:id/github-webhook', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+    // RBAC Phase 1: webhook config grants push→deploy authority — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'github_webhook_configure');
+    if (!owner.ok) return;
 
     const body = (request.body ?? {}) as {
       repoUrl?: string;
@@ -2105,6 +2170,9 @@ export async function projectRoutes(app: FastifyInstance) {
   app.delete<{ Params: { id: string } }>('/api/projects/:id/github-webhook', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+    // RBAC Phase 1: removing webhook stops auto-deploy — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'github_webhook_remove');
+    if (!owner.ok) return;
 
     await query(
       `UPDATE projects
@@ -2124,6 +2192,9 @@ export async function projectRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>('/api/projects/:id/github-webhook', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+    // RBAC Phase 1: response includes a partial secret (first 8 chars) — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'github_webhook_read');
+    if (!owner.ok) return;
 
     const row = await query(
       `SELECT github_repo_url, github_webhook_secret, github_branch, auto_deploy FROM projects WHERE id = $1`,
@@ -2161,6 +2232,9 @@ export async function projectRoutes(app: FastifyInstance) {
   app.patch<{ Params: { id: string } }>('/api/projects/:id/github-webhook', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+    // RBAC Phase 1: toggling auto-deploy controls push→deploy authority — owner OR admin only.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'github_webhook_toggle');
+    if (!owner.ok) return;
 
     const body = (request.body ?? {}) as { autoDeployEnabled?: boolean; branch?: string };
 
