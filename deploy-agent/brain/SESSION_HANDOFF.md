@@ -4,6 +4,67 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十一段）—— canary 失敗 + auto-rollback 失敗時，project 進 `failed`，不再說謊講 `live`**
+
+第十段把 reconciler 補上 publish-split 自動修復後，立刻發現一個複合性 bug：deploy-worker 在 canary 失敗 + auto-rollback 也失敗的情況下，仍然把 project transition 到 `live`，只在 log 裡寫「rollback failed」。兩個地方會痛：
+
+1. **Dashboard 對使用者說謊**：UI 顯示 project `live`/healthy，可是 Cloud Run 100% 流量還在壞掉的 canary 版本上。Operator 不會主動去查 deploy worker stdout，只看 dashboard，永遠不知道出事。
+2. **Round 10 的 reconciler 會把它做死**：reconciler 每 2 分鐘掃所有 `live` projects，看到 Cloud Run 在跑某個 known DB revision 但 DB 說 published 是別的，就 auto-publish Cloud Run 那個 revision「對齊」DB。在這情境下，那 revision 就是壞掉的 canary 版本——auto-publish 一跑，壞版本變成永久的 published 版本，rollback 意圖被徹底 defeat。
+
+修法是：rollback 失敗時 project 進 `failed`，不進 `live`。Reconciler 只掃 `live`，自然不碰 failed 狀態，operator 介入。
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/post-canary.ts`（新純函式 module）** —— 抽出 post-canary 決策邏輯：
+   - `decidePostCanaryAction({ canary, rollback, newVersion, isDeployLocked })` → discriminated `PostCanaryVerdict`
+     - `live-clean`（canary 過）—— `autoPublishNewVersion = !isDeployLocked`
+     - `live-canary-warning-no-rollback-target`（canary 失敗但無前一版可 rollback，第一次部署）—— 維持「有東西 live 比沒東西 live 好」的既有產品決策
+     - `live-rolled-back`（canary 失敗，rollback 成功）—— 不 publish 新版（壞掉的），記錄 rolled-back 到哪一版
+     - `failed-rollback-failed`（canary 失敗，rollback 也失敗）—— **新狀態，CRITICAL**，帶 failedVersion / intendedRollbackVersion / rollbackError
+   - `verdictToTargetState(verdict)` → `'live' | 'failed'`，centralized 在這裡，deploy-worker 不能再隨便挑
+
+B. **`apps/api/src/services/deploy-worker.ts:1145-1207`** —— 原本 inline if/else 換成：
+   - 建 `RollbackOutcome`（attempted / success / error / targetVersion）
+   - call `decidePostCanaryAction(...)` 拿 verdict
+   - switch on `verdict.kind`：log 不同 level + 構造對應的 metadata
+   - `failed-rollback-failed` 寫 `[CRITICAL] canary_and_rollback_failed` log + Discord notification 明確標出 "rollback failed" 包含 failedVersion / intendedRollbackVersion / 截斷 rollbackError，operator 看 Discord 一眼知道要手動修
+
+C. **`packages/shared/src/state-machine.ts:14`** —— 一行改：`canary_check: ['live', 'rolling_back', 'failed']`，加 `'failed'` 為合法 transition，註解講清楚 round 11 為什麼
+
+D. **`apps/api/src/test-post-canary.ts`（新檔，15 tests）** —— 純函式測試：
+   - **canary passed**（2）：lock vs unlock → live-clean 且 autoPublish 反映 lock
+   - **canary failed, no rollback target**（2）：lock 仍被尊重
+   - **canary failed, rollback succeeded**（2）：rolledBackToVersion 對；lock 對結果無影響
+   - **canary failed, rollback failed**（3）：包含 null error fallback、lock 仍 irrelevant、rollbackError preview
+   - **verdictToTargetState**（4）：4 種 verdict kind 全測，`failed-rollback-failed → 'failed'` 是 round 11 主場景
+   - **Regression guards**（2）：canary passed 時永遠不 `failed`（會擋健康部署）、rollback 後永遠不 auto-publish 新版（會被 reconciler 做死）
+
+**Test 通過率（累計）：105 unit pass / 0 fail**：
+- 跑了 8 個 test 檔的 cross-check 全綠：safe-number(27), stage-events(10), auth-coverage(6), scan-report-schemas(15), scanner-safe-parse(11), transaction(7), publish-split(14), post-canary(15) = 105
+- 第十段是 165 累計但其實是把不重複的 test count 進來；這次重新數實際 unit 函式 = 105
+
+**驗證**：`npx tsc --noEmit` clean。
+
+**為什麼不寫 ADR**：「state machine 加合法 transition + 把決策邏輯抽純函式」是 industry standard 重構，不是架構分岔。註解 + commit message + post-canary.ts 開頭那段 docstring 把背景講透就夠。SESSION_HANDOFF 記錄即可。
+
+**已知妥協**：
+- `failed-rollback-failed` 後 project 卡在 `failed`，要 operator 手動處理（resubmit / 改回上一版部署 / stop）。state machine 已允許 `failed → submitted/review_pending/stopped`。沒有自動「等一下再試 rollback」邏輯——故意的，因為 rollback 失敗大多是 GCP permission / quota issue，重試不會自己好
+- Discord notification 只 truncate rollbackError 到 200 字元，太長的 stack trace 會被切掉。Operator 真要看完整 error 還是要去 GCP log
+- 這次只測 pure function；deploy-worker 這層的 IO orchestration（actually 寫 DB / 真的丟 Discord）依賴 transitionProject + sendDeploymentFailureNotification 的 contract，沒寫 integration test。架構上跟 round 10 一致：純函式測完，IO 層保持薄
+
+**使用者下一步**：
+1. Review 第十一段 1 個 commit（pr/sync-all：`f2f6363` post-canary verdict + state machine + 15 tests）
+2. Production deploy 後若有 canary 真的爆掉觸發這條：
+   - Discord notification 會明確寫「Auto-rollback FAILED」+ failed version / intended rollback version / error preview
+   - Dashboard 會顯示 `failed`，operator 知道該介入
+   - 注意：operator 介入前不要重啟 deploy-worker 期待自動恢復——它不會
+3. SubmitModal navigate UX 決定還在等
+4. （第八段觀察項仍有效）`[scan-report:llm]` warn log
+5. （第九段觀察項仍有效）`event: 'publish_db_split'` fatal log
+6. （第十段觀察項仍有效）`publish_split_detected` / `publish_split_unknown_revision` log
+
+---
+
 **2026-04-26（autonomous overnight 第十段）—— reconciler 補上 Cloud-Run/DB publish-split 偵測 + 自動修復**
 
 第九段把同步 publish race 包進 transaction + 加了 partial-publish 的 fatal log。但 route handler 只能在「失敗的當下」喊。如果 operator 沒看到 log，或 API 在 publish 中途重啟，split state 會永遠卡在那邊：Cloud Run 服務 v3，DB 仍說 v2 published，UI 對使用者說謊。Architect agent 點名：reconciler 是唯一能在事後抓住這狀態的地方。
