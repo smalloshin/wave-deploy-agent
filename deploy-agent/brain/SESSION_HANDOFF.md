@@ -4,6 +4,112 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第二十三段）—— DB dump 全鏈路 silent swallow 修掉：upload 4 站 + restore 1 站**
+
+第二十二段 source-upload-verdict 收尾、ship 兩個 commits 後，繼續往 architect 留下的 DB dump 候選動手——這個 round 比 round 22 大，因為 DB dump 鏈路有兩個獨立 phase（submit-time upload + deploy-time restore）兩個都會 silently swallow。
+
+**Bug A — Upload 階段**（4 站重複，pre-round-23）：
+- `routes/projects.ts:783` git path pre-createProject
+- `routes/projects.ts:953` multipart monorepo pre-createProject  
+- `routes/projects.ts:1141` multipart background IIFE post-createProject
+- `routes/mcp.ts` MCP submit_project tool
+
+四站的 try/catch 都吞 dump upload 錯誤、繼續 createProject + runPipeline，project.config 沒 `gcsDbDumpUri`，deploy 時對著**空的 Cloud SQL 跑**——使用者點 service URL → 每個 API 都 500，從第一秒開始。
+
+**Bug B — Restore 階段**（`deploy-worker.ts:551-617`，pre-round-23）：
+```ts
+try {
+  const restoreResult = await restoreDbDump({ ... });
+  if (restoreResult.success) {
+    console.log(`[Deploy]   DB dump restored successfully`);
+  } else {
+    console.warn(`[Deploy]   ⚠ DB dump restore had errors: ${restoreResult.error}`);
+    console.warn(`[Deploy]   Continuing deployment — the app may need manual DB setup`);
+  }
+} catch (err) {
+  console.error(`[Deploy]   DB dump restore failed: ${(err as Error).message}`);
+  console.warn(`[Deploy]   Continuing deployment without DB restore`);
+}
+```
+
+兩種失敗模式都靜悄悄：
+- 內層失敗（pg_restore foreign-key violation / partial truncation）→ DB **half-loaded**，部分表存在、部分破洞、所有寫入觸發 FK violation → 每個 API 500
+- 外層 catch（GCS 503 / dbUrl 不見 / 暫存檔寫不進）→ DB **never touched** → 每個 API 500
+
+兩個失敗 mode visible symptom 一樣：deploy succeeded、status='live'、有 service URL，但點下去就 500。
+
+**這次做的事**：
+
+A) **新增 `apps/api/src/services/db-dump-upload-verdict.ts`**（pure-function module + thin orchestration helper，4 種 kind）：
+- `not-applicable` → info
+- `upload-and-persist-ok` → info  
+- `upload-failed` → critical, errorCode=`db_dump_upload_failed`, requiresOperatorAction=true, **`blockPipeline: true`**——pipeline 不能跑、project 直接 'failed'
+- `upload-ok-persist-failed` → critical, errorCode=`db_dump_persist_drift`, requiresOperatorAction=true, **`blockPipeline: false`**（bytes 在 GCS、可恢復），verdict 內含**可直接貼上的 SQL recovery**（`UPDATE projects SET config = jsonb_set(config, '{gcsDbDumpUri}', '"<uri>"'::jsonb) WHERE id = '<projectId>'`）
+- `uploadAndPersistDbDumpWithVerdict` orchestration helper 包好 try/catch + log（套在 4 站之中只有 1 站——line 1141 IIFE，因為其他 3 站 pre-createProject 沒獨立 persist step，URI 直接 fold 進 `createProject({ config })`）
+
+B) **新增 `apps/api/src/services/db-dump-restore-verdict.ts`**（pure-function module，3 種 kind）：
+- `not-applicable`（無 gcsDbDumpUri 或 needsCloudSql=false）→ info
+- `restore-ok` → info（攜帶 format / durationMs / bytesRestored 給 dashboard config write）
+- `restore-failed` → critical, errorCode=`db_dump_restore_drift`, requiresOperatorAction=true, **沒有 `blockDeploy` 欄位**——這是 round 23 的關鍵設計。Cloud Run service 已 live，bail 會孤兒化 half-built revision；只 surface critical log + 帶**format-aware recoveryCommand**（`gsutil cp ${uri} <local-dump> && {psql -f|pg_restore|gunzip -c | psql} '${connStringRedacted}'`）
+
+C) **wire 4 個 upload 站 + 1 個 restore 站**：
+- routes/projects.ts 三個 pre-createProject 站 + 一個 post-createProject IIFE 站，全用 builder/helper，verdict.kind === 'upload-failed' → 502 envelope or transition to 'failed'
+- routes/mcp.ts MCP submit_project：upload-failed → return error to MCP client
+- deploy-worker.ts:551-617：整段重構，連線字串先 redact 再進 verdict，verdict log + dashboard config write 並列
+
+D) **延伸 union types**（Boil-the-Lake，不留半成品）：
+- `packages/shared/src/upload-types.ts`：`UploadStage` 加 `'db_dump_upload'`、`UploadFailureCode` 加 `'db_dump_upload_failed'`
+- `apps/web/lib/upload-error-mapper.ts`：CODE_TO_I18N 是 `Record<UploadFailureCode, ...>`（exhaustive），補上 `db_dump_upload_failed: { key: 'dbDumpUploadFailed', recoveryKey: 'dbDumpUploadFailed.hint', retryable: true }`
+
+**Three-flag spectrum 完整化**（round 23 把 surface-only 的反例落地）：
+- `blockApproval`（round 20）→ 擋 scan_report 通往 reviewer
+- `blockPipeline`（round 22 + round 23 upload）→ 擋 pipeline 整個跑起來
+- 沒有 `blockDeploy` 欄位（round 21 IAM + round 23 restore）→ deploy 已 live、surface-only critical log
+- 下次設計新 verdict 先想清楚是哪一類——三類有完整 precedent
+
+**「兩個 critical 但行為不同」的 dashboard contract**（沿用 round 22 pattern）：
+- `db_dump_upload_failed` → blockPipeline=true, project 直接 failed
+- `db_dump_persist_drift` → blockPipeline=false, pipeline 繼續但 deploy approval 之前 operator 必須補 SQL（recovery 字串現成）
+- `db_dump_restore_drift` → 沒有 block flag，service 已 live，operator 直接複製 recoveryCommand 跑 psql/pg_restore
+
+**Test 覆蓋**：
+
+`src/test-db-dump-upload-verdict.ts`（5 sections，100 tests）：
+- S1 verdict kinds × outcome matrix
+- S2 logDbDumpUploadVerdict console-capture（critical → `[CRITICAL errorCode=...]` 前綴）
+- S3 errorCode contract + literal-true narrowing
+- S4 `uploadAndPersistDbDumpWithVerdict` orchestration helper（top-level await `{ ... }` block，沿用 round 22 教訓）
+- S5 round-23 regressions（R-1 blockPipeline=true 在 5 種 upload 錯誤、R-2 jsonb-quoted SQL recovery、R-3/R-4 critical 訊息可區分 + errorCode distinct、R-5 idempotent、R-7 helper 不 propagate persist throws、R-8 dashboard-grep）
+
+`src/test-db-dump-restore-verdict.ts`（4 sections，130 tests）：
+- S1 kinds × outcome matrix（含 outer-catch funneled、defensive restore=null、format-driven recoveryCommand）
+- S2 log helper console-capture
+- S3 errorCode + literal narrowing（assert NO blockDeploy / blockPipeline）
+- S5 round-23 regressions（R-1 NO block flag in 6 個失敗 mode、R-2 message 帶 gcsDbDumpUri+dumpFileName、R-3 recoveryCommand 是 runnable shell、R-4 inner+outer 都 funnel 同一 kind、R-5 short-circuit 順序、R-6 半空 DB 鏈路 wording、R-10 metric fields 完整保留、R-11 redaction 是 caller 的責任、R-12 format 跟 outcome 走）
+
+**Round 23 全綠**：100 + 130 = 230/0 passed。Cumulative pure-function sweep：1159 passed / 0 failed across 25 zero-dep test files。typecheck（api + web + shared）全綠。
+
+**架構決策**（補上 round 13-22 家族）：
+- errorCode 家族新增三個：`db_dump_upload_failed`、`db_dump_persist_drift`、`db_dump_restore_drift`
+- 第一次同時把 verdict module 切成 **upload phase + restore phase 兩個檔**——caller-side cleanliness（不同 call site）+ file size + gating semantics（blockPipeline vs surface-only）。前面 verdict 都單檔
+- 第一次把 helper 應用範圍**精準到 1/N**（4 個 upload 站只有 1 個用 helper，其他 3 個 pre-createProject 直接呼叫 builder）——helper 抽出來不是 dogma，是看 call site shape
+- 第一次延伸 `@deploy-agent/shared` 的 UploadStage/UploadFailureCode unions——必須同步更新 web mapper 的 `Record<UploadFailureCode, ...>` 維持 exhaustive，這是 Boil-the-Lake 的具體例子
+
+**遇到的坑**：
+- Site-1 wiring 一開始用 `'db_dump'` stage 跟 `'db_dump_upload_failed'` code，但 UploadStage union 沒 `'db_dump'`、UploadFailureCode 沒對應 entry——web mapper 的 `Record<UploadFailureCode, ...>` 會因 missing key 報錯。修法：延伸兩個 union（加 `'db_dump_upload'` stage + `'db_dump_upload_failed'` code）+ 補 mapper entry，site-1 改用 `'db_dump_upload'` stage
+- restore-failed 設計時想過要不要加 `blockDeploy: true`，但 Cloud Run mid-flight 時 bail 會孤兒化 revision、operator 反而更難收尾。改成 surface-only + format-aware recoveryCommand，跟 round 21 IAM verdict 同 pattern
+
+**沒做的事**：
+- web dashboard 沒有「DB dump drift」UI banner（後端 errorCode 已就位、shared/upload-error-mapper i18n entry 已就位、前端 UI 等下次）
+- DB dump persist 的 SQL recovery 與 source-upload 同型，dashboard 應該有共用的「critical errorCode 紅 banner + 一鍵 copy SQL」component，這次沒做
+
+**未來 round 24+ 的方向**：
+- Architect 留下的 candidate #2：URL env-var redeploy at deploy-worker.ts:1105-1136。這是把 backend URL 餵給 frontend service 的 redeploy；redeploy 失敗會讓 frontend 永遠連不到 backend，但目前的 result.success=false 還是只 console.warn
+- routes/projects.ts 還有其他 background IIFE 沒掃過（Round 22 掃了 4 個 source-upload IIFE，Round 23 掃了 1 個 db-dump IIFE，可能還有）
+- Spawn fresh architect scout 重新排序
+
+---
+
 **2026-04-26（autonomous overnight 第二十二段）—— routes/projects.ts 四個 IIFE 重複的 background source upload swallow 修掉並合併**
 
 第二十一段 IAM verdict 收尾後，回到 architect 留下的 #3 candidate：routes/projects.ts 四個重複的 background GCS-repack IIFE。這個 round 同時是 silent-bug 修復 + DRY consolidation。
