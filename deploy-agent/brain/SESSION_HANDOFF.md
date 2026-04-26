@@ -4,6 +4,72 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十七段）—— `setupCustomDomainWithDns` 不再留 GCP domain mapping 孤兒，DNS-after-mapping 失敗時自動清理**
+
+第十六段 start-verdict 收尾後，依 round-15 architect scout 留下的候選名單實作下一段。三個候選裡選 **`setupCustomDomainWithDns`**：mid-severity，per-domain（每設一個 custom domain 都會跑），影響面實質（GCP 留 orphan domain mapping，operator retry 撞 conflict，無 reconciler 永遠不會自清）。
+
+**Bug**（`apps/api/src/services/dns-manager.ts:272-310`，pre-round-17）：
+```ts
+const mappingResult = await createDomainMapping(...);  // step 1: GCP mapping
+if (!mappingResult.success) return { success: false, ... };
+
+const dnsResult = await upsertCname(config, 'ghs.googlehosted.com', false);  // step 2
+if (!dnsResult.success) {
+  return { success: false, customUrl: '', error: `DNS failed: ${dnsResult.error}` };
+  // ^^^ BUG: Cloud Run domain mapping 已經建好，但 NO CLEANUP
+}
+```
+
+**Failure mode**：step 1 GCP domain mapping 建成功 → step 2 Cloudflare CNAME 失敗（token 過期、zone 設錯、rate limit、網路抖動）→ Cloud Run mapping 留下，DNS CNAME 沒建。後果：
+- **Quota leak**：mapping 留在 GCP 吃 domain-mapping 配額（GCP 有上限）
+- **Retry 撞 conflict**：operator 重試時，如果 service 換了或被重建，pre-check 會找到 mapping 綁在「不同 service」→ 回 conflict error `Domain X is already mapped to service Y. Pass force=true...`
+- **永遠不會自清**：domain mapping 沒有 reconciler，沒人 retry 就永遠 leak
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/domain-setup-verdict.ts`（新純函式 module）** —— mirror round 13/14/15/16 verdict pattern，4-kind discriminated union：
+   - `MappingOutcome { ok, error, conflict }` —— 把 createDomainMapping 的 conflict 結構保留
+   - `DnsOutcome { ok, fqdn, recordId, error }` —— 從 upsertCname 收
+   - `CleanupOutcome { ok, error }` —— 我們自己加的「best-effort orphan cleanup」outcome
+   - `buildDomainSetupVerdict({ fqdn, mapping, dns, cleanup })` → 4 種 verdict：
+     - `success`（兩步都 OK）—— info
+     - `mapping-failed`（step 1 fail，沒東西要清）—— warn，conflict 從 mapping 透傳
+     - `dns-failed-after-mapping`（**ROUND-17 critical case**）—— 兩個 sub-cases：
+       - cleanup.ok=true → **warn**，errorCode=null，requiresManualCleanup=false，message 講「safe to retry」
+       - cleanup.ok=false → **CRITICAL**，errorCode=`'domain_mapping_orphan'`，requiresManualCleanup=true（literal），message 講「manually delete via Cloud Run console」
+     - `mapping-and-dns-both-failed`（防禦性，目前 flow 不會走到，但留著擋未來 orchestrator 重構踩雷）—— warn
+   - `verdictToSetupResult(verdict)` —— 翻成 legacy `{ success, customUrl, error, conflict? }` shape，conflict 只在有時才出現（不汙染 success path）
+
+B. **`apps/api/src/services/dns-manager.ts:272-378`** —— `setupCustomDomainWithDns` 重寫成 verdict-driven orchestrator：
+   - Step 1 createDomainMapping → 收成 `MappingOutcome`，失敗就早退（沒東西要清）
+   - Step 2 upsertCname → 收成 `DnsOutcome`
+   - **DNS 失敗時**：呼叫新增的 private `cleanupOrphanMapping(gcpProject, gcpRegion, fqdn)` 嘗試 DELETE GCP mapping。404 算成功（mapping 不在那就好），其他 status 留錯誤訊息
+   - 餵給 `buildDomainSetupVerdict` 拿 verdict，按 verdict.logLevel log（critical 用 `console.error` + `CRITICAL` 前綴方便 grep）
+   - 回 `verdictToSetupResult(verdict)`
+
+C. **`apps/api/src/test-domain-setup-verdict.ts`（新檔，93 tests，4 sections）**：
+   - **Section 1 — verdict kinds（35 tests）**：success / mapping-failed（含 conflict）/ dns-failed-after-mapping（cleanup ok 和 cleanup failed 兩 sub-case）/ mapping-and-dns-both-failed / 各種 null-error fallback
+   - **Section 2 — verdictToSetupResult legacy shape（13 tests）**：每 kind 對 `{success, customUrl, error, conflict?}` 的精確契約 pin，conflict undefined-when-null 的契約特別 pin（route-level callers 用 `?.` 不會炸）
+   - **Section 3 — Regression guards（17 tests）**：errorCode `'domain_mapping_orphan'` 字串契約、literal-true 的 narrowing、message 含 fqdn / 含 'manual' / 含 'console' / 含 'retry|safe'、phase ordering、defensive 不一致 input
+   - **Section 4 — Round-17 bug regressions（13 tests）**：legacy 行為（cleanup=null）必須是 critical / round-17 修正（cleanup ok）必須降到 warn / conflict survived translation / cleanupError 是 string / fqdn 流入 customUrl
+
+**Test 通過率（累計）：383 unit pass / 0 fail**：
+- 12 個 zero-dep test 檔全綠：publish-split(14), post-canary(15), transition-plan(23), stop-verdict(19), env-vars-update(45), teardown-verdict(52), start-verdict(59), domain-setup-verdict(93), safe-number(27), scan-report-schemas(15), scanner-safe-parse(11), stage-events(10) = 383
+- typecheck `npx tsc --noEmit` 全綠
+
+**架構決策（內含於 commit）**：
+- **Best-effort cleanup 是 first-class step**：不能用 `.catch(() => {})` 偷偷吞掉。cleanup 失敗的時候 verdict 要降到 critical 並掛 errorCode，讓 dashboard 看得到。這跟 round 15 的 `releaseProjectRedis` 一樣，邏輯 step 不能埋
+- **errorCode `'domain_mapping_orphan'`** 跟 round 14 `'env_vars_db_drift'` / round 15 `'project_teardown_orphans'` / round 16 `'start_deployment_row_drift'` 同家族，前端可以用同一套 drift-handler pattern
+- **`mapping-and-dns-both-failed` 防禦性留著**：目前 flow 不會走到（mapping 失敗就 early-return），但 verdict planner 接受這個 input shape 並回合理 verdict —— 未來 orchestrator 改寫成 parallel 或加重試時，這個 case 會自然解鎖
+- **404 算 cleanup 成功**：DELETE 不到 mapping 也是好事（可能已經被別人清了 / 或本來就不存在），不該因此降 critical
+
+**這段沒做的事**：
+- Dashboard 端 `domain_mapping_orphan` UI 還沒做（要顯示「FQDN, GCP mapping 是 orphan，請去 Cloud Run console 刪」+ 提供 cleanup 按鈕）
+- 沒做 round 18 scout —— 候選池只剩 `discord-notifier.ts`（low）；接下來該 spawn fresh architect 看 routes/ 還有沒有 silent-bug 候選
+- 沒把 round 13/14/15/16/17 的 verdict modules 抽共用 helper（每個 verdict 的 phase semantics 不同，過早抽象會擋路；DRY 等到第六個 verdict 出來再評估）
+
+---
+
 **2026-04-26（autonomous overnight 第十六段）—— `startProjectService` 不再說謊，partial failure 變成 CRITICAL（mirror round 13）**
 
 第十五段 teardown-verdict 收尾後，依 round-15 architect scout 留下的候選名單實作下一段。三個候選裡選 **`startProjectService`**：round 13 stop 的孿生 bug，scope 中等、命中率高（每次 stop/start 都會跑），影響面實質（false-stopped service 持續 billing）。
