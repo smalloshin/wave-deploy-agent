@@ -4,6 +4,91 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第二十段）—— Pipeline Step 6a fixed-source 重傳不再悄悄失敗，security flagship lie 修掉**
+
+第十九段 monorepo-link-verdict 收尾，candidate pool 用完。Spawn fresh round-20 architect scout，回 3 個 ranked candidates：
+1. **`pipeline-worker.ts:264-301` Step 6a fixed-source GCS 重傳 swallow**（HIGH, recommended）—— 主要 round-20 target
+2. `deploy-engine.ts:401-425` IAM `setIamPolicy` for `allUsers` swallow（HIGH, runner-up）
+3. `routes/projects.ts:606-617, 656-667, 1027-1035, 1073-1077` 四個重複的 background GCS-repack IIFE swallows（MID）
+
+選 #1，因為這是**整個產品的 security flagship lie**：wave-deploy-agent 的賣點是「vibe-coded safety gate」（scan + AI auto-fix + reviewer approval），這段 swallow 讓 reviewer 看到「N fixes applied / status: completed」就批准 deploy，但實際 deploy 用的是**原始未修補的 vulnerable bytes**。原作者甚至寫了 confession comment「AI fixes will NOT be in Docker image」就 console.warn 過去了。
+
+**Bug**（`apps/api/src/services/pipeline-worker.ts:264-301`，pre-round-20）：
+```ts
+try {
+  // tar projectDir → upload to gs://...sources-fixed/<slug>-<ts>.tgz
+  const tarball = ...;
+  const uploadRes = await gcpFetch(uploadUrl, ...);
+  if (!uploadRes.ok) throw new Error(`GCS upload failed (${uploadRes.status})...`);
+  // persist URI to project.config
+  await dbQuery(`UPDATE projects SET config = config || $1::jsonb ...`, ...);
+} catch (err) {
+  console.warn(`Fixed source re-upload failed (non-fatal): ...`);
+  console.warn(`Deploy will fall back to original gcsSourceUri (AI fixes will NOT be in Docker image)`);
+}
+```
+
+**完整失敗鏈**：
+1. Pipeline 在 step 2 生成 Dockerfile（如沒 existing），step 5 套 AI auto-fixes（修改 projectDir 檔案）
+2. Step 6a 應該重傳修過的 projectDir → GCS 新 path → 寫 `gcsFixedSourceUri` 進 `project.config`
+3. 但 step 6a try/catch swallow → `gcsFixedSourceUri` 沒寫進 config
+4. Step 7 `await updateScanReport(scanReport.id, { status: 'completed' })` 還是執行
+5. Reviewer dashboard 看到 status=completed、`appliedCount/N fixes applied`、verificationResults（post-fix scan 的 reduced findings）→ 批准 deploy
+6. deploy-engine 找不到 `gcsFixedSourceUri` → fallback 用原始 `gcsSourceUri`
+7. Cloud Run 跑**沒修過的 vulnerable image**
+
+兩個 sub-failure modes：
+- **A（critical, primary target）**：tar / getProject / GCS upload 任一 fail → bytes 沒上 GCS。Recovery: re-run pipeline。errorCode=`'fixed_source_upload_failed'`
+- **B（critical, recoverable）**：GCS upload OK 但 `dbQuery UPDATE projects SET config ...` throw → bytes **可恢復**（在 `gs://wave-deploy-agent_cloudbuild/sources-fixed/<slug>-<ts>.tgz`），但 config 沒指向。同樣 deploy 會用原始未修。Recovery: 手動 `UPDATE projects SET config = config || jsonb_build_object('gcsFixedSourceUri', '<gs://...>')` 即可。errorCode=`'fixed_source_db_drift'`
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/fixed-source-upload-verdict.ts`（新純函式 module）** —— mirror round 13/14/15/16/17/18/19 verdict pattern，4-kind discriminated union：
+   - `TarballAndUploadOutcome { ok, gcsUri, bytes, error }` —— getProject + tar + GCS upload bundled（任一 fail 都同樣後果，沒人能 deploy 修過的 bytes）
+   - `DbPersistOutcome { ok, error }` —— 只有 tarball OK 才會 attempt
+   - `buildFixedSourceUploadVerdict(...)` → 4 種 verdict：
+     - `not-applicable`（projectDir 沒被 mutate：existing Dockerfile + 0 fix applied）—— info, short-circuit
+     - `success`（兩段都 OK）—— info
+     - `tarball-or-upload-failed`（**ROUND-20 critical primary**）—— **CRITICAL**, errorCode=`'fixed_source_upload_failed'`, requiresOperatorAction=true（literal）, **`blockApproval: true`（literal）**
+     - `db-persist-failed-after-upload`（**ROUND-20 critical recoverable**）—— **CRITICAL**, errorCode=`'fixed_source_db_drift'`, requiresOperatorAction=true（literal）, `blockApproval: true`（literal）, **carries `gcsUri` 給 operator 直接拿去手動 SQL recovery**
+   - `logFixedSourceUploadVerdict` —— info→log, critical→error 加 `[CRITICAL errorCode=X]` 前綴
+   - **新概念**：`blockApproval: true` 是這個 verdict 第一次帶的 flag，告訴 orchestrator 「scan_report MUST NOT be marked status='completed'」（不然 reviewer 就會批准不存在的 fix）
+
+B. **`apps/api/src/services/pipeline-worker.ts:262-...`（refactor）** —— Step 6a 重寫：
+   - 收 `tarballAndUploadOutcome`（包 try/catch，sub-step error 加 prefix `tar-failed:` / `upload-failed:` / `get-project-failed:`）
+   - 收 `dbPersistOutcome`（**只在 tarball OK 才嘗試**，獨立 try/catch）
+   - 算 `applicable = !detection.hasDockerfile || autoFixResults.some(r => r.applied)`（projectDir 真的被改才需要重傳；mutation-free pipelines 直接走原 gcsSourceUri）
+   - Dynamic-import verdict module，餵進去拿 verdict
+   - **Step 7 改寫**：`scanStatus = fixedSourceUploadCritical ? 'failed' : 'completed'` —— 這是核心：critical 時 scan_report 變 failed，reviewer dashboard 不會把它當可批准的
+   - **Step 8 threatSummary 改寫**：critical 時前綴 `[CRITICAL] Fixed-source upload failed — deploy would have used the original UNFIXED source. Verdict: ...`，操作員打開 review 立刻看到
+   - **Step 9 transition 分流**：critical 時 `transitionProject(projectId, 'failed', 'pipeline-worker', { error, errorCode, verdict, verdictMessage, ... })` + early return（**不**走 review_pending、**不** createReview、**不**通知 Discord 說「需要審核」），operator 必須 re-run pipeline
+
+C. **`apps/api/src/test-fixed-source-upload-verdict.ts`（新檔，94 tests，4 sections）**：
+   - **Section 1 — verdict kinds × outcome matrix（28 tests）**：4 種 kind × null fallback / per-step discriminator / degenerate edge cases（`gcsUri=null`、`bytes=0`、`applicable=false ignores even ok=false downstream`）
+   - **Section 2 — logFixedSourceUploadVerdict console-capture（14 tests）**：每 kind 對應 console method、`[CRITICAL errorCode=X]` 契約、never throws、projectLabel/recoverable URI 流入 log
+   - **Section 3 — errorCode contract + literal narrowing + invariants（17 tests）**：2 種 errorCode 字串精確 pin、`requiresOperatorAction` literal-true、**`blockApproval` literal-true**（critical-only）、success / not-applicable 沒這些欄位、recoverable URI exact match
+   - **Section 4 — Round-20 specific bug regressions（35 tests，security flagship lie 守門）**：tarball-fail MUST be critical（NEVER warn）、db-fail MUST be critical、success MUST NOT have blockApproval（不然正常 pipeline 進不了 review）、not-applicable MUST NOT have blockApproval（mutation-free pipelines 仍要過 review）、phase ordering（tarball-fail dominates over downstream db state）、**tarball-fail message MUST mention `ORIGINAL UNFIXED`**（security warning）、db-fail message MUST mention `ORIGINAL UNFIXED`、recoverable URI verbatim 在 message 裡（operator 可 copy-paste）、per-step discriminator 完整保留、critical 用 console.error（不是 warn —— Cloud Run severity filter 抓得到）
+
+**Test 通過率（累計）：671 unit pass / 0 fail**：
+- 14 個 zero-dep test 檔全綠：fixed-source-upload-verdict(94), monorepo-link-verdict(119), post-deploy-verdict(75), domain-setup-verdict(93), start-verdict(59), teardown-verdict(52), stop-verdict(19), env-vars-update(45), transition-plan(23), post-canary(15), publish-split(14), safe-number(27), scan-report-schemas(15), scanner-safe-parse(11), stage-events(10) = 671
+- typecheck `npx tsc --noEmit` 全綠
+
+**架構決策（內含於 commit）**：
+- **Verdict 第一次帶 `blockApproval: true` flag**：前 7 round（13–19）的 verdict 都只影響 logs，這個 round 第一次影響「user-facing flow control」。理由：產品的 review 機制是「reviewer 看 scan_report 批准 deploy」，scan_report 顯示「completed + appliedCount/N fixes」就會被批准。如果 step 6a 失敗但 scan_report 還是 completed，reviewer 就會批准一個不存在的 fix。`blockApproval` 把 status 改成 failed，dashboard 自然不會讓人按批准
+- **errorCode `'fixed_source_upload_failed'` / `'fixed_source_db_drift'`** 加入 drift-code family。前者不可恢復（須 re-run pipeline）、後者可恢復（一條 SQL 可救）
+- **Verdict 把 `gcsUri` 帶在 db-persist-failed 的 payload 裡**：operator 可以直接 `UPDATE projects SET config = config || jsonb_build_object('gcsFixedSourceUri', '<這個 URI>')` 而不用 grep bucket 找
+- **Sub-step error discriminator prefix（`tar-failed:` / `upload-failed:` / `get-project-failed:`）**：mirror round 19 的 monorepo per-sibling discriminator pattern，給 operator grep / dashboard tag
+- **`applicable` 判斷用 `!detection.hasDockerfile || autoFixResults.some(r => r.applied)`**：existing-Dockerfile + 0-fix 的 pipeline 真的不需要重傳（projectDir 跟 gcsSourceUri 完全相同），verdict 直接 not-applicable，避免 noise log
+- **Pipeline 不 throw、用 transition + early return**：跟 round 13/16/17/18/19 一致，verdict 不 throw 主流程；critical 時用 transition('failed') 改變 project state 而不是 throw 拋進 outer catch（outer catch 拋的訊息會 lose verdict 結構）
+
+**這段沒做的事**：
+- Web dashboard 還沒實作 `fixed_source_upload_failed` / `fixed_source_db_drift` UI（要顯示「[CRITICAL] AI 修補沒進部署」+ 「重新執行 pipeline」按鈕、db-drift 還可顯示「執行手動恢復 SQL」按鈕）
+- 沒改 round-20 architect 提的 #2（IAM setIamPolicy for allUsers）—— 留 round 21
+- 沒改 #3（routes/projects.ts 四個 background repack IIFE swallows）—— 留 round 22 或之後
+- candidate pool 現在還有 #2 + #3 + 已知 low-severity discord-notifier，先別 spawn 新 architect
+
+---
+
 **2026-04-26（autonomous overnight 第十九段）—— Monorepo backend→frontend URL 廣播不再有三層悄悄失敗，backend config 寫不入變成 CRITICAL**
 
 第十八段 post-deploy secondary writes 收尾後，按 round-18 留下的 carry-over：deploy-worker 還有一段 monorepo backend→frontend URL 廣播完全沒處理，三個 nested swallow 點，包括「svcRes.ok=false 完全沒 log」這個最壞的死角。Round 19 把它整段重寫。
