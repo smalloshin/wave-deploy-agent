@@ -4,6 +4,76 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十二段）—— transitionProject 改成 atomic optimistic concurrency，根除 deploy-worker ↔ reconciler race**
+
+第十一段把 canary-fail + rollback-fail 的 trapped state 處理乾淨後，spawn 新 architect agent 找下一隻 silent bug，回報的目標是 `transitionProject` 的 read-modify-write race。Smoking gun 是 deploy-worker.ts:1136-1142 那段 catch — 它用 substring 比對 `'Invalid state transition'` 然後吞掉 error，註解寫「Reconciler may have already pushed to 'live' — that's fine, skip」。那段 patch 的存在本身就證明這個 race 在 production 真的會發生。
+
+問題是：原本 `transitionProject` 三道 round-trip：SELECT row → JS `canTransition()` 檢查 → UPDATE。兩個 writer（deploy-worker 跑 canary→live，reconciler 也跑 deployed→live）可能在同一個 source state 上各自通過 JS 檢查、各自 UPDATE，第二個 writer 的 audit row 會說謊（聲稱從某 from_state 轉過來，但其實那個 state 早就被第一個 writer 覆蓋了）。最壞情況可以產生像 `deploying → live`（跳過 deployed/ssl_provisioning/canary_check）這種完全違反 state machine 的 transition 紀錄。原本的 substring catch 只能蓋住「race 解決後第二個 writer 才讀」這一個場景；「兩個 writer 都讀到舊 state」的真 race 完全沒處理。
+
+**這段做了什麼**：
+
+A. **`packages/shared/src/state-machine.ts`** —— 新增兩個東西：
+   - `buildTransitionPlan({ currentState, toState }) → TransitionPlan`：純函式，回傳 `idempotent-noop` | `allowed` | `rejected`
+     - `idempotent-noop` 只給 `live → live`（round-9 的 reconciler-race tolerance 模式）—— caller 不要 UPDATE 也不要寫 audit row
+     - `allowed` 帶 `expectedFromState`，caller 用它組 `UPDATE ... WHERE status = $expectedFromState`
+     - `rejected` 的 reason 字串保持 legacy `"Invalid state transition: X → Y"` format，舊的 substring catch 還能匹配
+   - `ConcurrentTransitionError` 新 class，跟 `InvalidTransitionError` 區分：
+     - `InvalidTransitionError` = 「state machine 規則說不行」
+     - `ConcurrentTransitionError` = 「規則說可以，但你輸了 race」
+     - `ConcurrentTransitionError` 的 message **故意不含** `'Invalid state transition'` 字樣，避免 legacy substring catch 誤吞——用 `name` 比對就夠了
+
+B. **`apps/api/src/services/orchestrator.ts:transitionProject`** —— 三步：
+   1. 讀 project，跑 `buildTransitionPlan`
+   2. `idempotent-noop` → 直接 return existing project，不寫 audit
+   3. `rejected` → throw `InvalidTransitionError`
+   4. `allowed` → `UPDATE projects SET status=$1, updated_at=NOW() WHERE id=$2 AND status=$3 RETURNING *`
+      - rowCount > 0：寫 audit row，return 新 project
+      - rowCount = 0：re-read；若 `refreshed.status === toState` 就當 idempotent（race 解決到了同一個地方）log warning + return；否則 throw `ConcurrentTransitionError(expected, to, actual)`
+   - 程式碼裡的 docblock 把整個歷史背景跟三條 return path 講清楚，未來重構不會誤改
+
+C. **`apps/api/src/services/deploy-worker.ts:1136-1153`** —— catch 更新：
+   - 同時匹配 `err.name === 'ConcurrentTransitionError'`（新）和舊 substring `'Invalid state transition'`（legacy InvalidTransitionError，例如 operator 在 canary 跟 transition 之間把 project 推到 'failed' 或 'stopped'）
+   - 註解講清楚兩個 case 都該 swallow（operator 永遠贏；reconciler 也是）
+   - 不再是 silent skip，log message 帶 error.name 跟原始 message，operator 可以 grep
+
+D. **`apps/api/src/index.ts:113`** —— global error handler 把 `ConcurrentTransitionError` 也對應到 409 Conflict，跟 `InvalidTransitionError` 同家族。Caller (Web/MCP) 收到 409 知道要 re-fetch 重來
+
+E. **`apps/api/src/test-transition-plan.ts`（新檔，23 tests）** —— 純函式測試 + 屬性測試 + regression guards：
+   - **Idempotent self-transitions（4）**：`live → live` 是 idempotent-noop，其他所有 `X → X` 都 rejected（self-loop on 非 live 狀態幾乎一定是 bug，不該被吞）
+   - **Rules-allowed（7）**：submitted→scanning, canary_check→{live, rolling_back, failed}（round 11 path 必過）, approved→preview_deploying, failed→submitted (retry), stopped→live (restart)
+   - **Rules-rejected（4）**：failed→live, submitted→live (skip pipeline), live→deploying, message format check
+   - **Cross-check property test（1）**：walk 所有 (from, to) pair，確認 buildTransitionPlan 跟 canTransition 同意，除了 `live → live` 這個特例（canTransition 回 true、plan 回 idempotent-noop）。**未來如果有人改 VALID_TRANSITIONS 但沒同步改 buildTransitionPlan 邏輯，這個測試會炸**
+   - **Error class shapes（3）**：name 對、instanceof Error、ConcurrentTransitionError message 不含 'Invalid state transition' 字樣（防誤撈）
+   - **Regression guards（4）**：round-9 live→live idempotent、round-11 canary_check→failed allowed、canary_check→live 仍 allowed、deploy-worker catch path 各 case 分類
+
+**Test 通過率（累計）：128 unit pass / 0 fail**：
+- 跑了 9 個 test 檔的 cross-check 全綠：safe-number(27), stage-events(10), auth-coverage(6), scan-report-schemas(15), scanner-safe-parse(11), transaction(7), publish-split(14), post-canary(15), transition-plan(23) = 128
+
+**驗證**：`npx tsc --noEmit` clean。
+
+**為什麼不寫 ADR**：「optimistic concurrency control with WHERE clause guard + 區分 race error vs rules error」是 industry standard distributed-system pattern，不是專案級架構決策。state-machine.ts 跟 transitionProject 開頭的 docblock 把 round-12 的 why 講透就夠。SESSION_HANDOFF 記錄即可。
+
+**已知妥協**：
+- 真正的「race resolved to the same place」case（兩個 writer 同時想推 live、第二個 race lose 但發現 row 已 == live）會被當 idempotent，**不寫 audit row**。代價：audit log 看起來會少一筆紀錄。但這比「寫一筆假的、聲稱從某個 from_state 轉過來但其實沒有」好很多。Trade-off 站住腳
+- `getProject(id)` 沒有 `FOR UPDATE` 鎖，所以理論上 SELECT 跟 UPDATE 之間還是有窗。但 UPDATE 的 WHERE clause 會 catch 到，所以 race 還是被偵測到、只是要繞 ConcurrentTransitionError 的路而已。要完全消除得用 SERIALIZABLE 等級，現階段不值得
+- 第十段的 reconciler 跑 split detection 時也會呼 `transitionProject`（不過走 `publishDeployment` 路徑沒走 `transitionProject`）。如果未來 reconciler 加新的 transition，記得確認新的 ConcurrentTransitionError 行為合理
+- deploy-worker catch 只在 canary→live 那一段加了，**其他 14 處 transitionProject 呼叫**目前沒有 catch ConcurrentTransitionError。若這些路徑有 race，會 propagate 出去 → 變成 409 → caller 重試。這比目前的 silent corruption 好；逐個加保護是後續工作
+
+**使用者下一步**：
+1. Review 第十二段 1 個 commit（pr/sync-all：`d6bfb67` atomic transitionProject + 23 tests）
+2. Production deploy 後 grep `transitionProject race:` warn log：
+   - 出現代表 race 真的有發生而被 round-12 接住
+   - 可以 cross-reference timing 來確認哪些 writer 在競爭（deploy-worker vs reconciler vs operator）
+3. 觀察 `[Deploy]   transition to live skipped:` log：
+   - 這是 deploy-worker catch 觸發；附帶 error.name 可以區分 ConcurrentTransitionError vs legacy InvalidTransitionError
+4. SubmitModal navigate UX 決定還在等
+5. （第八段觀察項仍有效）`[scan-report:llm]` warn log
+6. （第九段觀察項仍有效）`event: 'publish_db_split'` fatal log
+7. （第十段觀察項仍有效）`publish_split_detected` / `publish_split_unknown_revision` log
+8. （第十一段觀察項仍有效）`canary_and_rollback_failed` CRITICAL log
+
+---
+
 **2026-04-26（autonomous overnight 第十一段）—— canary 失敗 + auto-rollback 失敗時，project 進 `failed`，不再說謊講 `live`**
 
 第十段把 reconciler 補上 publish-split 自動修復後，立刻發現一個複合性 bug：deploy-worker 在 canary 失敗 + auto-rollback 也失敗的情況下，仍然把 project transition 到 `live`，只在 log 裡寫「rollback failed」。兩個地方會痛：
