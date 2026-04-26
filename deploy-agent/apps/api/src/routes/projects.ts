@@ -33,6 +33,7 @@ import {
   outcomeToLogEntry,
   type TeardownStepOutcome,
 } from '../services/teardown-verdict';
+import { uploadAndPersistSourceWithVerdict } from '../services/source-upload-verdict';
 import { releaseProjectRedis } from '../services/redis-provisioner';
 import type { UploadErrorEnvelope, UploadFailureCode, UploadStage } from '@deploy-agent/shared';
 
@@ -603,13 +604,29 @@ export async function projectRoutes(app: FastifyInstance) {
         if (!created) continue;
         const projectId = (created.project as { id: string }).id;
 
+        // Round 22: route through uploadAndPersistSourceWithVerdict so upload
+        // failures don't silently kick the pipeline (which then runs a misleading
+        // green scan and surfaces 30+ minutes later as a cryptic deploy failure).
         (async () => {
-          try {
-            const gcsSourceUri = await uploadSourceToGcs(svcSlug, serviceDir);
-            const current = await getProject(projectId);
-            await updateProjectConfig(projectId, { ...(current?.config ?? {}), gcsSourceUri });
-          } catch (err) {
-            console.error(`[GCS Submit] Background GCS repack failed for ${svc.projectName}:`, (err as Error).message);
+          const verdict = await uploadAndPersistSourceWithVerdict({
+            projectLabel: `${body.name}/${svc.projectName}`,
+            runUpload: () => uploadSourceToGcs(svcSlug, serviceDir),
+            runPersist: async (gcsSourceUri) => {
+              const current = await getProject(projectId);
+              await updateProjectConfig(projectId, { ...(current?.config ?? {}), gcsSourceUri });
+            },
+          });
+          if (verdict.kind === 'upload-failed') {
+            try {
+              await transitionProject(projectId, 'failed', 'system', {
+                error: verdict.uploadError,
+                errorCode: verdict.errorCode,
+                failedStep: 'background source upload (monorepo sibling)',
+              });
+            } catch (txErr) {
+              console.error(`[GCS Submit] transition to failed also threw: ${(txErr as Error).message}`);
+            }
+            return; // do NOT runPipeline — no GCS source means deploy will fail cryptically
           }
           runPipeline(projectId, serviceDir).catch((err) => {
             console.error(`[Pipeline] Async dispatch failed for ${svc.projectName}:`, (err as Error).message);
@@ -652,14 +669,29 @@ export async function projectRoutes(app: FastifyInstance) {
         uploadedFile: body.fileName,
       });
 
-      // Background: re-upload as proper source tarball + start pipeline
+      // Background: re-upload as proper source tarball + start pipeline.
+      // Round 22: verdict-gated so upload failures transition project to
+      // 'failed' instead of silently running the pipeline.
       (async () => {
-        try {
-          const gcsSourceUri = await uploadSourceToGcs(projectSlug, projectDir);
-          const current = await getProject(project.id);
-          if (current) await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
-        } catch (err) {
-          console.error(`[GCS Submit] Background GCS repack failed:`, (err as Error).message);
+        const verdict = await uploadAndPersistSourceWithVerdict({
+          projectLabel: project.name,
+          runUpload: () => uploadSourceToGcs(projectSlug, projectDir),
+          runPersist: async (gcsSourceUri) => {
+            const current = await getProject(project.id);
+            if (current) await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
+          },
+        });
+        if (verdict.kind === 'upload-failed') {
+          try {
+            await transitionProject(project.id, 'failed', 'system', {
+              error: verdict.uploadError,
+              errorCode: verdict.errorCode,
+              failedStep: 'background source upload (single service)',
+            });
+          } catch (txErr) {
+            console.error(`[GCS Submit] transition to failed also threw: ${(txErr as Error).message}`);
+          }
+          return;
         }
         runPipeline(project.id, projectDir).catch((err) => {
           console.error(`[Pipeline] Async dispatch failed for ${project.id}:`, (err as Error).message);
@@ -1022,12 +1054,25 @@ export async function projectRoutes(app: FastifyInstance) {
         const projectId = (created.project as { id: string }).id;
 
         (async () => {
-          try {
-            const gcsSourceUri = await uploadSourceToGcs(svcSlug, serviceDir);
-            const current = await getProject(projectId);
-            await updateProjectConfig(projectId, { ...(current?.config ?? {}), gcsSourceUri });
-          } catch (err) {
-            console.error(`[Upload] Background GCS upload failed for ${svc.projectName}:`, (err as Error).message);
+          const verdict = await uploadAndPersistSourceWithVerdict({
+            projectLabel: `${name}/${svc.projectName}`,
+            runUpload: () => uploadSourceToGcs(svcSlug, serviceDir),
+            runPersist: async (gcsSourceUri) => {
+              const current = await getProject(projectId);
+              await updateProjectConfig(projectId, { ...(current?.config ?? {}), gcsSourceUri });
+            },
+          });
+          if (verdict.kind === 'upload-failed') {
+            try {
+              await transitionProject(projectId, 'failed', 'system', {
+                error: verdict.uploadError,
+                errorCode: verdict.errorCode,
+                failedStep: 'background source upload (multipart monorepo sibling)',
+              });
+            } catch (txErr) {
+              console.error(`[Upload] transition to failed also threw: ${(txErr as Error).message}`);
+            }
+            return;
           }
           runPipeline(projectId, serviceDir).catch((err) => {
             console.error(`[Pipeline] Async dispatch failed for ${projectId}:`, (err as Error).message);
@@ -1065,15 +1110,32 @@ export async function projectRoutes(app: FastifyInstance) {
       extractedTo: projectDir,
     });
 
-    // Background: upload source + DB dump to GCS, then start pipeline
+    // Background: upload source + DB dump to GCS, then start pipeline.
+    // Round 22: source upload routed through verdict so failures transition
+    // project to 'failed' rather than running a misleading green pipeline.
+    // DB dump upload remains a separate try/catch — it's optional and a
+    // failure there doesn't break the deploy (deploy-engine handles missing
+    // dump gracefully).
     (async () => {
-      try {
-        const gcsSourceUri = await uploadSourceToGcs(projectSlug, projectDir);
-        // Persist GCS URI back to project config
-        const current = await getProject(project.id);
-        if (current) await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
-      } catch (err) {
-        console.error(`[Upload] Background GCS upload failed for ${project.id}:`, (err as Error).message);
+      const verdict = await uploadAndPersistSourceWithVerdict({
+        projectLabel: project.name,
+        runUpload: () => uploadSourceToGcs(projectSlug, projectDir),
+        runPersist: async (gcsSourceUri) => {
+          const current = await getProject(project.id);
+          if (current) await updateProjectConfig(project.id, { ...current.config, gcsSourceUri });
+        },
+      });
+      if (verdict.kind === 'upload-failed') {
+        try {
+          await transitionProject(project.id, 'failed', 'system', {
+            error: verdict.uploadError,
+            errorCode: verdict.errorCode,
+            failedStep: 'background source upload (multipart single service)',
+          });
+        } catch (txErr) {
+          console.error(`[Upload] transition to failed also threw: ${(txErr as Error).message}`);
+        }
+        return; // skip dump upload + pipeline — no source means deploy will fail
       }
 
       if (dbDumpBuffer && dbDumpFileName) {
