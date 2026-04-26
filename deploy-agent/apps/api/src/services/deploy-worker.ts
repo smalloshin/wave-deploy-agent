@@ -24,6 +24,7 @@ import { readSourceContextFromDir, readSourceContextFromGcs } from './source-rea
 import { provisionProjectDatabase } from './db-provisioner';
 import { provisionProjectRedis } from './redis-provisioner';
 import { restoreDbDump } from './db-restore';
+import { buildDbDumpRestoreVerdict, logDbDumpRestoreVerdict } from './db-dump-restore-verdict';
 import { notifyDeployComplete, notifyCanaryFailed, notifyDeployFailed } from './discord-notifier';
 import { captureDeployedSource } from './deployed-source-capture';
 import { recordStageEvent, type StageName } from './stage-events';
@@ -549,72 +550,108 @@ export async function runDeployPipeline(
     }
 
     // ── Step 2c-2: Restore DB dump if user provided one ──
+    // Round 23: every code path here funnels into buildDbDumpRestoreVerdict
+    // so the dashboard surfaces a [CRITICAL errorCode=db_dump_restore_drift]
+    // log line operators can grep on. Pre-round-23, both the inner
+    // success=false branch and the outer try/catch only emitted console.warn,
+    // so the user saw "deploy succeeded" + green status while every API call
+    // 500'd against an empty / half-loaded DB.
+    //
+    // The restore-failed verdict does NOT block the deploy — Cloud Run is
+    // mid-flight and bailing out here would orphan a half-built revision.
+    // Operator sees the critical log + the existing project.config.dbRestoreResult
+    // and re-runs the restore manually using the recoveryCommand.
     const gcsDbDumpUri = project.config?.gcsDbDumpUri as string | undefined;
-    if (gcsDbDumpUri && needsCloudSql) {
-      currentStep = 'Step 2c-2: Restore database dump';
-      console.log(`[Deploy] ${currentStep}...`);
+    {
+      const dumpFileName = (project.config?.dbDumpFileName as string) || 'dump.sql';
+      let restoreOutcome: import('./db-dump-restore-verdict').DbDumpRestoreOutcome | null = null;
+      let connectionStringHint: string | null = null;
 
-      try {
-        // Download dump from GCS to local temp file
-        const withoutPrefix = gcsDbDumpUri.slice(5); // remove "gs://"
-        const slashIdx = withoutPrefix.indexOf('/');
-        const bucket = withoutPrefix.slice(0, slashIdx);
-        const object = withoutPrefix.slice(slashIdx + 1);
-        const downloadUrl = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(object)}?alt=media`;
+      if (gcsDbDumpUri && needsCloudSql) {
+        currentStep = 'Step 2c-2: Restore database dump';
+        console.log(`[Deploy] ${currentStep}...`);
 
-        const { gcpFetch } = await import('./gcp-auth');
-        const resp = await gcpFetch(downloadUrl);
-        if (!resp.ok) {
-          throw new Error(`GCS download failed (${resp.status}): ${await resp.text()}`);
-        }
-
-        const { writeFileSync, unlinkSync } = await import('node:fs');
-        const dumpFileName = (project.config?.dbDumpFileName as string) || 'dump.sql';
-        const dumpLocalPath = `/tmp/db-dump-${project.id}-${dumpFileName}`;
-        const buf = Buffer.from(await resp.arrayBuffer());
-        writeFileSync(dumpLocalPath, buf);
-        console.log(`[Deploy]   Downloaded dump: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
-
-        // Find the project's DATABASE_URL (set by db-provisioner in the step above)
-        const dbUrl = dbVarKeys.map(k => finalEnvVars[k]).find(v => v && v.includes('/cloudsql/'));
-        if (!dbUrl) {
-          throw new Error('No Cloud SQL DATABASE_URL found — cannot restore dump without a provisioned database');
-        }
-
-        const restoreResult = await restoreDbDump({
-          dumpFilePath: dumpLocalPath,
-          connectionString: dbUrl,
-          instanceConnectionName: cloudSqlInstance!,
-        });
-
-        if (restoreResult.success) {
-          console.log(`[Deploy]   DB dump restored successfully (${restoreResult.format}, ${restoreResult.durationMs}ms)`);
-        } else {
-          console.warn(`[Deploy]   ⚠ DB dump restore had errors: ${restoreResult.error}`);
-          console.warn(`[Deploy]   Continuing deployment — the app may need manual DB setup`);
-        }
-
-        // Store result in project config for dashboard visibility
         try {
-          const configUpdate = {
-            ...(project.config ?? {}),
-            dbRestoreResult: {
-              success: restoreResult.success,
-              format: restoreResult.format,
-              durationMs: restoreResult.durationMs,
-              bytesRestored: restoreResult.bytesRestored,
-              error: restoreResult.error,
-            },
-          };
-          await updateProjectConfig(project.id, configUpdate);
-        } catch { /* non-critical */ }
+          // Download dump from GCS to local temp file
+          const withoutPrefix = gcsDbDumpUri.slice(5); // remove "gs://"
+          const slashIdx = withoutPrefix.indexOf('/');
+          const bucket = withoutPrefix.slice(0, slashIdx);
+          const object = withoutPrefix.slice(slashIdx + 1);
+          const downloadUrl = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(object)}?alt=media`;
 
-        // Cleanup temp file
-        try { unlinkSync(dumpLocalPath); } catch { /* ignore */ }
-      } catch (err) {
-        console.error(`[Deploy]   DB dump restore failed: ${(err as Error).message}`);
-        console.warn(`[Deploy]   Continuing deployment without DB restore`);
+          const { gcpFetch } = await import('./gcp-auth');
+          const resp = await gcpFetch(downloadUrl);
+          if (!resp.ok) {
+            throw new Error(`GCS download failed (${resp.status}): ${await resp.text()}`);
+          }
+
+          const { writeFileSync, unlinkSync } = await import('node:fs');
+          const dumpLocalPath = `/tmp/db-dump-${project.id}-${dumpFileName}`;
+          const buf = Buffer.from(await resp.arrayBuffer());
+          writeFileSync(dumpLocalPath, buf);
+          console.log(`[Deploy]   Downloaded dump: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+
+          // Find the project's DATABASE_URL (set by db-provisioner in the step above)
+          const dbUrl = dbVarKeys.map(k => finalEnvVars[k]).find(v => v && v.includes('/cloudsql/'));
+          if (!dbUrl) {
+            throw new Error('No Cloud SQL DATABASE_URL found — cannot restore dump without a provisioned database');
+          }
+          // Redact the password before stashing for the verdict's recovery command.
+          connectionStringHint = dbUrl.replace(/:\/\/([^:]+):[^@]+@/, '://$1:***@');
+
+          const restoreResult = await restoreDbDump({
+            dumpFilePath: dumpLocalPath,
+            connectionString: dbUrl,
+            instanceConnectionName: cloudSqlInstance!,
+          });
+
+          restoreOutcome = {
+            success: restoreResult.success,
+            format: restoreResult.format,
+            durationMs: restoreResult.durationMs,
+            bytesRestored: restoreResult.bytesRestored,
+            error: restoreResult.error,
+          };
+
+          // Store result in project config for dashboard visibility
+          try {
+            const configUpdate = {
+              ...(project.config ?? {}),
+              dbRestoreResult: {
+                success: restoreResult.success,
+                format: restoreResult.format,
+                durationMs: restoreResult.durationMs,
+                bytesRestored: restoreResult.bytesRestored,
+                error: restoreResult.error,
+              },
+            };
+            await updateProjectConfig(project.id, configUpdate);
+          } catch { /* non-critical */ }
+
+          // Cleanup temp file
+          try { unlinkSync(dumpLocalPath); } catch { /* ignore */ }
+        } catch (err) {
+          // Outer-catch funnels into restore-failed via success=false so the
+          // verdict captures the same dashboard-greppable critical log.
+          restoreOutcome = {
+            success: false,
+            format: 'unknown',
+            durationMs: 0,
+            bytesRestored: 0,
+            error: (err as Error).message,
+          };
+        }
       }
+
+      const restoreVerdict = buildDbDumpRestoreVerdict({
+        projectLabel: project.name,
+        gcsDbDumpUri: gcsDbDumpUri ?? null,
+        needsCloudSql,
+        dumpFileName,
+        connectionStringHint,
+        restore: restoreOutcome,
+      });
+      logDbDumpRestoreVerdict(restoreVerdict);
     }
 
     // Track whether we auto-provisioned VPC-internal resources (for VPC egress)

@@ -34,6 +34,11 @@ import {
   type TeardownStepOutcome,
 } from '../services/teardown-verdict';
 import { uploadAndPersistSourceWithVerdict } from '../services/source-upload-verdict';
+import {
+  buildDbDumpUploadVerdict,
+  logDbDumpUploadVerdict,
+  uploadAndPersistDbDumpWithVerdict,
+} from '../services/db-dump-upload-verdict';
 import { releaseProjectRedis } from '../services/redis-provisioner';
 import type { UploadErrorEnvelope, UploadFailureCode, UploadStage } from '@deploy-agent/shared';
 
@@ -780,14 +785,40 @@ export async function projectRoutes(app: FastifyInstance) {
       }
       const userEnvVars = parseEnvVarsText(envVarsRaw);
 
-      // Upload DB dump to GCS if provided
+      // Upload DB dump to GCS if provided.
+      // Round 23: route through db-dump-upload-verdict so a failed upload
+      // returns 4xx to the caller instead of silently creating a project
+      // whose deploy will boot against an empty DB and 500 30+ minutes later.
+      // Pre-createProject site: persist=null because gcsDbDumpUri is folded
+      // into the createProject({ config }) arg below.
       let gcsDbDumpUri: string | undefined;
       if (dbDumpBuffer && dbDumpFileName) {
         const gitSlug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+        let uploadOk = false;
+        let uploadErr: string | null = null;
         try {
           gcsDbDumpUri = await uploadDbDumpToGcs(gitSlug, dbDumpBuffer, dbDumpFileName);
+          uploadOk = true;
         } catch (err) {
-          console.error(`[Upload] DB dump upload failed:`, (err as Error).message);
+          uploadErr = (err as Error).message;
+        }
+        const verdict = buildDbDumpUploadVerdict({
+          projectLabel: name.trim(),
+          dumpFileName: dbDumpFileName,
+          upload: uploadOk
+            ? { ok: true, gcsUri: gcsDbDumpUri ?? null, error: null }
+            : { ok: false, gcsUri: null, error: uploadErr },
+          persist: null, // pre-createProject site: URI folded into createProject below
+        });
+        logDbDumpUploadVerdict(verdict);
+        if (verdict.kind === 'upload-failed') {
+          return reply.status(502).send(
+            uploadError('db_dump_upload', 'db_dump_upload_failed', verdict.message, {
+              detail: { errorCode: verdict.errorCode, dumpFileName: dbDumpFileName },
+              retryable: true,
+              legacyError: verdict.uploadError,
+            }),
+          );
         }
       }
 
@@ -949,14 +980,41 @@ export async function projectRoutes(app: FastifyInstance) {
       const userEnvVars = parseEnvVarsText(envVarsRaw);
       const createdProjects: Array<{ project: unknown; scanReport: unknown }> = [];
 
-      // Upload DB dump for monorepo (only backend services will restore it)
+      // Upload DB dump for monorepo (only backend services will restore it).
+      // Round 23: route through db-dump-upload-verdict so a failed upload
+      // returns 4xx to the caller instead of silently creating N project
+      // records (one per service) whose backend deploys will boot against an
+      // empty DB and 500 30+ minutes later.
+      // Pre-createProject site: persist=null because gcsDbDumpUri is folded
+      // into each per-service createProject({ config }) call below.
       let gcsDbDumpUri: string | undefined;
       if (dbDumpBuffer && dbDumpFileName) {
         const groupSlug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+        let uploadOk = false;
+        let uploadErr: string | null = null;
         try {
           gcsDbDumpUri = await uploadDbDumpToGcs(groupSlug, dbDumpBuffer, dbDumpFileName);
+          uploadOk = true;
         } catch (err) {
-          console.error(`[Upload] DB dump upload failed:`, (err as Error).message);
+          uploadErr = (err as Error).message;
+        }
+        const verdict = buildDbDumpUploadVerdict({
+          projectLabel: `${name.trim()} <monorepo>`,
+          dumpFileName: dbDumpFileName,
+          upload: uploadOk
+            ? { ok: true, gcsUri: gcsDbDumpUri ?? null, error: null }
+            : { ok: false, gcsUri: null, error: uploadErr },
+          persist: null, // pre-createProject (per-sibling): URI folded into createProject below
+        });
+        logDbDumpUploadVerdict(verdict);
+        if (verdict.kind === 'upload-failed') {
+          return reply.status(502).send(
+            uploadError('db_dump_upload', 'db_dump_upload_failed', verdict.message, {
+              detail: { errorCode: verdict.errorCode, dumpFileName: dbDumpFileName, monorepo: true },
+              retryable: true,
+              legacyError: verdict.uploadError,
+            }),
+          );
         }
       }
 
@@ -1138,13 +1196,35 @@ export async function projectRoutes(app: FastifyInstance) {
         return; // skip dump upload + pipeline — no source means deploy will fail
       }
 
+      // Round 23: route DB dump upload through verdict so an upload failure
+      // transitions the project to 'failed' instead of silently running a
+      // pipeline whose deploy will boot against an empty DB and 500 every
+      // API call 30+ minutes later. Persist failure (URI in GCS but config
+      // write blew up) does NOT block the pipeline — operator can patch
+      // config.gcsDbDumpUri before deploy approval.
       if (dbDumpBuffer && dbDumpFileName) {
-        try {
-          const gcsDbDumpUri = await uploadDbDumpToGcs(projectSlug, dbDumpBuffer, dbDumpFileName);
-          const currentForDump = await getProject(project.id);
-          if (currentForDump) await updateProjectConfig(project.id, { ...currentForDump.config, gcsDbDumpUri, dbDumpFileName });
-        } catch (err) {
-          console.error(`[Upload] Background DB dump upload failed:`, (err as Error).message);
+        const dumpVerdict = await uploadAndPersistDbDumpWithVerdict({
+          projectLabel: project.name,
+          dumpFileName: dbDumpFileName,
+          runUpload: () => uploadDbDumpToGcs(projectSlug, dbDumpBuffer, dbDumpFileName),
+          runPersist: async (gcsDbDumpUri) => {
+            const currentForDump = await getProject(project.id);
+            if (currentForDump) {
+              await updateProjectConfig(project.id, { ...currentForDump.config, gcsDbDumpUri, dbDumpFileName });
+            }
+          },
+        });
+        if (dumpVerdict.kind === 'upload-failed') {
+          try {
+            await transitionProject(project.id, 'failed', 'system', {
+              error: dumpVerdict.uploadError,
+              errorCode: dumpVerdict.errorCode,
+              failedStep: 'background db dump upload (multipart single service)',
+            });
+          } catch (txErr) {
+            console.error(`[Upload] transition to failed (db dump) also threw: ${(txErr as Error).message}`);
+          }
+          return; // skip pipeline — without dump, deploy will boot empty DB
         }
       }
 

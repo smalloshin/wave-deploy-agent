@@ -16,6 +16,7 @@ import { publishRevision } from '../services/deploy-engine';
 import { query } from '../db/index';
 import { checkSslStatus } from '../services/ssl-monitor';
 import { checkDomainConflict } from './projects';
+import { buildDbDumpUploadVerdict, logDbDumpUploadVerdict } from '../services/db-dump-upload-verdict';
 
 // MCP Protocol handler - implements Model Context Protocol for AI tool integration
 // This enables OpenClaw, Claude Code, and other MCP-compatible tools to interact with the deploy agent
@@ -177,11 +178,18 @@ async function handleToolCall(call: MCPToolCall): Promise<MCPToolResult> {
           );
         }
 
-        // If db_dump_path is provided, upload it to GCS
+        // If db_dump_path is provided, upload it to GCS.
+        // Round 23: route through db-dump-upload-verdict so a failed upload
+        // returns an MCP error to the caller (Claude Code / MCP client)
+        // instead of silently creating a project whose deploy will boot
+        // against an empty DB and 500 30+ minutes later. Pre-createProject
+        // site: persist=null because gcsDbDumpUri is folded into createProject.
         let gcsDbDumpUri: string | undefined;
         let dbDumpFileName: string | undefined;
         const dbDumpPath = call.arguments.db_dump_path as string | undefined;
         if (dbDumpPath) {
+          let uploadOk = false;
+          let uploadErr: string | null = null;
           try {
             const { readFileSync, existsSync } = await import('node:fs');
             const { basename } = await import('node:path');
@@ -203,12 +211,29 @@ async function handleToolCall(call: MCPToolCall): Promise<MCPToolResult> {
             });
             if (uploadRes.ok) {
               gcsDbDumpUri = `gs://${bucket}/${objectName}`;
-              console.log(`[MCP] DB dump uploaded to ${gcsDbDumpUri}`);
+              uploadOk = true;
             } else {
-              console.warn(`[MCP] DB dump upload failed: HTTP ${uploadRes.status}`);
+              uploadErr = `GCS upload failed (HTTP ${uploadRes.status})`;
             }
           } catch (err) {
-            console.warn(`[MCP] DB dump upload error: ${(err as Error).message}`);
+            uploadErr = (err as Error).message;
+          }
+          const verdict = buildDbDumpUploadVerdict({
+            projectLabel: call.arguments.project_name as string,
+            dumpFileName: dbDumpFileName ?? '<unknown>',
+            upload: uploadOk
+              ? { ok: true, gcsUri: gcsDbDumpUri ?? null, error: null }
+              : { ok: false, gcsUri: null, error: uploadErr },
+            persist: null, // pre-createProject (MCP): URI folded into createProject below
+          });
+          logDbDumpUploadVerdict(verdict);
+          if (verdict.kind === 'upload-failed') {
+            return error(
+              `DB dump upload failed (errorCode=${verdict.errorCode}). ` +
+              `${verdict.uploadError}. Without the dump, the deployed app would ` +
+              `boot against an empty database. Re-run submit_project after the ` +
+              `upload issue is resolved.`
+            );
           }
         }
 

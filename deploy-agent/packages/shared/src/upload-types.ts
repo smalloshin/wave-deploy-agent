@@ -16,7 +16,8 @@ export type UploadStage =
   | 'submit'        // POST /api/projects/submit-gcs 觸發伺服器處理
   | 'extract'       // 伺服器解壓縮 zip
   | 'analyze'       // LLM/規則分析專案
-  | 'deploy';       // 觸發部署 worker
+  | 'deploy'        // 觸發部署 worker
+  | 'db_dump_upload'; // 上傳 .sql / .dump / .sql.gz 到 GCS（round 23）
 
 /** 已知失敗類型（discriminated union by `code`）*/
 export type UploadFailureCode =
@@ -32,6 +33,7 @@ export type UploadFailureCode =
   | 'analyze_failed'                  // LLM 分析失敗（含 fallback 也失敗）
   | 'domain_conflict'                 // domain 已被其他專案占用
   | 'project_quota_exceeded'          // 已達專案數上限
+  | 'db_dump_upload_failed'           // round 23: DB dump 上傳到 GCS 失敗（沒這檔，部署會起空 DB → 500）
   | 'unknown';                        // 註冊表未涵蓋（觸發 LLM fallback）
 
 /** Server 回傳的結構化錯誤 envelope */

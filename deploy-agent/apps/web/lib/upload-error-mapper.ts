@@ -78,6 +78,11 @@ const CODE_TO_I18N: Record<UploadFailureCode, { key: string; recoveryKey?: strin
     recoveryKey: 'projectQuotaExceeded.hint',
     retryable: false,
   },
+  db_dump_upload_failed: {
+    key: 'dbDumpUploadFailed',
+    recoveryKey: 'dbDumpUploadFailed.hint',
+    retryable: true,
+  },
   unknown: {
     key: 'unknown',
     recoveryKey: 'unknown.hint',
