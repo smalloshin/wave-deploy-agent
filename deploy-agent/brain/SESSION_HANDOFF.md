@@ -4,6 +4,79 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十八段）—— Deploy 後的 secondary writes 不再悄悄失敗，image cache miss 變成 CRITICAL（fresh architect scout 後選的）**
+
+第十七段 domain-setup-verdict 收尾，candidate pool 用完。Spawn fresh architect scout 找 round 18 候選，回 3 個 ranked candidates：
+1. **`deploy-worker.ts:872-878` lastDeployedImage cache write swallowed**（MID, recommended） —— 主要 round-18 target
+2. `routes/projects.ts:244-258` pipeline orphaned in 'scanning' if container restart（MID, large fix）
+3. `deploy-worker.ts:843-870` captureDeployedSource GCS upload + DB write（LOW）
+
+選 #1，但把 #3 也含在 verdict 裡（它們在 deploy-worker 同一塊 code、同樣的 swallowing pattern，一起做才符合 boil-the-lake principle）。
+
+**Bug**（`apps/api/src/services/deploy-worker.ts:843-878`，pre-round-18）：
+```ts
+// (1) captureDeployedSource → updateDeployment(deployedSourceGcsUri) — try/catch swallows
+try {
+  const capture = await captureDeployedSource(...);
+  await updateDeployment(deployment.id, { deployedSourceGcsUri: capture.gcsUri });
+} catch (captureErr) {
+  console.warn(`Deployed-source capture failed (non-fatal): ...`);  // 沒人會看
+}
+
+// (2) lastDeployedImage cache write — try/catch swallows
+try {
+  const updatedConfig = { ...(project.config ?? {}), lastDeployedImage: buildResult.imageUri };
+  await updateProjectConfig(project.id, updatedConfig);
+} catch (err) {
+  console.warn(`Failed to cache lastDeployedImage: ...`);  // 也沒人會看
+}
+```
+
+**2 個 silent 失敗**：
+- **A（critical, primary target）**：deploy + Cloud Run revision 都 OK，但 `updateProjectConfig({lastDeployedImage})` throw → service 在跑，可是 cache 沒寫進去。Operator 之後 stop 服務（節省 billing 的常見動作），下次 start 時 `service-lifecycle.ts:184-197` 讀 `project.config?.lastDeployedImage`（沒有）→ fallback `getServiceImage()`（service 已刪 → null）→ 回「No cached image — redeploy via /resubmit instead」。**使用者被迫對剛剛才部署成功的 code 整個 rebuild 一次**。`console.warn` 在實務上無效（沒人會手動 grep deploy log）
+- **B（warn, slow leak）**：captureDeployedSource 整段 throw → tarball 可能在 `gs://wave-deploy-agent-deployed/<slug>/v<n>.tgz`（孤兒，billing 365 天直到 lifecycle 清掉）OR 根本沒 upload。Dashboard 的「download deployed source」會回「Source unavailable」（`versioning.ts` 檢查 `target.deployedSourceGcsUri`）。慢漏 + 影響面小，但仍是 operator 看不到的 drift
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/post-deploy-verdict.ts`（新純函式 module）** —— mirror round 13/14/15/16/17 verdict pattern：
+   - `DeployedSourceCaptureOutcome { ok, error }` —— GCS upload + 對應 DB write 包成一個 outcome（legacy try/catch 是這樣 group 的，verdict 沿用）
+   - `ImageCacheWriteOutcome { ok, error }` —— `updateProjectConfig({lastDeployedImage})` 的 outcome
+   - `buildPostDeployVerdict({ deployLabel, deployedSourceCapture, imageCacheWrite })` → 4-kind discriminated union：
+     - `success`（兩寫都 OK）—— info
+     - `success-with-source-leak`（source fail, cache OK）—— warn，errorCode=`'deployed_source_orphan'`，requiresOperatorAction=false
+     - `image-cache-missing`（**ROUND-18 critical，user-facing 的那個**）—— **CRITICAL**，errorCode=`'image_cache_drift'`，requiresOperatorAction=true（literal），message 講「Service is live now, but next stop/start cycle will hit 'No cached image — redeploy via /resubmit'」
+     - `multiple-post-deploy-failures`（兩個都 fail）—— **CRITICAL**，errorCode=`'post_deploy_drift'`，兩個 error string 都帶在 message 裡
+   - `logPostDeployVerdict(verdict)` side-effect helper —— 按 logLevel 用 console.log/warn/error，critical 加 `[CRITICAL errorCode=X]` 前綴方便 grep
+   - **設計決策**：deploy 整體的 success/failure **不**因為這些 secondary writes 改變（Cloud Run 在跑就是跑了），verdict 的工作只是把 degradation 浮上來。這跟 round 16 的 `partial-config-not-persisted`/`partial-transition-failed` 一致
+
+B. **`apps/api/src/services/deploy-worker.ts:843-895`** —— 重寫成 verdict-driven：
+   - 兩段各自 capture outcome（用 `let outcome: { ok, error } = ...` pattern）
+   - 餵給 `buildPostDeployVerdict` + `logPostDeployVerdict`
+   - 函式 return type 不變（`Promise<void>`），但 critical 失敗會 console.error 到 Cloud Run logs，operator 可以 `grep "[CRITICAL errorCode=image_cache_drift]"` 找到所有受影響的 deploys
+
+C. **`apps/api/src/test-post-deploy-verdict.ts`（新檔，75 tests，4 sections）**：
+   - **Section 1 — verdict kinds（19 tests）**：4 種 kind × 包括 null-error fallback 的 outcome 矩陣
+   - **Section 2 — logPostDeployVerdict side-effect contract（21 tests）**：用 console capture 證實 info→log only / warn→warn 含 errorCode / critical→error 含 [CRITICAL] + errorCode / never throws
+   - **Section 3 — Regression guards（17 tests）**：errorCode 字串 contract（3 種精確 pin）、success 沒有 errorCode 欄位（clean discriminator）、literal-true narrowing、deployLabel 流入 message、image-cache message 含「redeploy/rebuild」+「lastDeployedImage/re-run」
+   - **Section 4 — Round-18 bug regressions（17 tests）**：cache fail MUST be critical（NEVER 退回 warn）、source-only fail MUST NOT be critical（不汙染信號）、multiple 必含兩個 error string、success 沒 error 欄位、image-cache-missing 沒 sourceCaptureError 欄位、4 種 kind 全 reachable
+
+**Test 通過率（累計）：458 unit pass / 0 fail**：
+- 13 個 zero-dep test 檔全綠：publish-split(14), post-canary(15), transition-plan(23), stop-verdict(19), env-vars-update(45), teardown-verdict(52), start-verdict(59), domain-setup-verdict(93), post-deploy-verdict(75), safe-number(27), scan-report-schemas(15), scanner-safe-parse(11), stage-events(10) = 458
+- typecheck `npx tsc --noEmit` 全綠
+
+**架構決策（內含於 commit）**：
+- **Deploy 整體 success/failure 不因 secondary writes 改變**：跟 round 16 partial-config-not-persisted 同 pattern。Cloud Run 在跑就回 success；verdict 是把 degradation 用 log + errorCode 浮上來給 dashboard，不是用 throw 讓 deploy 失敗（不然 user 看到「deploy failed」會更困惑）
+- **errorCode `'image_cache_drift'` / `'deployed_source_orphan'` / `'post_deploy_drift'`** 加入 drift-code family。前端可以對所有 `*_drift` 用同一套 banner UI
+- **不變更 Deployment schema**（不加 errorCode / degradedReasons 欄位）：這是 by design，每 round 不該長 schema。drift 用 logs + dashboard scan 浮上來；要持久化的話留給未來統一的 migration
+- **logLevel 對應 console method**（`info→log` / `warn→warn` / `critical→error`）：Cloud Run logs 的 severity 自然分流，operator 可以用 `severity>=ERROR` filter 抓 critical 而不被 warn 淹沒
+
+**這段沒做的事**：
+- Round 18 沒處理 monorepo backend→frontend section（`deploy-worker.ts:880-944`）—— 那裡 backend 寫 `resolvedBackendUrl` 進 config + PATCH frontend sibling 的 Cloud Run env vars，更多 swallow 點。留給 round 19（更大、更聚焦的一段）
+- 沒處理候選 #2（pipeline orphaned in 'scanning' state if container restart）—— 那是 reconciler-shape 的修，`STUCK_STATES` 要加新 state、要重新從 GCS 下載 source。Scope 太大，留給後面 round 或單獨 day-task
+- 沒處理 candidate pool 裡仍未做的 `discord-notifier.ts`（low）
+
+---
+
 **2026-04-26（autonomous overnight 第十七段）—— `setupCustomDomainWithDns` 不再留 GCP domain mapping 孤兒，DNS-after-mapping 失敗時自動清理**
 
 第十六段 start-verdict 收尾後，依 round-15 architect scout 留下的候選名單實作下一段。三個候選裡選 **`setupCustomDomainWithDns`**：mid-severity，per-domain（每設一個 custom domain 都會跑），影響面實質（GCP 留 orphan domain mapping，operator retry 撞 conflict，無 reconciler 永遠不會自清）。
