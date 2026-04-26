@@ -259,16 +259,39 @@ export async function runPipeline(
     // fixes would land in the Docker image. We write to a separate `sources-fixed/`
     // path and store the URI in project.config.gcsFixedSourceUri — the original
     // gcsSourceUri is left intact for audit.
+    //
+    // ROUND 20: this used to swallow into console.warn, which let the reviewer
+    // approve a "fix" that never made it into the deploy artifact. Now we
+    // capture both sub-outcomes (tarball+upload, db persist) and feed them
+    // through the verdict module. On critical verdict we mark the scan_report
+    // status='failed' so the reviewer dashboard blocks approval — see step 7
+    // below where we set fixedSourceUploadCritical.
     currentStep = 'Step 6a: Upload fixed source to GCS';
     console.log(`[Pipeline] ${currentStep}...`);
+    let projectLabel = projectId;
+    let tarballAndUploadOutcome: { ok: boolean; gcsUri: string | null; bytes: number; error: string | null } = {
+      ok: false,
+      gcsUri: null,
+      bytes: 0,
+      error: 'tarball/upload not attempted',
+    };
+    let dbPersistOutcome: { ok: boolean; error: string | null } | null = null;
+
     try {
       const project = await getProject(projectId);
+      projectLabel = project?.slug || project?.name || projectId;
       const slug = project?.slug || projectId;
       const gcpProject = process.env.GCP_PROJECT || 'wave-deploy-agent';
       const bucket = `${gcpProject}_cloudbuild`;
       const objectName = `sources-fixed/${slug}-${Date.now()}.tgz`;
       const tarballPath = `/tmp/${slug}-fixed-${Date.now()}.tgz`;
-      execFileSync('tar', ['-czf', tarballPath, '-C', projectDir, '.'], { timeout: 60_000 });
+
+      // tar (sub-step a)
+      try {
+        execFileSync('tar', ['-czf', tarballPath, '-C', projectDir, '.'], { timeout: 60_000 });
+      } catch (tarErr) {
+        throw new Error(`tar-failed: ${(tarErr as Error).message}`);
+      }
 
       const { readFileSync: rfs, unlinkSync: ufs, statSync: sfs } = await import('node:fs');
       const tarball = rfs(tarballPath);
@@ -284,21 +307,72 @@ export async function runPipeline(
       });
       try { ufs(tarballPath); } catch { /* ignore */ }
       if (!uploadRes.ok) {
-        const err = await uploadRes.text();
-        throw new Error(`GCS upload failed (${uploadRes.status}): ${err}`);
+        const errBody = await uploadRes.text().catch(() => '<no body>');
+        throw new Error(`upload-failed: GCS HTTP ${uploadRes.status}: ${errBody}`);
       }
 
       const gcsFixedSourceUri = `gs://${bucket}/${objectName}`;
       console.log(`[Pipeline]   Fixed source uploaded (${bytes} bytes): ${gcsFixedSourceUri}`);
-      // Merge into project.config (preserves other fields)
-      await dbQuery(
-        `UPDATE projects SET config = config || $1::jsonb, updated_at = NOW() WHERE id = $2`,
-        [JSON.stringify({ gcsFixedSourceUri }), projectId],
-      );
+      tarballAndUploadOutcome = {
+        ok: true,
+        gcsUri: gcsFixedSourceUri,
+        bytes,
+        error: null,
+      };
+
+      // Merge into project.config (preserves other fields) — separate try/catch
+      // because db-persist failure is recoverable (bytes already in GCS).
+      try {
+        await dbQuery(
+          `UPDATE projects SET config = config || $1::jsonb, updated_at = NOW() WHERE id = $2`,
+          [JSON.stringify({ gcsFixedSourceUri }), projectId],
+        );
+        dbPersistOutcome = { ok: true, error: null };
+      } catch (dbErr) {
+        dbPersistOutcome = { ok: false, error: (dbErr as Error).message };
+      }
     } catch (err) {
-      console.warn(`[Pipeline]   Fixed source re-upload failed (non-fatal): ${(err as Error).message}`);
-      console.warn(`[Pipeline]   Deploy will fall back to original gcsSourceUri (AI fixes will NOT be in Docker image)`);
+      // Tarball / getProject / upload failure path
+      tarballAndUploadOutcome = {
+        ok: false,
+        gcsUri: null,
+        bytes: 0,
+        error: (err as Error).message,
+      };
+      dbPersistOutcome = null; // didn't attempt
     }
+
+    // Build verdict and surface it (critical verdicts use console.error
+    // with [CRITICAL errorCode=...] for grep-ability)
+    const { buildFixedSourceUploadVerdict, logFixedSourceUploadVerdict } = await import(
+      './fixed-source-upload-verdict'
+    );
+    // Step 6a is applicable when projectDir was mutated. The pipeline always
+    // applies Step 2 (Dockerfile gen) and Step 5 (AI fixes). We treat
+    // applicable=true when EITHER of these would have changed projectDir:
+    //   - !detection.hasDockerfile  (we wrote a new Dockerfile in step 2), OR
+    //   - any autoFixResults entry has applied=true
+    const dockerfileWasGenerated = !detection.hasDockerfile;
+    const anyFixApplied = autoFixResults.some((r) => r.applied);
+    const applicable = dockerfileWasGenerated || anyFixApplied;
+
+    const fixedSourceVerdict = buildFixedSourceUploadVerdict({
+      applicable,
+      projectLabel,
+      // When not-applicable we still pass through what we observed (tarball
+      // step ran above unconditionally in the legacy code; verdict ignores
+      // these inputs when applicable=false).
+      tarballAndUpload: applicable ? tarballAndUploadOutcome : null,
+      dbPersist: applicable ? dbPersistOutcome : null,
+    });
+    logFixedSourceUploadVerdict(fixedSourceVerdict);
+
+    // If the verdict says blockApproval, persist the failure into the
+    // scan_report so the reviewer dashboard sees a red flag instead of
+    // a green "completed" status. This is what prevents the lie.
+    const fixedSourceUploadCritical =
+      fixedSourceVerdict.kind === 'tarball-or-upload-failed' ||
+      fixedSourceVerdict.kind === 'db-persist-failed-after-upload';
 
     // ─── Step 6.5: Resource Plan Analysis (LLM) ───
     currentStep = 'Step 6.5: Resource Plan Analysis';
@@ -343,7 +417,12 @@ export async function runPipeline(
     console.log(`[Pipeline]   Estimated: $${costEstimate.monthlyTotal}/month`);
 
     if (scanReport) {
-      await updateScanReport(scanReport.id, { costEstimate, status: 'completed' });
+      // ROUND 20: when fixed-source upload critical, mark scan_report
+      // status='failed' so the reviewer dashboard does NOT show this as
+      // approvable. The reviewer would otherwise be approving fixes that
+      // never made it into the deploy artifact (security flagship lie).
+      const scanStatus: 'completed' | 'failed' = fixedSourceUploadCritical ? 'failed' : 'completed';
+      await updateScanReport(scanReport.id, { costEstimate, status: scanStatus });
     }
 
     // ─── Step 8: Generate Review Report (60s timeout) ───
@@ -363,13 +442,48 @@ export async function runPipeline(
       reviewReport = `Report generation skipped: ${(err as Error).message}`;
     }
 
+    // ROUND 20: when fixed-source upload was critical, prepend a clear
+    // notice to the threatSummary so anyone reading the report understands
+    // why the project transitioned to failed instead of review_pending.
+    const finalThreatSummary = fixedSourceUploadCritical
+      ? `[CRITICAL] Fixed-source upload failed — deploy would have used the original UNFIXED source. ` +
+        `Verdict: ${fixedSourceVerdict.message}\n\n---\n\n${reviewReport}`
+      : reviewReport;
+
     if (scanReport) {
       await updateScanReport(scanReport.id, {
-        threatSummary: reviewReport,
+        threatSummary: finalThreatSummary,
       });
     }
 
-    // ─── Step 9: Transition to review_pending ───
+    // ─── Step 9: Transition to review_pending OR failed (round 20) ───
+    if (fixedSourceUploadCritical) {
+      // Don't let the operator approve a non-existent fix. Transition
+      // straight to failed with the verdict's errorCode in the metadata.
+      currentStep = 'Step 9: Transition to failed (fixed-source upload critical)';
+      console.log(`[Pipeline] ${currentStep}...`);
+      const errorCode =
+        fixedSourceVerdict.kind === 'tarball-or-upload-failed' ||
+        fixedSourceVerdict.kind === 'db-persist-failed-after-upload'
+          ? fixedSourceVerdict.errorCode
+          : 'unknown';
+      await transitionProject(projectId, 'failed', 'pipeline-worker', {
+        error: 'Fixed-source upload failed — deploy would use original unfixed source',
+        errorCode,
+        failedStep: 'Step 6a: Upload fixed source to GCS',
+        verdict: fixedSourceVerdict.kind,
+        verdictMessage: fixedSourceVerdict.message,
+        totalFindings: allFindings.length,
+        criticalFindings: allFindings.filter((f) => f.severity === 'critical').length,
+        autoFixesApplied: appliedCount,
+      });
+
+      console.log(`[Pipeline] ✗ Pipeline marked FAILED for project ${projectId} due to fixed-source upload critical`);
+      console.log(`[Pipeline]   errorCode=${errorCode} — operator must re-run the pipeline`);
+      stopKeepAlive();
+      return;
+    }
+
     currentStep = 'Step 9: Transition to review_pending';
     console.log(`[Pipeline] ${currentStep}...`);
     await transitionProject(projectId, 'review_pending', 'pipeline-worker', {
