@@ -88,6 +88,10 @@ export const ROUTE_PERMISSIONS: Array<[string, Permission]> = [
   // sanitized at both bot-side and API-side ingress.
   ['POST:/api/discord-audit', 'projects:deploy'],
   ['PATCH:/api/discord-audit/:id', 'projects:deploy'],
+  // Read endpoints power the admin dashboard's Discord-audit tab — same
+  // sensitivity bar as the auth audit log (users:manage).
+  ['GET:/api/discord-audit', 'users:manage'],
+  ['GET:/api/discord-audit/:id', 'users:manage'],
 
   // Users management (auth routes handle their own granular permissions,
   // but users CRUD requires users:manage)

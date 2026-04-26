@@ -4,10 +4,11 @@ import { useState, useEffect, FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../lib/auth';
+import DiscordAuditSection from './discord-audit-section';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
-type Tab = 'users' | 'keys' | 'audit';
+type Tab = 'users' | 'keys' | 'audit' | 'discord';
 
 interface User {
   id: string;
@@ -107,11 +108,17 @@ export default function AdminPage() {
             {t('tabs.auditLog')}
           </TabButton>
         )}
+        {canManageUsers && (
+          <TabButton active={tab === 'discord'} onClick={() => setTab('discord')}>
+            {t('tabs.discordAudit')}
+          </TabButton>
+        )}
       </div>
 
       {tab === 'users' && canManageUsers && <UsersSection />}
       {tab === 'keys' && <ApiKeysSection />}
       {tab === 'audit' && canManageUsers && <AuditLogSection />}
+      {tab === 'discord' && canManageUsers && <DiscordAuditSection />}
     </div>
   );
 }

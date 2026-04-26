@@ -19,6 +19,7 @@ import { registerAuthHook, registerAuthCoverageCheck } from './middleware/auth';
 import { ensureAdmin } from './services/auth-service';
 import { startReconciler } from './services/reconciler';
 import { startAuthCleanup } from './services/auth-cleanup';
+import { startDiscordAuditCleanup } from './services/discord-audit-cleanup';
 import { runMigrations } from './db/migrate';
 import { safePositiveInt } from './utils/safe-number';
 
@@ -160,6 +161,9 @@ try {
   // Without this, both tables grow unbounded — sessions because the rows
   // outlive the cookie; audit log because every request adds a row.
   startAuthCleanup();
+  // Periodic discord_audit retention sweep (180d default). Same shape as
+  // startAuthCleanup — every Discord NL invocation appends a row.
+  startDiscordAuditCleanup();
 } catch (err) {
   app.log.fatal(err);
   process.exit(1);

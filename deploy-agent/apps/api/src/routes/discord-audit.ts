@@ -31,6 +31,11 @@ import {
   sanitizeToolInput,
   sanitizeResultText,
 } from '../services/discord-audit-mapper.js';
+import {
+  parseDiscordAuditQuery,
+  buildListSql,
+  buildCountSql,
+} from '../services/discord-audit-query.js';
 
 const PendingSchema = z.object({
   discordUserId: z.string().min(1).max(64),
@@ -51,6 +56,53 @@ const ResultSchema = z.object({
 const INTENT_TRUNCATE_LEN = 500;
 
 export async function discordAuditRoutes(app: FastifyInstance): Promise<void> {
+  // GET /api/discord-audit — paginated, filtered list for the admin dashboard.
+  // Permission gate is in middleware/auth.ts (users:manage).
+  app.get('/api/discord-audit', async (request, reply) => {
+    const verdict = parseDiscordAuditQuery(request.query);
+    if (verdict.kind === 'invalid') {
+      return reply.code(400).send({ error: verdict.reason });
+    }
+    const { query } = verdict;
+    const list = buildListSql(query);
+    const count = buildCountSql(query);
+
+    const [rowsResult, totalResult] = await Promise.all([
+      pool.query(list.text, list.values),
+      pool.query<{ total: number }>(count.text, count.values),
+    ]);
+
+    return {
+      entries: rowsResult.rows,
+      total: totalResult.rows[0]?.total ?? 0,
+      limit: query.limit,
+      offset: query.offset,
+    };
+  });
+
+  // GET /api/discord-audit/:id — single row, for drill-down.
+  app.get<{ Params: { id: string } }>(
+    '/api/discord-audit/:id',
+    async (request, reply) => {
+      const idNum = Number(request.params.id);
+      if (!Number.isInteger(idNum) || idNum <= 0) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+      const result = await pool.query(
+        `SELECT id, discord_user_id, channel_id, message_id, tool_name,
+                tool_input, intent_text, status, result_text, llm_provider,
+                created_at, updated_at
+           FROM discord_audit
+          WHERE id = $1`,
+        [idNum],
+      );
+      if (result.rows.length === 0) {
+        return reply.code(404).send({ error: 'Audit row not found' });
+      }
+      return result.rows[0];
+    },
+  );
+
   // POST /api/discord-audit — create a 'pending' audit row before tool exec.
   app.post('/api/discord-audit', async (request, reply) => {
     const parsed = PendingSchema.safeParse(request.body);

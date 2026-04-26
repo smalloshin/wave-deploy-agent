@@ -448,7 +448,8 @@
     "tabs": {
       "users": "Users",
       "apiKeys": "API Keys",
-      "auditLog": "Audit Log"
+      "auditLog": "Audit Log",
+      "discordAudit": "Discord Audit"
     },
     "users": {
       "count": "{count} users total",
@@ -510,6 +511,33 @@
       "resource": "Resource",
       "ip": "IP",
       "metadata": "Metadata"
+    },
+    "discordAudit": {
+      "all": "All",
+      "refresh": "Refresh",
+      "loading": "Loading...",
+      "empty": "No Discord tool invocations recorded yet.",
+      "counter": "{start}-{end} of {total}",
+      "prev": "← Prev",
+      "next": "Next →",
+      "time": "Time",
+      "user": "Discord User",
+      "channel": "Channel",
+      "tool": "Tool",
+      "intent": "Intent",
+      "result": "Result",
+      "toolInput": "Tool Input",
+      "llmProvider": "LLM Provider",
+      "close": "Close",
+      "detailTitle": "Discord Audit #{id}",
+      "status": {
+        "label": "Status",
+        "pending": "Pending",
+        "success": "Success",
+        "error": "Error",
+        "denied": "Denied",
+        "cancelled": "Cancelled"
+      }
     }
   }
 }
