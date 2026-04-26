@@ -4,6 +4,92 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第二十五段）—— RBAC Phase 1: owner_id + per-resource owner-or-admin gate**
+
+第二十四段把 URL env-var redeploy silent swallow 收掉、ship 兩個 commits 後，user 在中段交來新的優先順序——pivot 到 RBAC。Future direction 列「RBAC Phase 1 next」加上一句白話：「現在線上資料是裸的，47 個 endpoint 全部公開」。
+
+第二十五段就把這條收掉。
+
+**Bug 描述**（pre-round-25）：
+
+雖然 auth middleware 早就在了（rounds prior，含 users/roles/sessions/api_keys/auth_audit_log 5 張表），但它只 enforce「actor 有沒有 authenticated」這一層；**完全沒有 per-resource ownership**。也就是說：
+- viewer A 登入 → 拿到 cookie → 可以 DELETE viewer B 的 project
+- 任何拿到 anonymous（permissive mode）的人 → 可以 DELETE/publish/stop 任何 project
+- 47 個 endpoint 沒有任何一個檢查 `project.ownerId === actor.id`
+
+middleware 那層的 ROUTE_PERMISSIONS 只到「`projects:delete` permission 有沒有」這個粒度，沒到「這個 project 是不是你的」這個粒度。Phase 1 的目標就是補第二跳。
+
+**這次做的事**：
+
+A) **新 `apps/api/src/services/access-denied-verdict.ts`**（pure-function，6-kind discriminated union，269 LOC）：
+- `granted-as-owner`（owner self-action，最常見路徑，audit row 會 skip 避免洪水）
+- `granted-as-admin`（admin override，audit row：`admin_override`）
+- `granted-permissive-anonymous`（AUTH_MODE=permissive + 匿名→放行+warn，audit row：`anonymous_request`）
+- `granted-legacy-unowned`（**admin only**，舊 row 沒 owner_id 時讓 admin 可以收尾；非 admin 一律 denied 避免 privilege escalation）
+- `denied-anonymous`（401 `auth_required`）
+- `denied-not-owner`（403 `not_owner`）
+- 沿用 round 19-24 verdict pattern：每 kind 帶 logLevel + auditAction + 可選的 errorCode/httpStatus literals
+- `isGranted(v)` helper 收緊 type narrowing
+
+B) **新 `apps/api/src/services/owner-check.ts`**（Fastify-aware glue，159 LOC）：
+- `requireOwnerOrAdmin(req, reply, project, action)` → 建 verdict + 寫 console + 寫 audit row + deny 時 send 401/403 reply with errorCode envelope
+- audit row 走 `safeLogAuth`，**snake_case keys**（`user_id`, `ip_address`）match 既有 `auth-service.logAuth` 簽名（第一版用 camelCase 中招過）
+- caller pattern：`const owner = await requireOwnerOrAdmin(...); if (!owner.ok) return;`——reply 已經送了，caller 直接 short-circuit
+
+C) **schema migration**（idempotent，append-only 到 `schema.sql`）：
+- `ALTER TABLE projects ADD COLUMN IF NOT EXISTS owner_id UUID REFERENCES users(id) ON DELETE SET NULL`
+- `CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id)`
+- backfill：UPDATE 把舊 NULL row 的 owner_id 設成「first active admin（roles.name='admin' AND is_active=true ORDER BY created_at ASC LIMIT 1）」——只有當至少有一個 admin 存在時才跑，避免空 DB 階段炸
+
+D) **Project 型別 + orchestrator.createProject 擴充**：
+- `packages/shared/src/types.ts` 加 `ownerId: string | null`
+- `orchestrator.createProject` 簽名加 `ownerId?: string | null`
+- INSERT 寫 owner_id；rowToProject 讀 `row.owner_id`
+- test-publish-split.ts fixture 加 `ownerId: null` 修 TS
+
+E) **Wire `requireOwnerOrAdmin` 到 18 個 destructive route**：
+- `routes/projects.ts`（11 站）：DELETE、resubmit、force-fail、skip-scan、reanalyze-failure、env-vars GET/PATCH、stop、start、source-download、retry-domain、4 個 github-webhook handler（POST/DELETE/GET/PATCH）
+- `routes/versioning.ts`（5 站）：publish、new-version、deploy-lock、cleanup、download
+- `routes/project-groups.ts`（1 站，特殊邏輯）：bulk action **第一個非 owned target 就 refuse 整批**——回 403 + `rejected[]` 陣列。bulk 不是 privilege-escalation surface，不會「owned 的做 + non-owned 的略過」這種半成品
+
+F) **createProject callers 全 wire ownerId**（projects.ts 8 站 + mcp.ts 1 站）：
+- 每站 `ownerId: request.auth.user?.id ?? null`
+- 匿名（permissive mode）建立的 row 留 owner_id=NULL → 後續只有 admin 能動（granted-legacy-unowned arm）。這比「自動把 admin 列為 owner」安全
+- mcp.ts 因為 handler 簽名沒 `request`，加 `McpActor` 型別 + `actor: McpActor` 參數從 route handler 傳進去
+
+**Tests**（`src/test-access-denied-verdict.ts`，5 sections，104 tests，零 dependency）：
+- S1：6 kinds × 代表性 input
+- S2：`logAccessVerdict` console-capture（warn → `[Access]` 前綴）
+- S3：errorCode + httpStatus literal narrowing（assert deny-anonymous=401, deny-not-owner=403）
+- S4：cross-mode regression（permissive vs enforced lattice）
+- S5：12 個 RBAC-specific 回歸——R-1 非 admin 對 unowned row 永遠 denied、R-11 backfill SQL shape（assert UPDATE projects/SET owner_id/WHERE id/<user-id> 都在）、R-12 兩個 deny kind 的 httpStatus 互斥
+
+**Round 25 全綠**：104/0。Cumulative pure-function sweep：**1250 passed / 0 failed across 18 zero-dep test files**（+104 from access-denied-verdict）。`tsc --noEmit -p .` 全綠。
+
+**架構決策**：
+- 第一次「verdict pattern 包到 access control 層」——之前都是 deploy/teardown/IO surface，這次是 cross-cutting authz。發現 pattern 滿好用：route handler 仍然只寫一行 `if (!owner.ok) return;`，所有 log+audit+reply 集中在一個 helper
+- `granted-legacy-unowned` 是 admin-only，刻意不開給非 admin——避免「舊 row 沒 owner 任何人都能動」變成 privilege escalation surface。R-1 regression test 把這條釘死
+- bulk action 用「整批 refuse + rejected[]」而非「owned 的做、non-owned 的略過」——後者會讓 attacker 用 bulk endpoint 搜出他能不能動哪些 row，當 enumeration vector
+- AUTH_MODE 預設留 `permissive`：先 ship `owner_id` + per-resource gate，CI / Discord bot / 內部 script 還可以匿名跑；下一階段（Phase 2）才把 enforced 打開
+
+**遇到的坑**：
+- 第一版 owner-check.ts logAuth 用 camelCase（userId / ipAddress / metadata），跟 auth-service.ts:248 既有 `logAuth` snake_case 對不起來；改成 user_id / ip_address
+- mcp.ts route handler 沒 `request` 參數可拿 auth context——用 `McpActor` 介面 + 參數 forward 解掉，不去動 handler signature 全改
+- test sweep script 一開始 grep summary line 太緊（只認 `=== N passed, M failed ===`），漏掉「`PASS: N` / `FAIL: M`」「`N/N tests passed`」兩種；補上三-format parser
+
+**沒做的事 / 下一步**：
+- AUTH_MODE 還是 `permissive`——切 `enforced` 是 Phase 2，要先驗證 Discord bot / MCP / web dashboard 都帶 credentials
+- web dashboard 沒 owner-mismatch UI banner（errorCode `not_owner` 已就位、403 已 surface、後續加）
+- listProjects 還沒 filter by owner——viewer 能看到別人的 project 但不能動。下次加 `listProjectsForActor(actor)` filter helper
+- 沒拆 schema.sql 成獨立 migration file（單檔 idempotent migration 是專案約定）
+
+**Future direction（user explicit priority order）**：
+1. **AUTH_MODE=enforced 切換 + listProjects filter**（Phase 2）：先驗證所有消費者帶 token，再切；同步加 owner-scoped list 避免 viewer 看到別人 project
+2. **Discord NL UX 強化**（Round 26 = user 原訂 Round 25 list 的 8 items）：OPERATOR_DISCORD_ID allowlist、@mention 拿掉、代詞解析、untrusted_channel_history tag、approve/reject in DANGEROUS_TOOLS、delete_project 二段確認、LLM tool input validation、discord_audit table
+3. **更多 silent-bug rounds**：deferred 到 RBAC Phase 2 + Discord 都收完之後，spawn fresh architect scout 重排序
+
+---
+
 **2026-04-26（autonomous overnight 第二十四段）—— URL env-var redeploy silent swallow 修掉**
 
 第二十三段把 DB dump 全鏈路（upload 4 + restore 1）silent swallow 收完，cumulative 1159/0。第二十四段往 architect 留下的 candidate #2（`deploy-worker.ts:1105-1136` URL env-var redeploy）動手——這是「第二次 deployToCloudRun」的 silent swallow，跟 IAM verdict 屬同一 surface-only spectrum point。
