@@ -30,6 +30,7 @@ import { recordStageEvent, type StageName } from './stage-events';
 import { pollBuildLog, type BuildLogChunk } from './build-log-poller';
 import { safeParsePort } from '../utils/safe-number.js';
 import { publish as publishStreamEvent } from './deployment-event-stream';
+import { decidePostCanaryAction, verdictToTargetState } from './post-canary';
 
 /**
  * Stream live build-log chunks from GCS to a deployment's SSE channel.
@@ -1143,66 +1144,131 @@ export async function runDeployPipeline(
         console.log(`[Deploy] ✓ Project ${project.name} v${deployVersion} is LIVE at ${liveUrl}`);
         notifyDeployComplete(project.name, deployVersion, liveUrl ?? '', previewUrl, true).catch(() => {});
       } else {
-        // Canary failed — auto-rollback to previous published version
+        // Canary failed — try to auto-rollback to previous published version,
+        // then dispatch on the (canary, rollback) outcome via the pure
+        // decidePostCanaryAction helper. The big change vs pre-round-11:
+        // when rollback fails, we no longer transition to 'live' with a log
+        // line. The project goes to 'failed' so an operator MUST intervene
+        // (Cloud Run is serving the bad version; no automated recovery
+        // worked) and the round-10 reconciler stays out of the way.
         const failedChecks = canaryResult.checks
           .filter((c) => !c.passed)
           .map((c) => `${c.type}: ${c.value} (threshold: ${c.threshold})`)
           .join(', ');
         console.warn(`[Deploy]   Canary FAILED: ${failedChecks}`);
 
-        // Find previous published deployment to rollback to
         const allDeploys = await getDeploymentsByProject(projectId);
         const previousPublished = allDeploys.find(
           (d) => d.id !== deployment.id && d.revisionName && d.isPublished
         );
 
-        if (previousPublished?.revisionName && previousPublished.cloudRunService) {
-          // Auto-rollback: route traffic back to previous version
+        const canRollback = !!(previousPublished?.revisionName && previousPublished.cloudRunService);
+
+        let rollbackOutcome: import('./post-canary').RollbackOutcome = {
+          attempted: false,
+          success: false,
+          error: null,
+          targetVersion: null,
+        };
+
+        if (canRollback && previousPublished) {
           console.warn(`[Deploy]   Auto-rolling back to v${previousPublished.version} (${previousPublished.revisionName})`);
           const rollbackResult = await publishRevision(
             gcpProject, gcpRegion,
-            previousPublished.cloudRunService,
-            previousPublished.revisionName
+            previousPublished.cloudRunService!,
+            previousPublished.revisionName!
           );
+          rollbackOutcome = {
+            attempted: true,
+            success: rollbackResult.success,
+            error: rollbackResult.error,
+            targetVersion: previousPublished.version,
+          };
           if (rollbackResult.success) {
             console.log(`[Deploy]   Rollback successful — traffic on v${previousPublished.version}`);
-            // Don't publish the new deployment in DB — keep previous as published
           } else {
-            console.error(`[Deploy]   Rollback failed: ${rollbackResult.error}`);
+            console.error(`[Deploy]   Rollback FAILED: ${rollbackResult.error} (Cloud Run still on v${deployVersion})`);
           }
+        }
 
-          const liveUrl = customDomainUrl || deployResult.serviceUrl;
-          await transitionProject(projectId, 'live', 'deploy-worker', {
+        const freshProject = await getProject(projectId);
+        const isLocked = freshProject?.config?.deployLocked === true;
+
+        const verdict = decidePostCanaryAction({
+          canary: { passed: false, failedChecks },
+          rollback: rollbackOutcome,
+          newVersion: deployVersion,
+          isDeployLocked: isLocked,
+        });
+
+        const liveUrl = customDomainUrl || deployResult.serviceUrl;
+        const targetState = verdictToTargetState(verdict);
+
+        if (verdict.kind === 'live-canary-warning-no-rollback-target') {
+          // First deploy with failing canary: go live with warning.
+          currentStep = 'Step 8: Go live (canary warning)';
+          if (verdict.autoPublishNewVersion) {
+            await publishDeployment(projectId, deployment.id);
+          }
+          await transitionProject(projectId, targetState, 'deploy-worker', {
+            serviceUrl: liveUrl,
+            cloudRunUrl: deployResult.serviceUrl,
+            canaryWarnings: failedChecks,
+            version: deployVersion,
+            autoPublished: verdict.autoPublishNewVersion,
+          });
+          console.log(`[Deploy] ✓ Project ${project.name} v${deployVersion} is LIVE at ${liveUrl} (with canary warnings, no rollback target)`);
+        } else if (verdict.kind === 'live-rolled-back') {
+          // Canary failed but rollback succeeded: previous version is serving;
+          // do NOT publish the new (broken) deployment.
+          await transitionProject(projectId, targetState, 'deploy-worker', {
             serviceUrl: liveUrl,
             cloudRunUrl: deployResult.serviceUrl,
             canaryFailed: true,
             canaryWarnings: failedChecks,
-            rolledBackTo: `v${previousPublished.version}`,
+            rolledBackTo: `v${verdict.rolledBackToVersion}`,
             version: deployVersion,
             autoPublished: false,
           });
-          console.warn(`[Deploy] ⚠ v${deployVersion} deployed but canary failed — rolled back to v${previousPublished.version}`);
-          notifyCanaryFailed(project.name, deployVersion, failedChecks, `v${previousPublished.version}`).catch(() => {});
-        } else {
-          // No previous version to rollback to — first deploy, go live with warning
-          console.warn(`[Deploy]   No previous version to rollback to — going live with warnings`);
-          currentStep = 'Step 8: Go live (canary warning)';
-          const liveUrl = customDomainUrl || deployResult.serviceUrl;
-
-          const freshProject = await getProject(projectId);
-          const isLocked = freshProject?.config?.deployLocked === true;
-          if (!isLocked) {
-            await publishDeployment(projectId, deployment.id);
-          }
-
-          await transitionProject(projectId, 'live', 'deploy-worker', {
+          console.warn(`[Deploy] ⚠ v${deployVersion} deployed but canary failed — rolled back to v${verdict.rolledBackToVersion}`);
+          notifyCanaryFailed(project.name, deployVersion, failedChecks, `v${verdict.rolledBackToVersion}`).catch(() => {});
+        } else if (verdict.kind === 'failed-rollback-failed') {
+          // CRITICAL: canary failed AND rollback failed. Cloud Run is serving
+          // the broken v_new. We CANNOT mark the project live — that lies to
+          // the dashboard. We CANNOT publishDeployment to v_new — that would
+          // legitimize the bad version (and round-10's reconciler would then
+          // see DB.is_published = bad and self-confirm). We CAN'T auto-fix;
+          // operator must roll back manually (gcloud run services
+          // update-traffic) or redeploy.
+          console.error(
+            `[Deploy] [CRITICAL] canary_and_rollback_failed project=${project.name} ` +
+              `failedVersion=v${verdict.failedVersion} ` +
+              `intendedRollbackVersion=v${verdict.intendedRollbackVersion} ` +
+              `rollbackError="${verdict.rollbackError}" ` +
+              `cloudRunService=${previousPublished?.cloudRunService ?? 'unknown'} ` +
+              `— Cloud Run is serving the failed canary version; manual rollback required (gcloud run services update-traffic)`,
+          );
+          await transitionProject(projectId, targetState, 'deploy-worker', {
             serviceUrl: liveUrl,
             cloudRunUrl: deployResult.serviceUrl,
+            canaryFailed: true,
             canaryWarnings: failedChecks,
+            rollbackFailed: true,
+            rollbackError: verdict.rollbackError,
+            failedVersion: verdict.failedVersion,
+            intendedRollbackVersion: verdict.intendedRollbackVersion,
             version: deployVersion,
-            autoPublished: !isLocked,
+            autoPublished: false,
+            requiresManualRollback: true,
           });
-          console.log(`[Deploy] ✓ Project ${project.name} v${deployVersion} is LIVE at ${liveUrl} (with canary warnings, no rollback target)`);
+          // Notify Discord with explicit rollback-failed indicator.
+          notifyCanaryFailed(
+            project.name,
+            deployVersion,
+            failedChecks,
+            `❌ 自動回滾失敗 (intended v${verdict.intendedRollbackVersion}, error: ${verdict.rollbackError.slice(0, 200)}). 流量仍在 v${deployVersion}，需手動介入`,
+          ).catch(() => {});
+          console.warn(`[Deploy] ✗ Project ${project.name} marked FAILED — Cloud Run trapped on broken v${deployVersion}`);
         }
       }
     } else {
