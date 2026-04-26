@@ -4,6 +4,84 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十三段）—— stopProjectService 不再說謊，partial failure 變成 CRITICAL 而非 silent success**
+
+第十二段把 transitionProject 改成 atomic optimistic concurrency 後，spawn 新 architect 找下一隻 silent bug。回報的是 service-lifecycle.ts 的 `stopProjectService`：三個 IO call 連跑，沒有錯誤處理，外加一個吞掉所有錯的 `try { } catch { }`。
+
+具體 bug 形態有兩種，都是 silent：
+
+A. **GCP DELETE 失敗 → DB 仍被寫入**：`deleteService()` 原本回 void，內部 try/catch 把 GCP 5xx 吞到 console.error，caller 完全不知道失敗。然後 `updateDeployment()` 照樣寫 `cloudRunUrl=''`，DB 描述「服務已停」但 GCP service 其實還活著。Dashboard 綠燈，operator 點 URL 還能打開——什麼？
+
+B. **GCP DELETE 成功 + DB 寫失敗 → trapped state**：service 真的被刪了但 DB row 還寫 `live` + 原 cloudRunUrl。Round-10 reconciler 想 auto-fix 卻沒辦法——`getServiceLiveTraffic` 對已刪服務回 null，split-detection 走 skip 路徑，project 卡死在「DB 講 live、GCP 沒服務」。永遠不自動恢復。
+
+兩類都會回 `success: true`，dashboard 顯示綠燈，operator 從沒看過 console.error stream。
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/deploy-engine.ts:deleteService`** —— 改 signature：
+   - 從 `Promise<void>` → `Promise<DeleteServiceResult>`：`{ ok, alreadyGone, httpStatus, error }`
+   - HTTP 404 視為 `ok: true, alreadyGone: true`（idempotent stop）
+   - 不再吞 5xx 錯誤——回給 caller 決定
+   - **影響面**：3 個 caller 都得改
+     - `service-lifecycle.ts:stopProjectService` —— 本回主場
+     - `routes/project-groups.ts:228` —— teardown 用，舊 try/catch **永遠不會觸發**（因為函式從不 throw），所以舊的 `step: 'ok'` log 在 GCP 5xx 時會說謊
+     - `routes/projects.ts:1481` —— 同上
+   - 兩個 teardown caller 都改用 `delRes.ok` 判斷，並把 `alreadyGone` 帶到 log 裡
+
+B. **`apps/api/src/services/stop-verdict.ts`（新純函式 module）** —— 抽出 stop flow 決策邏輯：
+   - `buildStopVerdict({ delete, db, transition })` → discriminated `StopVerdict`：
+     - `clean-stop`（happy path）—— info
+     - `clean-stop-already-gone`（GCP 404）—— info
+     - `clean-stop-transition-skipped`（transition 拋 Invalid/ConcurrentTransitionError —— **預期** 行為，operator 可能在停一個本來就 `failed` 的 project）—— info
+     - `partial-gcp-failed`（DELETE 失敗）—— **CRITICAL**，caller 必須短路不寫 DB
+     - `partial-db-mismatch`（DELETE OK + DB 寫失敗）—— **CRITICAL**，trapped state，reconciler 救不了
+     - `partial-transition-failed`（DELETE+DB OK 但 transition 拋非 state-machine 錯誤）—— warn，soft partial
+   - `verdictToLifecycleResult(verdict)` 把 verdict 轉回 LifecycleResult。`partial-transition-failed` 故意 `success: true`——服務真的停了、deployment row 也對，只有 project.status 卡住，dashboard 不該紅燈
+
+C. **`apps/api/src/services/service-lifecycle.ts:stopProjectService`** —— 重寫成薄 orchestrator：
+   - 跑 deleteService，拿 deleteOutcome
+   - **若 delete 失敗（且不是 alreadyGone）→ 短路，不碰 DB**——這是 round 13 的核心：寫 `cloudRunUrl=''` 到一個還活著的服務的 DB row 就是 lying-state
+   - 否則跑 updateDeployment 包 try/catch 收 outcome
+   - 若 db OK 才跑 transitionProject 包 try/catch 收 (errorName, error)
+   - 餵給 buildStopVerdict 拿 verdict，按 verdict.logLevel log，按 verdict 回 LifecycleResult
+   - bare `try { } catch { }` 完全消失——區分 state-machine 拒絕 vs 真錯誤的責任在 verdict 那邊
+
+D. **`apps/api/src/test-stop-verdict.ts`（新檔，19 tests）**：
+   - **Clean stops（2）**：happy path、GCP 404 already-gone
+   - **State-machine rejection 預期（2）**：Invalid + Concurrent 都要被 classified 成 `clean-stop-transition-skipped`（info 而非 warn 而非 critical）
+   - **Critical 真 lying-state（2）**：GCP 失敗 → partial-gcp-failed；DB 失敗 → partial-db-mismatch
+   - **Soft partial（1）**：transition 拋非 state-machine 錯 → warn
+   - **Edge cases（3）**：null error string fallback、transition errorName=null 不 misclassify
+   - **verdictToLifecycleResult mapping（6）**：success=true/false per kind，特別是 `partial-transition-failed` 故意 success=true 的決定要 explicit
+   - **Regression guards（3）**：CRITICAL 只在兩個真 lying-state；never clean-stop 當 delete or db 失敗
+
+**Test 通過率（累計）：147 unit pass / 0 fail**：
+- 跑了 10 個 test 檔的 cross-check 全綠：safe-number(27), stage-events(10), auth-coverage(6), scan-report-schemas(15), scanner-safe-parse(11), transaction(7), publish-split(14), post-canary(15), transition-plan(23), stop-verdict(19) = 147
+
+**驗證**：`npx tsc --noEmit` clean。
+
+**為什麼不寫 ADR**：「IO function 改成 structured result 而非 throw、決策邏輯抽純函式」是 round 9-12 同模式延續，不是新架構分岔。每段 docblock + commit message 已經把 why 寫透。
+
+**已知妥協**：
+- `partial-db-mismatch` 仍需 operator 手動 reconcile（目前 reconciler 沒辦法救，因為依賴 Cloud Run 還在才能 inspect）。Round 14+ 可以加一個 reconciler hook：scan `live` projects whose Cloud Run service 404s → mark `failed` with reason。今天先把偵測 + 顯眼 log 上線
+- `partial-transition-failed` 故意 success=true。Trade-off：服務真的停了 + deployment row 對，只是 project.status 卡住。回 success=false 會誤導 dashboard。如果有人覺得這太寬鬆，下一輪可以加個 `partial: true` 欄位
+- `routes/projects.ts:1481` 跟 `routes/project-groups.ts:228` 兩處 teardown 只在錯誤訊息加了 `alreadyGone` flag，沒做 partial-failure 分級——它們是 best-effort cleanup（要刪整個 project），跟 lifecycle stop 邏輯不同。本輪不擴大範圍
+
+**使用者下一步**：
+1. Review 第十三段 1 個 commit（pr/sync-all：`2c8a558` honest stop flow + 19 tests）
+2. Production deploy 後 grep `[Lifecycle] [CRITICAL]`：
+   - `partial-gcp-failed`：GCP 真壞了，service 可能還活著，operator 需要手動驗證 + 重試
+   - `partial-db-mismatch`：service 沒了 DB 卻說活著，operator 需要手動 update DB
+3. 觀察 `[Lifecycle] clean-stop-transition-skipped`：predicted 為合理量（operator 停 failed/stopped project 會觸發），太多代表 UX 問題
+4. SubmitModal navigate UX 決定還在等
+5. （第八段）`[scan-report:llm]` warn log
+6. （第九段）`event: 'publish_db_split'` fatal log
+7. （第十段）`publish_split_detected` / `publish_split_unknown_revision` log
+8. （第十一段）`canary_and_rollback_failed` CRITICAL log
+9. （第十二段）`transitionProject race:` warn log
+
+---
+
 **2026-04-26（autonomous overnight 第十二段）—— transitionProject 改成 atomic optimistic concurrency，根除 deploy-worker ↔ reconciler race**
 
 第十一段把 canary-fail + rollback-fail 的 trapped state 處理乾淨後，spawn 新 architect agent 找下一隻 silent bug，回報的目標是 `transitionProject` 的 read-modify-write race。Smoking gun 是 deploy-worker.ts:1136-1142 那段 catch — 它用 substring 比對 `'Invalid state transition'` 然後吞掉 error，註解寫「Reconciler may have already pushed to 'live' — that's fine, skip」。那段 patch 的存在本身就證明這個 race 在 production 真的會發生。
