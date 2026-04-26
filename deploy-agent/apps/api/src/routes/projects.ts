@@ -27,6 +27,7 @@ import { deleteService, deleteDomainMapping, deleteContainerImage, updateService
 import { deleteCname, setupCustomDomainWithDns, type DnsConfig } from '../services/dns-manager';
 import { stopProjectService, startProjectService } from '../services/service-lifecycle';
 import { analyzeUploadFailure } from '../services/upload-diagnostic';
+import { planEnvVarsUpdate, interpretEnvVarsUpdateResult } from '../services/env-vars-update';
 import type { UploadErrorEnvelope, UploadFailureCode, UploadStage } from '@deploy-agent/shared';
 
 const execFileAsync = promisify(execFile);
@@ -1600,31 +1601,114 @@ export async function projectRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: 'GCP project not configured' });
     }
 
-    // Merge with existing env vars
+    // Round 14: split-write between Cloud Run and DB. We compute the merge plan
+    // up-front, attempt the two writes, then ask interpretEnvVarsUpdateResult to
+    // classify the (cloudRun, db) outcome. The dangerous case is
+    // `db-failed-after-cloud-run` — Cloud Run got the new values but the DB row
+    // still shows the old ones. The dashboard's natural refresh would render
+    // stale data, so we surface a machine-readable `env_vars_db_drift` error
+    // code that the dashboard uses to switch to live-read mode.
     const existingEnvVars: Record<string, string> = (project.config?.envVars as Record<string, string>) ?? {};
-    const mergedEnvVars = { ...existingEnvVars, ...body.envVars };
+    const plan = planEnvVarsUpdate(existingEnvVars, body.envVars);
 
-    // Update Cloud Run service env vars (no rebuild)
-    const result = await updateServiceEnvVars(
+    // Noop short-circuit: nothing to write.
+    if (plan.changed.length === 0 && plan.cleared.length === 0) {
+      const verdict = interpretEnvVarsUpdateResult({ plan, cloudRun: null, db: null });
+      request.log.info({ projectId: project.id, kind: verdict.kind }, '[env-vars] noop PATCH (no diff)');
+      return {
+        success: true,
+        projectId: project.id,
+        updatedKeys: Object.keys(plan.merged),
+        noop: true,
+      };
+    }
+
+    // Phase 1: Cloud Run.
+    const cloudRunResult = await updateServiceEnvVars(
       gcpProject,
       gcpRegion,
       activeDeployment.cloudRunService,
-      mergedEnvVars,
+      plan.merged,
     );
+    const cloudRun = { success: cloudRunResult.success, error: cloudRunResult.error ?? null };
 
-    if (!result.success) {
-      return reply.status(500).send({ error: `Failed to update env vars: ${result.error}` });
+    // Phase 2: DB write — only attempted if Cloud Run succeeded. Captured in
+    // try/catch so the verdict planner can see the error rather than letting
+    // it bubble as an unhandled 500 (which would lose the cloud-run-already-updated
+    // signal the dashboard needs).
+    let db: { ok: boolean; error: string | null } | null = null;
+    if (cloudRun.success) {
+      const updatedConfig = { ...(project.config ?? {}), envVars: plan.merged };
+      try {
+        await updateProjectConfig(project.id, updatedConfig as Record<string, unknown>);
+        db = { ok: true, error: null };
+      } catch (err) {
+        db = { ok: false, error: (err as Error).message };
+      }
     }
 
-    // Update project config in DB
-    const updatedConfig = { ...(project.config ?? {}), envVars: mergedEnvVars };
-    await updateProjectConfig(project.id, updatedConfig as Record<string, unknown>);
+    const verdict = interpretEnvVarsUpdateResult({ plan, cloudRun, db });
 
-    return {
-      success: true,
-      projectId: project.id,
-      updatedKeys: Object.keys(mergedEnvVars),
-    };
+    switch (verdict.kind) {
+      case 'success':
+        request.log.info(
+          { projectId: project.id, changed: verdict.changed, cleared: verdict.cleared },
+          '[env-vars] update OK (Cloud Run + DB)',
+        );
+        return {
+          success: true,
+          projectId: project.id,
+          updatedKeys: Object.keys(plan.merged),
+          changed: verdict.changed,
+          cleared: verdict.cleared,
+        };
+
+      case 'success-noop':
+        // Already handled above, but kept for exhaustiveness.
+        return { success: true, projectId: project.id, updatedKeys: Object.keys(plan.merged), noop: true };
+
+      case 'cloud-run-failed':
+        request.log.warn(
+          { projectId: project.id, cloudRunError: verdict.cloudRunError },
+          '[env-vars] Cloud Run rejected PATCH; DB untouched',
+        );
+        return reply.status(500).send({
+          error: `Failed to update env vars: ${verdict.cloudRunError}`,
+        });
+
+      case 'db-failed-with-cloud-run-failed-too':
+        request.log.warn(
+          { projectId: project.id, cloudRunError: verdict.cloudRunError, dbError: verdict.dbError },
+          '[env-vars] both Cloud Run and DB failed (DB untouched in practice)',
+        );
+        return reply.status(500).send({
+          error: `Failed to update env vars: ${verdict.cloudRunError}`,
+        });
+
+      case 'db-failed-after-cloud-run':
+        // CRITICAL — split-write divergence. Cloud Run is authoritative now.
+        // Dashboard reads `errorCode === 'env_vars_db_drift'` and refuses to
+        // show DB-cached values, falling back to live read via GET /env-vars.
+        request.log.error(
+          {
+            projectId: project.id,
+            cloudRunService: activeDeployment.cloudRunService,
+            dbError: verdict.dbError,
+            cloudRunValues: Object.keys(verdict.cloudRunValues),
+            changed: verdict.changed,
+            cleared: verdict.cleared,
+          },
+          '[CRITICAL][env-vars] DB write failed after Cloud Run succeeded — DB drift; manual reconcile required',
+        );
+        return reply.status(500).send({
+          error: `Cloud Run was updated, but persisting to the database failed. The deployed service has the new values; the dashboard will read live from Cloud Run. Manual reconcile required. DB error: ${verdict.dbError}`,
+          errorCode: verdict.errorCode,
+          requiresManualReconcile: true,
+          cloudRunValues: verdict.cloudRunValues,
+          changed: verdict.changed,
+          cleared: verdict.cleared,
+        });
+    }
   });
 
   // Stop a single project's Cloud Run service (delete service, keep image)
