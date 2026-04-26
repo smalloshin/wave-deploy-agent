@@ -4,6 +4,64 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（emergency fix 緊急修復）—— 426 MB Firefox 上傳 network_error 修掉（chunked GCS resumable upload）**
+
+User 在半夜 23:29 回報緊急 bug：legal_flow_build.zip（426.5 MB）在 Firefox 149/macOS 上傳失敗，error envelope 顯示 `stage=upload, code=network_error, retryable=true`。整段 overnight 暫停 round 27，先處理線上問題。
+
+**Bug 描述（pre-fix）**：
+client 拿到 GCS resumable session URI 後，直接 `xhr.send(file)` 一發送整個 426 MB。任何網路抖動 = 整包重來。server 早就走 resumable session 了（`apps/api/src/routes/projects.ts:271-354`，POST /api/upload/init 已正確 init resumable session 並 return location header 當 uploadUrl），但 client 把 resumability 完全丟掉。
+- `apps/web/app/page.tsx:472`（new project 流程）
+- `apps/web/app/projects/[id]/page.tsx:405`（upgrade 流程）
+兩處都是同樣的單發 PUT bug。
+
+**這次做的事**：
+
+A) **新增 `apps/web/lib/resumable-upload.ts`**（chunked uploader，pure-helper exports + `uploadResumable` entry，349 LOC）：
+- 8 MiB chunk（256 KiB 的 32 倍，符合 GCS 規格）
+- 每 chunk PUT sessionUri 帶 `Content-Range: bytes X-Y/total`
+- Pure helpers exported 給 test：`computeChunkRange` / `formatContentRange` / `formatStatusQueryRange` / `parseRangeHeader` / `classifyStatus` / `backoffMs`
+- Status code 分類成 6 種 verdict：`success`(200/201) / `progress`(308) / `session_expired`(404/410) / `auth_failed`(401/403) / `retryable`(408/429/5xx) / `fatal`(其他)
+- 失敗 chunk 流程：指數退避（1s/2s/4s/8s/16s，封頂 30s）→ status query（`PUT sessionUri` empty body + `Content-Range: bytes */total`）→ 從 `Range: bytes=0-N` 解析 next offset → 從那裡繼續
+- 最多 5 次 retry per chunk（超過就 bail）
+- Failure 用 discriminated union：`network_error` / `gcs_timeout` / `gcs_auth_failed` / `session_expired` / `gcs_http_error` / `aborted`，每種帶不同 detail（chunkStart/End、attempts、lastError、status、body）
+- 支援 `AbortSignal`、`onProgress(loaded, total)` 累積 bytes、`onXhrCreated(xhr)` 讓 caller 存 ref 給 cancel
+
+B) **wire 到兩個流程**：
+- `apps/web/app/page.tsx`：把 line 426-485 的單發 PUT block 整段刪除，換成 `await uploadResumable({...})` + failure → envelope 對應表（6 種 failure kind 各自 map 到 UploadErrorEnvelope code），保留原本的 `xhrRef.current` 行為以維持 cancel button
+- `apps/web/app/projects/[id]/page.tsx`：同樣 pattern，`upgradeXhrRef.current` 也保留
+
+C) **`apps/web/lib/test-resumable-upload.ts`**（72 個 zero-dep test）：
+- Pure helpers 全覆蓋（chunk 邊界含 1-byte / 完整對齊 / 最後 partial、Content-Range 格式、Range header 解析含 null/undefined/empty/garbage、status 6 種分類含邊界 599、退避序列含負數）
+- Fake XHR harness 端到端模擬：
+  - happy path 單 chunk + 多 chunk
+  - network_error 中段 → status query 救回 → 跳到下個 chunk
+  - network_error → status query 也失敗 → 重試同 chunk → 200
+  - 503 → 退避 → status query 0 progress → 重送 → 200
+  - 410 session_expired 直接 fail
+  - 403 auth_failed 直接 fail
+  - 用完 retries → network_error + attempts 計數
+  - pre-aborted signal → aborted
+  - onProgress 累積進度 = total/total
+
+**Round all-green**：72/72 PASS，apps/web `tsc --noEmit` 乾淨。Commit `19af9c1`。
+
+**架構決策**：
+- 8 MiB 不是隨便挑的——256 KiB 是 GCS 硬性 minimum（non-final chunk），8 MiB = 32 × 256 KiB，平衡「retry 顆粒度」vs「HTTP overhead on slow connections」。再小（512 KiB）→ 426 MB 要 PUT 850 次，HTTP overhead 大；再大（32 MiB）→ 一次 chunk 失敗丟 32 MiB，回到原問題的小一點版本
+- 失敗時先退避再 status query（不是直接重試）——退避吸收 transient network spike；status query 避免重傳 GCS 已收的 bytes（428 MB 連線可能在 99% 處斷，重傳等於整包再來）
+- Failure 做成 discriminated union 不是 string code——caller 對「session_expired」想 trigger reinit、對「network_error」想顯示「網路問題」都需要 type narrowing；envelope 對應在 caller 端做（兩個 page.tsx 各做一次）保持 helper 對 envelope schema 解耦
+- 沒去動 `upload-error-mapper.ts` registry——`network_error` 已就位、i18n key 已就位，這次只在 envelope `message` 內加更多 detail（chunk 範圍 + attempts），讓 user 點「複製錯誤報告」時診斷資料更完整
+
+**遇到的坑**：
+- 沒有，pure-helper-first design + fake XHR harness 一次到位。比較花時間是寫 fake XHR：要正確 simulate `xhr.upload.onprogress` / `xhr.onload` / `xhr.onerror` / `xhr.ontimeout` / `xhr.abort()` 的 timing，最後用 `queueMicrotask` 讓 await chain 有機會 set up listeners
+
+**沒做的事 / 下一步**：
+- web dashboard 沒有「resumable upload 中」的 UI 提示——進度條 % 還是顯示，但沒寫「正在重試 chunk X」這種更細的狀態（需要的話再加 onRetry callback）
+- `upload-error-mapper.ts` 沒加新 i18n key——`session_expired` 暫時 map 到 `init_session_failed`（共用既有的「請重試」提示）
+- Round 27 discord_audit 一切沒動，還在 uncommitted——緊急修完後續接
+- `legal_flow_build.zip` 426 MB 是真的能成功上傳了嗎？這個 commit 是 client-side 修，需要 user 實機驗證（沒有 production GCS 可以本地跑端到端）
+
+---
+
 **2026-04-26（autonomous overnight 第二十五段）—— RBAC Phase 1: owner_id + per-resource owner-or-admin gate**
 
 第二十四段把 URL env-var redeploy silent swallow 收掉、ship 兩個 commits 後，user 在中段交來新的優先順序——pivot 到 RBAC。Future direction 列「RBAC Phase 1 next」加上一句白話：「現在線上資料是裸的，47 個 endpoint 全部公開」。
