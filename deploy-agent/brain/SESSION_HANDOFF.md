@@ -4,6 +4,72 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十五段）—— 專案 DELETE 不再悄悄丟下 GCP 孤兒，DB row 和 audit trail 在 partial failure 時被保住**
+
+第十四段把 PATCH /env-vars 收尾後，spawn architect 做 round-15 scout。Architect 自掃 services/ + routes/ 找到第三隻**比之前 backup 候選 (discord-notifier, startProjectService) 都更危險**的：
+
+**`apps/api/src/routes/projects.ts:1466-1542` 的 `DELETE /api/projects/:id`**：
+- 5 步 GCP teardown（Cloud Run service / domain mapping / Cloudflare DNS / container image），每步**個別** try/catch 推 log，**但第 1536 行 `await deleteProjectFromDb(project.id)` 無條件執行**
+- 任一 GCP 步驟失敗 → DB row 直接 CASCADE 砍掉（連同 deployments / scan_reports / state_transitions / reviews），**而 Cloud Run service / Artifact Registry image / Cloudflare CNAME 全部變成永久孤兒**
+- **加碼 bug**：`releaseProjectRedis` 在 `redis-provisioner.ts:116` 存在但**從未被呼叫**（grep 確認），且 `project_redis_allocations` schema 是 `project_id UUID PRIMARY KEY` 而非 `REFERENCES projects(id) ON DELETE CASCADE`，所以 Redis allocation row 永遠 leak、db_index 越用越少
+- Route 仍回 `{ success: true, teardownLog: [...] }` —— 操作者看到 success 就關 modal，**完全不知道 GCP 在燒錢**
+- 操作者的自然恢復：用同一個 slug 重建 → Cloud Run name collision (409)、Artifact Registry image tag 衝突、Cloudflare CNAME 已被佔用、DB 完全沒有舊 row 可追
+
+**為什麼這隻最痛**：一人創業者改名、demo、迭代時最常做的就是「砍掉重練」。這條 path 中標 = **真實 GCP 帳單** + **完全失去 debug 線索**。比 round 13 stop 的 lying-state 更糟，因為 stop 之後 reconciler 還可能救，但 DELETE 之後連 row 都沒了。
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/teardown-verdict.ts`（新純函式 module）** —— 抽出 5-kind step outcome + 3-kind verdict：
+   - `TeardownStepOutcome { kind, reference, ok, alreadyGone?, error }` —— 每個能 leak 的 GCP 資源都有 kind：`cloud_run_service` | `domain_mapping` | `cloudflare_dns` | `container_image` | `redis_allocation`
+   - `buildTeardownVerdict(outcomes)` → discriminated union：
+     - `nothing-to-delete`（無 deployments、無 allocations）—— info，DB 直接砍安全
+     - `clean-teardown`（每步都 ok 或 alreadyGone）—— info，DB 砍安全
+     - `partial-orphans`（**任何一步** ok=false）—— **CRITICAL**，carries：
+       - `errorCode: 'project_teardown_orphans'`（dashboard contract）
+       - `requiresManualCleanup: true`（literal type）
+       - `orphans` + `successfulSteps` 兩條陣列給操作者看清楚什麼留下、什麼乾淨
+   - `outcomeToLogEntry()` 把 outcome 轉回舊的 `{ step, status, error? }` log shape，dashboard 端不需動
+
+B. **`apps/api/src/routes/projects.ts:1466-1611`** —— 重寫 DELETE handler：
+   - 收集每步 outcome 到結構化陣列（不再混 push log + 控制流）
+   - **加上以前從未呼叫的 `releaseProjectRedis(project.id)`**，包 try/catch 收 outcome
+   - 餵給 `buildTeardownVerdict` 拿 verdict
+   - **若 verdict === 'partial-orphans'：log [CRITICAL]、回 500、帶 errorCode + orphan list、`deleteProjectFromDb` 完全不呼叫**。DB row + audit trail 保留，操作者可以去 GCP console 手動清掉再重試 DELETE
+   - 若 clean-teardown 或 nothing-to-delete：才 `deleteProjectFromDb`，info log，回 200
+
+C. **`apps/api/src/routes/project-groups.ts:217-298` `teardownSingleProject`** —— 同 bug 的 mirror，重寫：
+   - signature 從 `Promise<Array<{step, status}>>` → `Promise<{verdict, teardownLog}>`
+   - 同樣呼叫 `releaseProjectRedis`、同樣 verdict-driven
+   - bulk action route 改用 verdict 判斷：`partial-orphans` 時 `success: false` + 列出 orphans，避免 bulk-action UI 假裝成功
+
+D. **`apps/api/src/test-teardown-verdict.ts`（新檔，52 tests）**：
+   - **Section 1 — verdict 三向分類（10 tests）**：empty、single ok、many ok 含 alreadyGone、single fail、mixed (3 ok 2 fail)、all fail
+   - **Section 2 — Regression guards（13 tests）**：只有 `partial-orphans` 帶 `requiresManualCleanup` / `errorCode`（4 反例）；logLevel 三段精確 pin；**property test：5 種 step kind 任一 fail 都被 forced 成 partial-orphans**；purity (no input mutation)
+   - **Section 3 — outcomeToLogEntry（7 tests）**：legacy log shape preserved；alreadyGone suffix；error message；null error → 'unknown' fallback；新的 redis_allocation label
+   - **Section 4 — Round-15 specific repro（7 tests）**：「CR ok + image fail → partial-orphans (was: silently DB-deleted)」直接命名 round-15 bug、redis-only fail 必鎖死 DB delete、Cloudflare-only fail 必鎖死 DB delete、discriminated-union exhaustiveness
+
+**Test 通過率（累計）：231 unit pass / 0 fail**：
+- 10 個 zero-dep test 檔全綠：publish-split(14), post-canary(15), transition-plan(23), stop-verdict(19), env-vars-update(45), teardown-verdict(52), safe-number(27), scan-report-schemas(15), scanner-safe-parse(11), stage-events(10) = 231
+- typecheck `npx tsc --noEmit` 全綠
+
+**架構決策（內含於 commit）**：
+- **DB row 保留優先於「乾淨刪除」承諾**：以前的契約是「DELETE 回 success 就代表所有東西都刪了」，但其實它在 GCP 失敗時是「我把 DB row 刪了，GCP 就放著」。新契約：「DELETE 回 success 才代表所有東西都刪了；任何一處沒刪掉就回 500 + orphan list，DB row 留著等你手動清掉再 retry」。對操作者而言這是 strictly safer 的承諾。
+- **`releaseProjectRedis` 從 orphan code 變成 first-class teardown step**：考慮過直接加 FK CASCADE 到 schema，但 Redis 那邊還有 key prefix 要清（不只 DB row），所以保留為應用層 step。
+- **Bulk action 的 partial 報告策略**：如果 group 裡 5 個專案有 2 個 partial，bulk-action result 會列 2 個 `success: false` 但其餘照常。Dashboard 端可以分別 retry，不會因為一個 partial 就放棄全部。
+- **errorCode 是 literal type `'project_teardown_orphans'` 而非 free-form string**，前端可以靠 `if (resp.errorCode === 'project_teardown_orphans')` 切換 UI 模式（顯示 orphan dialog vs generic error toast）
+
+**這段沒做的事**：
+- Dashboard 端的 orphan-cleanup UI 還沒做（顯示 orphan list、「我已手動清乾淨了」按鈕、retry DELETE）—— 前端另開 round
+- 沒寫自動 GCP-side reconciler 把 orphan auto-cleanup（操作者手動為先，避免自動清錯方向）
+- 沒給 schema 加 `REFERENCES projects(id) ON DELETE CASCADE` 到 `project_redis_allocations`（migration risk + 應用層 step 已經涵蓋）
+
+**Round 15 architect scout 還剩下的候選**（給下一段挑）：
+- **`discord-notifier.ts:14-25`**（low）：吞 fetch 錯誤
+- **`service-lifecycle.ts:147-226` `startProjectService`**（mid）：round 13 stop 的 mirror，三筆寫無 try/catch
+- **`setupCustomDomainWithDns`** in dns-manager（mid，新發現）：Cloud Run domain mapping 成功後 Cloudflare CNAME 失敗 → 留下指向不存在 DNS 的 mapping orphan
+
+---
+
 **2026-04-26（autonomous overnight 第十四段）—— PATCH /env-vars 不再 silently desync DB 跟 Cloud Run，dashboard 拿到 machine-readable drift code**
 
 第十三段把 stopProjectService 收尾後，spawn architect 做 round-14 scout 找下一隻 silent bug。架構師 flag 三隻：
