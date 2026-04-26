@@ -2,6 +2,13 @@
 // Flow: Deploy to Cloud Run → domain mapping (ghs.googlehosted.com) → CNAME in Cloudflare
 
 import { gcpFetch } from './gcp-auth';
+import {
+  buildDomainSetupVerdict,
+  verdictToSetupResult,
+  type CleanupOutcome,
+  type DnsOutcome as VerdictDnsOutcome,
+  type MappingOutcome,
+} from './domain-setup-verdict';
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 
@@ -269,6 +276,35 @@ async function createDomainMapping(
 // 2. Cloudflare CNAME → ghs.googlehosted.com (Google's domain mapping endpoint)
 // 3. Google provisions SSL cert automatically
 
+/**
+ * Best-effort cleanup of an orphan Cloud Run domain mapping. Called when
+ * Cloud Run mapping succeeded but Cloudflare DNS subsequently failed —
+ * leaving the mapping pointing at a domain with no CNAME record.
+ *
+ * Returns ok=true iff the DELETE succeeded or the mapping was already gone
+ * (404). Any other failure is captured in the error field; the caller can
+ * surface it to the operator via the dns-failed-after-mapping verdict's
+ * cleanupError, errorCode='domain_mapping_orphan' and
+ * requiresManualCleanup=true.
+ */
+async function cleanupOrphanMapping(
+  gcpProject: string,
+  gcpRegion: string,
+  domain: string
+): Promise<CleanupOutcome> {
+  try {
+    const url = `https://${gcpRegion}-run.googleapis.com/apis/domains.cloudrun.com/v1/namespaces/${gcpProject}/domainmappings/${domain}`;
+    const res = await gcpFetch(url, { method: 'DELETE' });
+    if (res.ok || res.status === 404) {
+      return { ok: true, error: null };
+    }
+    const body = await res.text();
+    return { ok: false, error: `HTTP ${res.status}: ${body}` };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
 export async function setupCustomDomainWithDns(
   config: DnsConfig,
   _cloudRunUrl: string,
@@ -281,30 +317,78 @@ export async function setupCustomDomainWithDns(
 
   console.log(`\n  Setting up custom domain: ${fqdn}`);
 
-  // Step 1: Cloud Run domain mapping (with conflict detection)
+  // Step 1: Cloud Run domain mapping (with conflict detection).
+  // Capture as MappingOutcome so the verdict planner sees a structured shape
+  // rather than the legacy {success, error, conflict?} ad-hoc object.
   console.log('  Step 1: Cloud Run domain mapping...');
   const mappingResult = await createDomainMapping(gcpProject, gcpRegion, serviceName, fqdn, opts);
-  if (!mappingResult.success) {
-    return {
-      success: false,
-      customUrl: '',
-      error: `Domain mapping failed: ${mappingResult.error}`,
-      conflict: mappingResult.conflict,
-    };
+  const mappingOutcome: MappingOutcome = {
+    ok: mappingResult.success,
+    error: mappingResult.error,
+    conflict: mappingResult.conflict ?? null,
+  };
+
+  if (!mappingOutcome.ok) {
+    // Fail fast — nothing was created on GCP, no cleanup needed.
+    const verdict = buildDomainSetupVerdict({
+      fqdn,
+      mapping: mappingOutcome,
+      dns: null,
+      cleanup: null,
+    });
+    console.warn(`  [domain-setup] ${verdict.kind}: ${verdict.message}`);
+    return verdictToSetupResult(verdict);
   }
   console.log('  Domain mapping: OK');
 
-  // Step 2: Cloudflare CNAME → ghs.googlehosted.com (DNS-only, no proxy)
-  // Cloud Run handles SSL via managed Google certs.
-  // Cloudflare proxy must be OFF so Google can verify domain ownership and provision the cert.
+  // Step 2: Cloudflare CNAME → ghs.googlehosted.com (DNS-only, no proxy).
+  // Cloud Run handles SSL via managed Google certs. Cloudflare proxy must
+  // be OFF so Google can verify domain ownership and provision the cert.
   console.log('  Step 2: Cloudflare CNAME → ghs.googlehosted.com...');
   const dnsResult = await upsertCname(config, 'ghs.googlehosted.com', false);
-  if (!dnsResult.success) {
-    return { success: false, customUrl: '', error: `DNS failed: ${dnsResult.error}` };
+  const dnsOutcome: VerdictDnsOutcome = {
+    ok: dnsResult.success,
+    fqdn: dnsResult.fqdn,
+    recordId: dnsResult.recordId,
+    error: dnsResult.error,
+  };
+
+  if (!dnsOutcome.ok) {
+    // Mapping succeeded but DNS failed → ORPHAN. Best-effort cleanup of
+    // the mapping. Whether or not the cleanup succeeds, we surface it via
+    // the verdict so the operator (or dashboard) knows what happened.
+    console.warn(
+      `  [domain-setup] DNS failed for ${fqdn} after mapping succeeded. ` +
+      `Attempting cleanup of orphan Cloud Run mapping...`
+    );
+    const cleanup = await cleanupOrphanMapping(gcpProject, gcpRegion, fqdn);
+    if (cleanup.ok) {
+      console.warn(`  [domain-setup] Orphan mapping cleanup: OK. Safe to retry.`);
+    } else {
+      console.error(
+        `  [domain-setup] CRITICAL: Orphan mapping cleanup FAILED for ${fqdn}: ${cleanup.error}. ` +
+        `Manual cleanup required (Cloud Run console > Domain mappings > delete ${fqdn}).`
+      );
+    }
+
+    const verdict = buildDomainSetupVerdict({
+      fqdn,
+      mapping: mappingOutcome,
+      dns: dnsOutcome,
+      cleanup,
+    });
+    return verdictToSetupResult(verdict);
   }
 
+  // Both succeeded.
   console.log(`  ${fqdn} → ghs.googlehosted.com (DNS-only, SSL by Google managed cert)`);
   console.log('  Note: SSL cert provisioning takes 5-15 minutes on first setup');
 
-  return { success: true, customUrl: `https://${fqdn}`, error: null };
+  const verdict = buildDomainSetupVerdict({
+    fqdn,
+    mapping: mappingOutcome,
+    dns: dnsOutcome,
+    cleanup: null,
+  });
+  return verdictToSetupResult(verdict);
 }
