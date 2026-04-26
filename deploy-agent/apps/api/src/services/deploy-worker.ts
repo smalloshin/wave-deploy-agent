@@ -840,9 +840,17 @@ export async function runDeployPipeline(
       previewUrl,
     });
 
-    // ── Step 4b: Capture deployed source (post-fix code + Dockerfile) ──
-    // 把實際部署的 code 存到長期 bucket，讓使用者能下載回去「從安全基準繼續開發」。
-    // 失敗不會中斷 deploy（只 log warning）。
+    // ── Step 4b: Post-deploy secondary writes (verdict-driven, round 18) ──
+    // Two writes that used to be wrapped in independent try/catch blocks
+    // that only console.warn'd on failure:
+    //   (1) captureDeployedSource → updateDeployment(deployedSourceGcsUri)
+    //   (2) updateProjectConfig({ lastDeployedImage })  ← critical for /start
+    // Now we capture each step's outcome structurally, build a verdict, and
+    // log at the appropriate level. Cloud Run is already serving traffic, so
+    // the deploy itself is success either way — but image-cache-missing
+    // forces a wasted full-rebuild on the next /start, which the operator
+    // MUST see (errorCode='image_cache_drift', logLevel='critical').
+    let sourceCaptureOutcome: { ok: boolean; error: string | null } = { ok: false, error: 'not attempted' };
     try {
       const latestScan = await getLatestScanReport(projectId);
       const autoFixCount = Array.isArray(latestScan?.autoFixes)
@@ -865,16 +873,30 @@ export async function runDeployPipeline(
       );
       await updateDeployment(deployment.id, { deployedSourceGcsUri: capture.gcsUri });
       console.log(`[Deploy]   Captured deployed source: ${capture.gcsUri} (${capture.sourceBytes} bytes, from ${capture.capturedFrom})`);
+      sourceCaptureOutcome = { ok: true, error: null };
     } catch (captureErr) {
-      console.warn(`[Deploy]   Deployed-source capture failed (non-fatal): ${(captureErr as Error).message}`);
+      sourceCaptureOutcome = { ok: false, error: (captureErr as Error).message };
     }
 
-    // Cache last-deployed image so /start can restart the service without rebuilding
+    // Cache last-deployed image so /start can restart the service without rebuilding.
+    // If this fails, the next stop/start cycle will demand a full redeploy.
+    let imageCacheOutcome: { ok: boolean; error: string | null } = { ok: false, error: 'not attempted' };
     try {
       const updatedConfig = { ...(project.config ?? {}), lastDeployedImage: buildResult.imageUri };
       await updateProjectConfig(project.id, updatedConfig);
+      imageCacheOutcome = { ok: true, error: null };
     } catch (err) {
-      console.warn(`[Deploy]   Failed to cache lastDeployedImage: ${(err as Error).message}`);
+      imageCacheOutcome = { ok: false, error: (err as Error).message };
+    }
+
+    {
+      const { buildPostDeployVerdict, logPostDeployVerdict } = await import('./post-deploy-verdict');
+      const postDeployVerdict = buildPostDeployVerdict({
+        deployLabel: `${project.name} v${deployVersion}`,
+        deployedSourceCapture: sourceCaptureOutcome,
+        imageCacheWrite: imageCacheOutcome,
+      });
+      logPostDeployVerdict(postDeployVerdict);
     }
 
     // ── Monorepo: backend notifies frontend siblings of its URL ──
