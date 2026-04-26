@@ -4,6 +4,92 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十九段）—— Monorepo backend→frontend URL 廣播不再有三層悄悄失敗，backend config 寫不入變成 CRITICAL**
+
+第十八段 post-deploy secondary writes 收尾後，按 round-18 留下的 carry-over：deploy-worker 還有一段 monorepo backend→frontend URL 廣播完全沒處理，三個 nested swallow 點，包括「svcRes.ok=false 完全沒 log」這個最壞的死角。Round 19 把它整段重寫。
+
+**Bug**（`apps/api/src/services/deploy-worker.ts:902-966`，pre-round-19）：
+```ts
+try {                                             // OUTER try (吞所有)
+  await updateProjectConfig(project.id, {        // (1) 寫 backend's own config
+    resolvedBackendUrl: deployResult.serviceUrl,
+    lastDeployedImage: buildResult.imageUri,
+  });
+
+  const allProjects = await listProjects();      // (2) discovery
+  const frontendSiblings = allProjects.filter(...);
+
+  for (const frontend of frontendSiblings) {     // (3) 每個 sibling 一次 PATCH
+    if (liveFrontend?.cloudRunService) {
+      try {                                       // INNER try (吞單個 sibling)
+        const svcRes = await gcpFetch(updateUrl);
+        if (svcRes.ok) {
+          const patchRes = await gcpFetch(updateUrl, { method: 'PATCH', ... });
+          if (patchRes.ok) console.log("OK");
+          else console.warn("Frontend env update failed");  // 沒人會看
+        }
+        // ↑↑↑ svcRes.ok=false 的時候沒 log！整個 silent miss
+      } catch (patchErr) {
+        console.warn(`Frontend hot-update failed: ...`);    // 也沒人會看
+      }
+    }
+  }
+} catch (err) {
+  console.warn(`Backend→frontend notification failed: ...`); // outer 也吞
+}
+```
+
+**3 種 silent 失敗**：
+- **A（critical, primary target）**：(1) `updateProjectConfig({resolvedBackendUrl})` throw → backend 的 `resolvedBackendUrl` 永遠沒寫進 project.config。後果：之後新 deploy 的 frontend siblings 走 cold lookup 找 backend URL（讀 backend project 的 config），找不到 → frontend 指向 fallback URL（通常是 hardcode 在 env 裡的舊值）或乾脆指向 `null`。Operator 看到「backend deploy 成功」但新 frontend 永遠連不上。**沒有任何錯誤訊息可以 grep**。
+- **B（warn, slow leak）**：(2) `listProjects` 或 `getDeploymentsByProject` throw → backend config 已寫，cold lookup 還能用，但 currently-live siblings 沒被通知。下次 sibling 自己 redeploy 時會撈到新 URL。比 A 輕。
+- **C（warn）**：(3) Per-sibling PATCH fail。**Three sub-modes**：`svcRes.ok=false`（**legacy 完全沒 log**）/ `patchRes.ok=false`（warn 但無 errorCode）/ throw（warn）。後果：那個 sibling 的 runtime env vars 仍是舊的 backend URL，但其他 siblings 可能 OK。Operator 不知道哪些 frontend stale。
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/monorepo-link-verdict.ts`（新純函式 module）** —— mirror round 13/14/15/16/17/18 verdict pattern：
+   - `BackendConfigWriteOutcome { ok, error }` —— step 1 的 outcome
+   - `SiblingDiscoveryOutcome { ok, error, totalSiblings, liveSiblings }` —— step 2 的 outcome（list + filter 包成一個，原 try/catch 是這樣 group 的）
+   - `SiblingUpdateOutcome { siblingId, siblingName, ok, error }` —— per-sibling outcome，error 字串內含子失敗模式 discriminator（`'svc-fetch-failed: HTTP 500'` / `'patch-failed: HTTP 403'` / `'throw: ECONNREFUSED'`）
+   - `buildMonorepoLinkVerdict({ applicable, backendName, backendUrl, backendConfigWrite, siblingDiscovery, siblingUpdates })` → 6-kind discriminated union：
+     - `not-applicable`（不是 monorepo backend deploy 或沒 serviceUrl）—— info，short-circuit
+     - `success`（全 OK + ≥1 live sibling 全 PATCH 成功）—— info
+     - `success-no-live-siblings`（discovery OK 但 0 live）—— **info**（不是 warn，這是正常 flow）
+     - `backend-config-failed`（**ROUND-19 critical primary target**）—— **CRITICAL**，errorCode=`'monorepo_backend_url_not_stored'`，requiresOperatorAction=true（literal）
+     - `sibling-discovery-failed`（backend OK 但 listProjects throw）—— warn，errorCode=`'monorepo_sibling_discovery_failed'`（not critical: cold-lookup 還能用）
+     - `partial-sibling-update-failures`（≥1 sibling PATCH fail）—— warn，errorCode=`'monorepo_sibling_url_drift'`，**carries successfulSiblings + failedSiblings 兩個 list**（operator 必須知道哪些 frontend stale）
+   - `logMonorepoLinkVerdict(verdict)` side-effect helper —— 按 logLevel 用 console.log/warn/error，critical 加 `[CRITICAL errorCode=X]` 前綴
+
+B. **`apps/api/src/services/deploy-worker.ts:902-...`** —— 重寫成 verdict-driven orchestrator：
+   - `let backendConfigOutcome: { ok, error }` —— step 1 寫 backend config 包 try/catch 收 outcome
+   - `let siblingDiscoveryOutcome: { ok, error, totalSiblings, liveSiblings } | null` —— **只在 backend OK 才嘗試 discovery**（不堆寫到壞 state 上）
+   - `siblingUpdateOutcomes: Array<{ siblingId, siblingName, ok, error }>` —— **只在 discovery OK 才嘗試 per-sibling PATCH**
+   - Per-sibling 三段 sub-failure-mode 用 string discriminator 區分（`svc-fetch-failed: HTTP <status>` / `patch-failed: HTTP <status>` / `throw: <message>`）—— **legacy 的「svcRes.ok=false 完全沒 log」死角徹底消除**
+   - 餵給 `buildMonorepoLinkVerdict` + `logMonorepoLinkVerdict`，dynamic import 兩個 fn 不汙染 deploy-worker top-level imports
+   - `not-applicable` kind 不 log（避免 non-monorepo deploy 的 log 噪音）
+
+C. **`apps/api/src/test-monorepo-link-verdict.ts`（新檔，119 tests，4 sections）**：
+   - **Section 1 — verdict kinds × outcome matrix（38 tests）**：6 種 kind × 包括 null-error fallback / 多 sibling / 全 fail / 混合 OK+fail
+   - **Section 2 — logMonorepoLinkVerdict console-capture（21 tests）**：每 kind 對應 console method、`[CRITICAL]` / `[WARN errorCode=X]` 前綴契約、never throws、backendName/URL 流入 log
+   - **Section 3 — errorCode contract + literal narrowing + invariants（21 tests）**：3 種 errorCode 字串精確 pin、requiresOperatorAction literal-true (backend-fail) / literal-false (partial)、partial 的 successfulSiblings + failedSiblings 雙 list 完整、not-applicable 沒 errorCode 欄位
+   - **Section 4 — Round-19 specific bug regressions（39 tests）**：backend-fail MUST be critical（NEVER 退回 warn）、discovery-fail MUST be warn（cold-lookup 還能用，不要當 critical）、partial MUST be warn、per-sibling sub-failure-mode discriminator preserved verbatim、**legacy 「svcRes.ok=false 沒 log」case 必須 produce log line**、no-live-siblings MUST be info（normal flow）、phase-ordering（backend-fail dominates over downstream populated fields）
+
+**Test 通過率（累計）：577 unit pass / 0 fail**：
+- 14 個 zero-dep test 檔全綠：publish-split(14), post-canary(15), transition-plan(23), stop-verdict(19), env-vars-update(45), teardown-verdict(52), start-verdict(59), domain-setup-verdict(93), post-deploy-verdict(75), monorepo-link-verdict(119), safe-number(27), scan-report-schemas(15), scanner-safe-parse(11), stage-events(10) = 577
+- typecheck `npx tsc --noEmit` 全綠
+
+**架構決策（內含於 commit）**：
+- **Backend config 寫不入 = critical，sibling 沒被通知 = warn**：critical 跟 warn 的差別在「未來的 deploy 會不會繼續壞」。Backend config 是 source of truth，沒寫入 → 未來 cold lookup 全失敗（持續性失敗）。Sibling 沒通知只影響 currently-live 的，他們下次自己 redeploy 就好（一次性失敗）。logLevel 對應「持續性 vs 一次性」直覺
+- **errorCode `'monorepo_backend_url_not_stored'` / `'monorepo_sibling_discovery_failed'` / `'monorepo_sibling_url_drift'`** 加入 drift-code family。前端 dashboard 對 `monorepo_*` 用同一套 monorepo-degraded banner
+- **Per-sibling sub-failure-mode 用字串 discriminator（`svc-fetch-failed:` / `patch-failed:` / `throw:`）**：不開 enum、不嵌 union type，因為這資訊只給人讀（dashboard 顯示 + grep）。string prefix 對 grep 友好，未來想加 case 不用改 type
+- **`successfulSiblings + failedSiblings` 都掛在 partial verdict 上**：operator 一眼看到「這 5 個 stale，這 12 個 OK」比只列 fail 好（confirm 沒 over-report）
+- **deploy-worker dynamic import verdict module**：不汙染 deploy-worker top-level imports，跟 round 13/14/15/16/17/18 一致
+
+**這段沒做的事**：
+- 候選池現在只剩 `discord-notifier.ts`（low）—— 接下來該 spawn fresh round-20 architect scout，看 routes/、services/scanner.ts、services/build-engine.ts 還有沒有 silent-bug 候選
+- Dashboard 端 `monorepo_*` UI 還沒做（要顯示「這個 backend 的 URL 沒進 config，未來 frontend 連不上」+ 提供 retry 按鈕）
+
+---
+
 **2026-04-26（autonomous overnight 第十八段）—— Deploy 後的 secondary writes 不再悄悄失敗，image cache miss 變成 CRITICAL（fresh architect scout 後選的）**
 
 第十七段 domain-setup-verdict 收尾，candidate pool 用完。Spawn fresh architect scout 找 round 18 候選，回 3 個 ranked candidates：
