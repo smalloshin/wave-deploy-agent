@@ -1476,12 +1476,21 @@ export async function projectRoutes(app: FastifyInstance) {
 
     for (const deploy of deployments) {
       // 2. Delete Cloud Run service
+      // Round 13: deleteService returns a structured result; old try/catch
+      // never fired because the function used to swallow errors internally.
       if (deploy.cloudRunService && gcpProject) {
-        try {
-          await deleteService(gcpProject, gcpRegion, deploy.cloudRunService);
-          teardownLog.push({ step: `Delete Cloud Run service: ${deploy.cloudRunService}`, status: 'ok' });
-        } catch (err) {
-          teardownLog.push({ step: `Delete Cloud Run service: ${deploy.cloudRunService}`, status: 'error', error: (err as Error).message });
+        const delRes = await deleteService(gcpProject, gcpRegion, deploy.cloudRunService);
+        if (delRes.ok) {
+          teardownLog.push({
+            step: `Delete Cloud Run service: ${deploy.cloudRunService}${delRes.alreadyGone ? ' (already gone)' : ''}`,
+            status: 'ok',
+          });
+        } else {
+          teardownLog.push({
+            step: `Delete Cloud Run service: ${deploy.cloudRunService}`,
+            status: 'error',
+            error: delRes.error ?? 'unknown',
+          });
         }
       }
 

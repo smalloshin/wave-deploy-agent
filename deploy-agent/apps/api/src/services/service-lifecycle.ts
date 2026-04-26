@@ -12,6 +12,13 @@ import {
   updateProjectConfig,
 } from './orchestrator';
 import { deleteService, deployToCloudRun, getServiceImage, getServiceEnvVars } from './deploy-engine';
+import {
+  buildStopVerdict,
+  verdictToLifecycleResult,
+  type DeleteOutcome,
+  type DbWriteOutcome,
+  type TransitionOutcome,
+} from './stop-verdict';
 
 export interface LifecycleResult {
   success: boolean;
@@ -20,6 +27,29 @@ export interface LifecycleResult {
   serviceUrl?: string;
 }
 
+/**
+ * Round 13: rewritten to be honest about partial failures.
+ *
+ * Pre-round-13:
+ *   await deleteService(...);                    // returned void; errors swallowed
+ *   await updateDeployment(...);                 // ran even if GCP delete failed
+ *   try { await transitionProject(...); } catch {} // swallowed every error class
+ *
+ *   Result: when GCP DELETE returned 5xx, function continued to write
+ *   `cloudRunUrl=''` to DB while service was actually still alive (or in
+ *   unknown state). When DB write threw, service was gone but DB row
+ *   still claimed live — round-10 reconciler couldn't auto-fix because
+ *   there was nothing alive to inspect.
+ *
+ * Post-round-13:
+ *   - deleteService returns DeleteServiceResult; we honor delete.ok
+ *   - if GCP DELETE failed (and not 404), short-circuit; do NOT touch DB
+ *   - both DB writes wrapped in narrow try/catch that captures result
+ *   - buildStopVerdict (pure) classifies the (delete, db, transition)
+ *     outcomes into one of six verdict kinds with the right log level
+ *   - critical verdicts log [CRITICAL] for grep-ability; partial states
+ *     are surfaced to operator via the LifecycleResult message
+ */
 export async function stopProjectService(projectId: string, triggeredBy = 'user'): Promise<LifecycleResult> {
   const project = await getProject(projectId);
   if (!project) return { success: false, message: 'Project not found' };
@@ -53,20 +83,65 @@ export async function stopProjectService(projectId: string, triggeredBy = 'user'
     console.warn(`[stop] Failed to snapshot image/env for ${active.cloudRunService}:`, err);
   }
 
-  await deleteService(gcpProject, gcpRegion, active.cloudRunService);
-  await updateDeployment(active.id, { cloudRunUrl: '', healthStatus: 'unknown' });
+  // Step 1: GCP delete. Honor the structured result.
+  const deleteRaw = await deleteService(gcpProject, gcpRegion, active.cloudRunService);
+  const deleteOutcome: DeleteOutcome = {
+    ok: deleteRaw.ok,
+    alreadyGone: deleteRaw.alreadyGone,
+    error: deleteRaw.error,
+  };
 
-  try {
-    await transitionProject(projectId, 'stopped', triggeredBy, { action: 'stop', service: active.cloudRunService });
-  } catch {
-    // Swallow invalid transitions so "stop" from any state still removes the service.
+  // If GCP delete failed (and wasn't already-gone), STOP. Don't touch DB.
+  // Writing cloudRunUrl='' to a DB row whose service is still alive is
+  // exactly the lying-state bug we're fixing.
+  let dbOutcome: DbWriteOutcome | null = null;
+  let transitionOutcome: TransitionOutcome | null = null;
+
+  if (deleteOutcome.ok) {
+    // Step 2: DB updateDeployment. Capture failure as outcome, not throw.
+    try {
+      await updateDeployment(active.id, { cloudRunUrl: '', healthStatus: 'unknown' });
+      dbOutcome = { ok: true, error: null };
+    } catch (err) {
+      dbOutcome = { ok: false, error: (err as Error).message };
+    }
+
+    // Step 3: transitionProject. Only attempt if DB write succeeded.
+    if (dbOutcome.ok) {
+      try {
+        await transitionProject(projectId, 'stopped', triggeredBy, {
+          action: 'stop',
+          service: active.cloudRunService,
+        });
+        transitionOutcome = { ok: true, errorName: null, error: null };
+      } catch (err) {
+        const e = err as Error;
+        transitionOutcome = { ok: false, errorName: e.name, error: e.message };
+      }
+    }
   }
 
-  return {
-    success: true,
-    message: `Stopped ${active.cloudRunService} (image kept in Artifact Registry for restart)`,
+  const verdict = buildStopVerdict({
     serviceName: active.cloudRunService,
-  };
+    delete: deleteOutcome,
+    db: dbOutcome,
+    transition: transitionOutcome,
+  });
+
+  // Log according to verdict's severity.
+  switch (verdict.logLevel) {
+    case 'critical':
+      console.error(`[Lifecycle] [CRITICAL] ${verdict.kind}: ${verdict.message}`);
+      break;
+    case 'warn':
+      console.warn(`[Lifecycle] ${verdict.kind}: ${verdict.message}`);
+      break;
+    case 'info':
+      console.log(`[Lifecycle] ${verdict.kind}: ${verdict.message}`);
+      break;
+  }
+
+  return verdictToLifecycleResult(verdict);
 }
 
 export async function startProjectService(projectId: string, triggeredBy = 'user'): Promise<LifecycleResult> {

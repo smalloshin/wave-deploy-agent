@@ -461,21 +461,49 @@ export async function deployPreview(
 
 // ─── Delete Cloud Run service ───
 
+/**
+ * Round 13: this used to return `void` and silently log errors. That was a
+ * lie to callers — `await deleteService(...)` looked like it succeeded
+ * even when the GCP DELETE returned 5xx, leading stopProjectService to
+ * proceed with DB updates that ended up describing a service that was in
+ * fact still alive (or vice versa). Now returns a structured result so
+ * callers can branch on it.
+ *
+ *   ok: true                   → service is GONE (either DELETE 2xx or 404 already-gone)
+ *   ok: false                  → service may or may not still exist; do NOT touch DB state
+ *   alreadyGone: true          → GCP returned 404 (idempotent stop)
+ *   httpStatus / error         → for logging
+ */
+export interface DeleteServiceResult {
+  ok: boolean;
+  alreadyGone: boolean;
+  httpStatus: number | null;
+  error: string | null;
+}
+
 export async function deleteService(
   gcpProject: string,
   gcpRegion: string,
   serviceName: string
-): Promise<void> {
+): Promise<DeleteServiceResult> {
   try {
     const url = `https://run.googleapis.com/v2/projects/${gcpProject}/locations/${gcpRegion}/services/${serviceName}`;
     const res = await gcpFetch(url, { method: 'DELETE' });
-    if (!res.ok && res.status !== 404) {
-      console.error(`Failed to delete service ${serviceName}: HTTP ${res.status}`);
-    } else {
-      console.log(`  Deleted Cloud Run service: ${serviceName}`);
+    if (res.status === 404) {
+      console.log(`  Cloud Run service already gone: ${serviceName}`);
+      return { ok: true, alreadyGone: true, httpStatus: 404, error: null };
     }
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      console.error(`Failed to delete service ${serviceName}: HTTP ${res.status} ${errBody.slice(0, 200)}`);
+      return { ok: false, alreadyGone: false, httpStatus: res.status, error: `HTTP ${res.status}: ${errBody.slice(0, 200)}` };
+    }
+    console.log(`  Deleted Cloud Run service: ${serviceName}`);
+    return { ok: true, alreadyGone: false, httpStatus: res.status, error: null };
   } catch (err) {
-    console.error(`Failed to delete service ${serviceName}:`, (err as Error).message);
+    const msg = (err as Error).message;
+    console.error(`Failed to delete service ${serviceName}:`, msg);
+    return { ok: false, alreadyGone: false, httpStatus: null, error: msg };
   }
 }
 

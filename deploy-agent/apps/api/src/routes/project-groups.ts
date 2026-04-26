@@ -225,8 +225,14 @@ async function teardownSingleProject(projectId: string): Promise<Array<{ step: s
   const deployments = await getDeploymentsByProject(projectId);
   for (const d of deployments) {
     if (d.cloudRunService && gcpProject) {
-      try { await deleteService(gcpProject, gcpRegion, d.cloudRunService); log.push({ step: `Deleted ${d.cloudRunService}`, status: 'ok' }); }
-      catch (err) { log.push({ step: `Delete ${d.cloudRunService}`, status: `error: ${(err as Error).message}` }); }
+      // Round 13: deleteService now returns a structured result instead of throwing.
+      // The old try/catch never fired (function swallowed errors internally to console).
+      const delRes = await deleteService(gcpProject, gcpRegion, d.cloudRunService);
+      if (delRes.ok) {
+        log.push({ step: `Deleted ${d.cloudRunService}${delRes.alreadyGone ? ' (already gone)' : ''}`, status: 'ok' });
+      } else {
+        log.push({ step: `Delete ${d.cloudRunService}`, status: `error: ${delRes.error ?? 'unknown'}` });
+      }
     }
     if (d.customDomain && gcpProject) {
       try { await deleteDomainMapping(gcpProject, gcpRegion, d.customDomain); log.push({ step: `Domain mapping ${d.customDomain}`, status: 'ok' }); }
