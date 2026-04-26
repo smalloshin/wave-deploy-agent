@@ -4,6 +4,76 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第二十四段）—— URL env-var redeploy silent swallow 修掉**
+
+第二十三段把 DB dump 全鏈路（upload 4 + restore 1）silent swallow 收完，cumulative 1159/0。第二十四段往 architect 留下的 candidate #2（`deploy-worker.ts:1105-1136` URL env-var redeploy）動手——這是「第二次 deployToCloudRun」的 silent swallow，跟 IAM verdict 屬同一 surface-only spectrum point。
+
+**Bug 描述**（pre-round-24，`deploy-worker.ts:1158-1159`）：
+
+```ts
+if (!redeployResult.success) {
+  console.warn(`[Deploy]   URL env-var redeploy failed: ${redeployResult.error} ` +
+               `(env vars not updated, but original deploy is live)`);
+} else { ... iam verdict on redeploy ... }
+```
+
+註解的「original deploy is live」是真的，但 live 的是 **revision-1，env vars 還是 `NEXTAUTH_URL=http://localhost:3000` / `APP_URL=` / `BASE_URL=localhost`**——使用者一點 dashboard 上的 service URL：
+1. NextAuth `/api/auth/session` 讀 NEXTAUTH_URL=localhost:3000，cookie domain mismatch
+2. OAuth callback redirect 到 localhost from prod → infinite loop
+3. Server-side fetch 到 localhost → ECONNREFUSED → 500
+4. Deploy notification 顯示成功、status='live'、canary `/health` 不讀這些 env var 所以也綠
+
+——「Deploy went green but login is permanently broken」。
+
+**這次做的事**：
+
+A) **新增 `apps/api/src/services/url-env-redeploy-verdict.ts`**（pure-function module，3 種 kind）：
+- `not-applicable`（沒 URL key 要更新或用 customDomain）→ info
+- `redeploy-ok` → info（攜帶 patchedKeys，後續仍 chain round-21 IAM verdict）
+- `redeploy-failed` → critical, errorCode=`url_env_redeploy_drift`, requiresOperatorAction=true, **沒有 `blockDeploy` / `blockPipeline` 欄位**——跟 round 21 IAM + round 23 restore 同一 surface-only spectrum point。Service 已 live，bail 會孤兒化、reverse 不掉
+- 帶**runnable recoveryCommand**：`gcloud run services update <service> --region=<region> --project=<project> --update-env-vars=NEXTAUTH_URL=<serviceUrl>,APP_URL=<serviceUrl>,...`，operator 直接複製貼上 < 1 分鐘修好
+- defensive：`redeployOutcome` 是 null 也 funnel 進 `redeploy-failed`（caller bug 也安全 surface）
+- patchedKeys empty → recoveryCommand fallback 到 `NEXTAUTH_URL=<url>`，serviceUrl null → fallback 到 `<service-url>` placeholder
+
+B) **wire 到 `deploy-worker.ts:1124-1199`**：
+- `deployResult.serviceUrl && !customDomainFqdn` → 掃 NEXTAUTH_URL/APP_URL/BASE_URL/SITE_URL/PUBLIC_URL 哪些含 localhost 或空字串
+- `patchedKeys.length > 0` → 跑 redeployToCloudRun 然後 build verdict + log；success path 才 chain round-21 IAM verdict
+- patchedKeys empty → build not-applicable verdict（symmetry，不 log）
+
+**Three-flag spectrum 第三個 surface-only 案例**（round 21 IAM + round 23 restore 之後）：
+- 第一次明確標出「surface-only」是設計選擇而不是遺漏——comment 寫死 spectrum point + 為什麼不 bail（service 已 live、bail 會孤兒化、operator 1 min 內可手動修）
+- 跟 round 21 IAM 一樣 errorCode 命名規律：`{name}_drift`（policy_drift / restore_drift / redeploy_drift）
+
+**Test 覆蓋**：
+
+`src/test-url-env-redeploy-verdict.ts`（4 sections，106 tests）：
+- S1 kinds × outcome matrix（not-applicable / ok / failed / null outcome / error=null / empty error / serviceUrl=null / single-key）
+- S2 logUrlEnvRedeployVerdict console-capture（critical → `[CRITICAL errorCode=...]` 前綴）
+- S3 errorCode + literal-true narrowing（assert NO blockDeploy / NO blockPipeline）
+- S5 round-24 regressions（R-1 NO block flag in 6 種失敗 mode、R-2 recoveryCommand 結構完整 + 沒 placeholder、R-4 message 警告 IS LIVE / localhost / claims success / broken for end users、R-7 empty patchedKeys fallback、R-8 errorCode distinct from iam_policy_drift / monorepo_link_drift、R-10 全 5 個 URL key 都覆蓋）
+
+**Round 24 全綠**：106/0 passed。Cumulative pure-function sweep：**1265 passed / 0 failed across 26 zero-dep test files**。typecheck（api）全綠。
+
+**架構決策**：
+- errorCode 家族新增 `url_env_redeploy_drift`，跟 `iam_policy_drift` / `db_dump_restore_drift` 同 surface-only spectrum point + 同 `_drift` 命名規律
+- 第一次在 verdict 內含「runnable gcloud command」（前面 IAM 也有但比較簡單；URL redeploy 因為要組 `--update-env-vars=K1=V,K2=V,...` 字串而比較細）
+- Verdict 設計刻意 NOT 加 `blockDeploy`——不是疏忽，是因為 deploy 已 succeed、service 已 live、bail 會孤兒化 revision；comment 把這條 rationale 寫死避免下次有人想加
+
+**遇到的坑**：
+- Test 第一版用 `v.serviceUrl?.includes('run.app')` 給 check()，TS2345 因為 `boolean | undefined` 不 assignable 到 `boolean`。修法：明確 `=== true` cast
+- Round 24 verdict 的 patchedKeys 邏輯放在 caller 端（deploy-worker.ts 自己掃 5 個 URL key），verdict 只看「applicable + outcome」——這跟 round 21 IAM verdict pattern 一致，verdict 不知道商業邏輯，只知道 surface
+
+**沒做的事**：
+- web dashboard 沒有 `url_env_redeploy_drift` UI banner（errorCode 已就位、後端已 surface critical log、recoveryCommand 已嵌進 message、operator 在 Cloud Run logs 已 grep 得到——前端 UI 等 RBAC Phase 1 之後）
+- 沒掃 routes/projects.ts 額外 IIFE（user 中途 priority 改變，pivot 到 RBAC Phase 1）
+
+**Future direction（user explicit priority order）**：
+1. **RBAC Phase 1**（next！）：依 `~/.claude/plans/lively-petting-sifakis.md` 但 user 把 scope 縮到「加 owner_id + STRICT mode + owner-scoped delete」——目前線上資料是裸的，47 個 endpoint 全部公開，AUTH_MODE=permissive 匿名放行，任何人可 delete 任何 project。這是現在的最大暴露面
+2. **Discord NL 擴充**（third）：channel-specific auto-mode、tool surface 從 7 個 post-deploy operation 擴到 deploy/redeploy/env vars/logs/delete/diagnostics
+3. **更多 silent-bug rounds**：deferred 到 RBAC + Discord 都收完之後，spawn fresh architect scout 重排序
+
+---
+
 **2026-04-26（autonomous overnight 第二十三段）—— DB dump 全鏈路 silent swallow 修掉：upload 4 站 + restore 1 站**
 
 第二十二段 source-upload-verdict 收尾、ship 兩個 commits 後，繼續往 architect 留下的 DB dump 候選動手——這個 round 比 round 22 大，因為 DB dump 鏈路有兩個獨立 phase（submit-time upload + deploy-time restore）兩個都會 silently swallow。
