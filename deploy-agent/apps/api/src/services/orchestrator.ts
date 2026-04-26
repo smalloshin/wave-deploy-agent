@@ -1,7 +1,8 @@
 import { v4 as uuid } from 'uuid';
 import { query, getOne, withTransaction } from '../db/index';
 import {
-  canTransition,
+  buildTransitionPlan,
+  ConcurrentTransitionError,
   InvalidTransitionError,
   type ProjectStatus,
   type Project,
@@ -68,6 +69,29 @@ export async function createProject(input: {
   return rowToProject(row);
 }
 
+/**
+ * Atomically transition a project's status with optimistic concurrency.
+ *
+ * Round-12 fix for the deploy-worker ↔ reconciler race:
+ *   Pre-round-12 this was SELECT → JS check → UPDATE, three round-trips
+ *   wide. Two writers (deploy-worker doing canary→live, reconciler also
+ *   doing deployed→live) could both pass the canTransition check on the
+ *   same source state, then both UPDATE. Last write wins, audit log shows
+ *   two entries from the same from_state, and the resulting state could
+ *   be inconsistent with what the second writer's metadata said happened.
+ *
+ *   Round-12 collapses to: plan → single UPDATE with WHERE status =
+ *   $expectedFromState → if rowCount=0, re-read and decide.
+ *
+ * Three return paths:
+ *   - rules-allowed + UPDATE matched: row updated, audit row written, return new project
+ *   - rules-allowed + UPDATE did NOT match (rowCount=0): re-read row;
+ *       - if actualState === toState, treat as idempotent (race resolved
+ *         to the same place) and return without writing audit row
+ *       - else throw ConcurrentTransitionError(expected, to, actual)
+ *   - idempotent self-transition (live → live): return existing row, no UPDATE, no audit
+ *   - rejected by rules: throw InvalidTransitionError
+ */
 export async function transitionProject(
   projectId: string,
   toState: ProjectStatus,
@@ -77,14 +101,46 @@ export async function transitionProject(
   const project = await getProject(projectId);
   if (!project) throw new Error(`Project not found: ${projectId}`);
 
-  if (!canTransition(project.status, toState)) {
+  const plan = buildTransitionPlan({ currentState: project.status, toState });
+
+  if (plan.kind === 'rejected') {
     throw new InvalidTransitionError(project.status, toState);
   }
 
+  if (plan.kind === 'idempotent-noop') {
+    // live → live, the round-9-era reconciler-race tolerance pattern.
+    // Skip the UPDATE and audit row; nothing changed.
+    return project;
+  }
+
+  // plan.kind === 'allowed'. Issue the guarded UPDATE. If a concurrent
+  // writer changed status between our SELECT (in getProject) and now,
+  // rowCount will be 0 and we re-read to decide whether the race
+  // resolved to the same place we wanted (idempotent) or somewhere else
+  // (truly concurrent — the caller needs to know).
   const result = await query(
-    `UPDATE projects SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
-    [toState, projectId]
+    `UPDATE projects SET status = $1, updated_at = NOW()
+     WHERE id = $2 AND status = $3
+     RETURNING *`,
+    [toState, projectId, plan.expectedFromState]
   );
+
+  if (result.rowCount === 0) {
+    const refreshed = await getProject(projectId);
+    if (!refreshed) {
+      // Project was deleted between our two reads. Surface as concurrent.
+      throw new ConcurrentTransitionError(plan.expectedFromState, toState, plan.expectedFromState);
+    }
+    if (refreshed.status === toState) {
+      console.warn(
+        `[Orchestrator] transitionProject race: project=${projectId} ` +
+          `expected ${plan.expectedFromState} → ${toState} but row already at ${toState} ` +
+          `(triggeredBy=${triggeredBy} — another writer beat us; treating as idempotent)`,
+      );
+      return refreshed;
+    }
+    throw new ConcurrentTransitionError(plan.expectedFromState, toState, refreshed.status);
+  }
 
   await logTransition(projectId, project.status, toState, triggeredBy, metadata);
   return rowToProject(result.rows[0]);

@@ -110,7 +110,10 @@ app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => 
     });
   }
 
-  if (error.name === 'InvalidTransitionError') {
+  if (error.name === 'InvalidTransitionError' || error.name === 'ConcurrentTransitionError') {
+    // Both are "you can't make this transition right now". 409 Conflict.
+    // ConcurrentTransitionError is round-12: rules allowed the transition
+    // but another writer beat us; the caller should re-fetch and decide.
     return reply.status(409).send({ error: error.message });
   }
 

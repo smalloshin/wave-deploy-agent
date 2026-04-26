@@ -1134,9 +1134,20 @@ export async function runDeployPipeline(
             autoPublished: !isLocked,
           });
         } catch (transErr) {
-          // Reconciler may have already pushed to 'live' — that's fine, skip
-          if ((transErr as Error).message?.includes('Invalid state transition')) {
-            console.warn(`[Deploy]   State already live (reconciler race) — continuing`);
+          // Reconciler may have already pushed to 'live' — defense in depth.
+          // Round 12: transitionProject now handles the live → live race
+          // internally (returns idempotently without throwing). This catch
+          // remains for the legacy substring match (in case some other
+          // legitimate InvalidTransitionError fires here, like project being
+          // in 'failed' due to operator action between canary and now) and
+          // the ConcurrentTransitionError name match (race lost to a writer
+          // who put us somewhere OTHER than live, e.g. operator stop → 'stopped').
+          const err = transErr as Error;
+          if (err.name === 'ConcurrentTransitionError' || err.message?.includes('Invalid state transition')) {
+            console.warn(
+              `[Deploy]   transition to live skipped: ${err.message} ` +
+                `(name=${err.name}) — likely operator/reconciler beat us; continuing`,
+            );
           } else {
             throw transErr;
           }
