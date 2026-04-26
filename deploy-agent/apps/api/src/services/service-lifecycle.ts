@@ -19,6 +19,13 @@ import {
   type DbWriteOutcome,
   type TransitionOutcome,
 } from './stop-verdict';
+import {
+  buildStartVerdict,
+  verdictToLifecycleResult as startVerdictToLifecycleResult,
+  type DeployOutcome as StartDeployOutcome,
+  type DbWriteOutcome as StartDbWriteOutcome,
+  type TransitionOutcome as StartTransitionOutcome,
+} from './start-verdict';
 
 export interface LifecycleResult {
   success: boolean;
@@ -144,6 +151,28 @@ export async function stopProjectService(projectId: string, triggeredBy = 'user'
   return verdictToLifecycleResult(verdict);
 }
 
+/**
+ * Round 16: rewritten to be honest about partial failures, mirroring
+ * round 13's stop-verdict pattern.
+ *
+ * Pre-round-16:
+ *   const result = await deployToCloudRun(...);   // heavy: new revision
+ *   if (latest) await updateDeployment(...);      // (1) NO try/catch
+ *   await updateProjectConfig(...);               // (2) NO try/catch
+ *   try { await transitionProject(...); } catch { /* ignore *\/ }  // (3) SWALLOWS
+ *   return { success: true, ... };                // lies on partials
+ *
+ * Post-round-16:
+ *   - deployToCloudRun → DeployOutcome (already structured)
+ *   - both DB writes wrapped in narrow try/catch capturing outcomes
+ *   - transitionProject wrapped to capture errorName (so verdict can
+ *     distinguish state-machine rejections from real errors)
+ *   - buildStartVerdict (pure) classifies the (deploy, deploymentRow,
+ *     projectConfig, transition) lattice into 5 verdict kinds
+ *   - critical verdict (partial-deployment-row-mismatch) carries
+ *     errorCode='start_deployment_row_drift' so dashboard knows to
+ *     read live state from Cloud Run instead of trusting DB
+ */
 export async function startProjectService(projectId: string, triggeredBy = 'user'): Promise<LifecycleResult> {
   const project = await getProject(projectId);
   if (!project) return { success: false, message: 'Project not found' };
@@ -178,6 +207,7 @@ export async function startProjectService(projectId: string, triggeredBy = 'user
   const port = (project.config?.detectedPort as number) ?? 8080;
   const needsVpcEgress = Object.prototype.hasOwnProperty.call(envVars, 'REDIS_URL');
 
+  // Phase 1: heavy IO — deploy a new revision.
   const result = await deployToCloudRun({
     projectSlug: project.slug,
     gcpProject,
@@ -198,29 +228,80 @@ export async function startProjectService(projectId: string, triggeredBy = 'user
     } : undefined,
   }, imageUri);
 
-  if (!result.success) {
-    return { success: false, message: `Restart failed: ${result.error}` };
-  }
-
-  if (latest) {
-    await updateDeployment(latest.id, {
-      cloudRunService: result.serviceName,
-      cloudRunUrl: result.serviceUrl ?? undefined,
-      healthStatus: 'healthy',
-      deployedAt: new Date(),
-    });
-  }
-
-  await updateProjectConfig(projectId, { ...(project.config ?? {}), lastDeployedImage: imageUri });
-
-  try {
-    await transitionProject(projectId, 'live', triggeredBy, { action: 'start', image: imageUri });
-  } catch { /* ignore */ }
-
-  return {
-    success: true,
-    message: `Restarted ${result.serviceName}`,
-    serviceName: result.serviceName,
-    serviceUrl: result.serviceUrl ?? undefined,
+  const deployOutcome: StartDeployOutcome = {
+    ok: result.success,
+    serviceName: result.success ? result.serviceName : null,
+    serviceUrl: result.success ? (result.serviceUrl ?? null) : null,
+    error: result.success ? null : (result.error ?? 'unknown'),
   };
+
+  // Skip-flag for the deployment row: legitimately absent when there's
+  // no `latest` row to update. Verdict planner uses this to distinguish
+  // skipped from failed.
+  const deploymentRowSkipped = !latest;
+  let deploymentRow: StartDbWriteOutcome | null = null;
+  let projectConfig: StartDbWriteOutcome | null = null;
+  let transition: StartTransitionOutcome | null = null;
+
+  if (deployOutcome.ok) {
+    // Phase 2: deployment row update. Capture errors instead of throwing.
+    if (latest) {
+      try {
+        await updateDeployment(latest.id, {
+          cloudRunService: result.serviceName,
+          cloudRunUrl: result.serviceUrl ?? undefined,
+          healthStatus: 'healthy',
+          deployedAt: new Date(),
+        });
+        deploymentRow = { ok: true, error: null };
+      } catch (err) {
+        deploymentRow = { ok: false, error: (err as Error).message };
+      }
+    }
+
+    // Phase 3: project config (lastDeployedImage cache). Only attempt if
+    // the deployment row update succeeded or was legitimately skipped —
+    // we don't want to chase a broken state with more writes.
+    if (deploymentRowSkipped || (deploymentRow && deploymentRow.ok)) {
+      try {
+        await updateProjectConfig(projectId, { ...(project.config ?? {}), lastDeployedImage: imageUri });
+        projectConfig = { ok: true, error: null };
+      } catch (err) {
+        projectConfig = { ok: false, error: (err as Error).message };
+      }
+    }
+
+    // Phase 4: project status transition. Same gating as phase 3.
+    if (projectConfig && projectConfig.ok) {
+      try {
+        await transitionProject(projectId, 'live', triggeredBy, { action: 'start', image: imageUri });
+        transition = { ok: true, errorName: null, error: null };
+      } catch (err) {
+        const e = err as Error;
+        transition = { ok: false, errorName: e.name, error: e.message };
+      }
+    }
+  }
+
+  const verdict = buildStartVerdict({
+    deploy: deployOutcome,
+    deploymentRow,
+    projectConfig,
+    transition,
+    deploymentRowSkipped,
+  });
+
+  switch (verdict.logLevel) {
+    case 'critical':
+      console.error(`[Lifecycle] [CRITICAL] ${verdict.kind}: ${verdict.message}`);
+      break;
+    case 'warn':
+      console.warn(`[Lifecycle] ${verdict.kind}: ${verdict.message}`);
+      break;
+    case 'info':
+      console.log(`[Lifecycle] ${verdict.kind}: ${verdict.message}`);
+      break;
+  }
+
+  return startVerdictToLifecycleResult(verdict);
 }
