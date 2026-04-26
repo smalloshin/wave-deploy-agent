@@ -1131,14 +1131,17 @@ export async function runDeployPipeline(
           urlVarsToUpdate[key] = deployResult.serviceUrl;
         }
       }
-      if (Object.keys(urlVarsToUpdate).length > 0) {
-        console.log(`[Deploy]   Updating URL env vars with Cloud Run URL: ${Object.keys(urlVarsToUpdate).join(', ')}`);
+      const patchedKeys = Object.keys(urlVarsToUpdate);
+      const { buildUrlEnvRedeployVerdict, logUrlEnvRedeployVerdict } = await import('./url-env-redeploy-verdict');
+      if (patchedKeys.length > 0) {
+        console.log(`[Deploy]   Updating URL env vars with Cloud Run URL: ${patchedKeys.join(', ')}`);
         Object.assign(finalEnvVars, urlVarsToUpdate);
-        // Re-deploy with corrected env vars (quick update, same image)
-        // Round 21: previously this awaited the call and discarded the result
-        // entirely — even success=false was invisible. We now capture it and
-        // surface the IAM verdict on the redeploy too (Cloud Run PATCH does
-        // NOT carry the prior IAM binding through; it must be re-applied).
+        // Re-deploy with corrected env vars (quick update, same image).
+        // Round 21: capture redeployResult and chain IAM verdict on success.
+        // Round 24: when redeployResult.success === false, the live revision
+        // still has localhost URL values — every login/OAuth/cookie-domain
+        // check breaks. Surface the URL-env-redeploy verdict (critical log +
+        // recoveryCommand) and STILL chain the IAM verdict on success path.
         const redeployResult = await deployToCloudRun({
           projectSlug: project.slug,
           gcpProject,
@@ -1155,9 +1158,18 @@ export async function runDeployPipeline(
           cloudSqlInstance,
         }, buildResult.imageUri);
 
-        if (!redeployResult.success) {
-          console.warn(`[Deploy]   URL env-var redeploy failed: ${redeployResult.error} (env vars not updated, but original deploy is live)`);
-        } else {
+        const urlVerdict = buildUrlEnvRedeployVerdict({
+          applicable: true,
+          serviceName: redeployResult.serviceName || deployResult.serviceName,
+          gcpProject,
+          gcpRegion,
+          serviceUrl: redeployResult.serviceUrl ?? deployResult.serviceUrl,
+          patchedKeys,
+          redeployOutcome: { success: redeployResult.success, error: redeployResult.error ?? null },
+        });
+        logUrlEnvRedeployVerdict(urlVerdict);
+
+        if (redeployResult.success) {
           const wantsPublic = (project.config?.allowUnauthenticated ?? true) === true;
           const { buildIamPolicyVerdict, logIamPolicyVerdict } = await import('./iam-policy-verdict');
           const iamVerdict = buildIamPolicyVerdict({
@@ -1170,6 +1182,19 @@ export async function runDeployPipeline(
           });
           logIamPolicyVerdict(iamVerdict);
         }
+      } else {
+        // Skip the not-applicable info log — every deploy without localhost URL
+        // vars would otherwise emit it. Build the verdict for symmetry but
+        // don't log it.
+        buildUrlEnvRedeployVerdict({
+          applicable: false,
+          serviceName: deployResult.serviceName,
+          gcpProject,
+          gcpRegion,
+          serviceUrl: deployResult.serviceUrl,
+          patchedKeys: [],
+          redeployOutcome: null,
+        });
       }
     }
 
