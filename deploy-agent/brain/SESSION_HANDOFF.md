@@ -4,6 +4,88 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第二十二段）—— routes/projects.ts 四個 IIFE 重複的 background source upload swallow 修掉並合併**
+
+第二十一段 IAM verdict 收尾後，回到 architect 留下的 #3 candidate：routes/projects.ts 四個重複的 background GCS-repack IIFE。這個 round 同時是 silent-bug 修復 + DRY consolidation。
+
+**Bug pattern**（4 處重複，pre-round-22）：
+```ts
+(async () => {
+  try {
+    const gcsSourceUri = await uploadSourceToGcs(...);
+    const current = await getProject(projectId);
+    await updateProjectConfig(projectId, { ...(current?.config ?? {}), gcsSourceUri });
+  } catch (err) {
+    console.error(`[Upload] Background GCS upload failed:`, (err as Error).message);
+  }
+  runPipeline(projectId, dir).catch(...); // ← 永遠執行，無視 upload 失敗
+})();
+```
+
+四個位置：
+- `routes/projects.ts:606-617` — submit-gcs monorepo path（每個 sibling）
+- `routes/projects.ts:656-667` — submit-gcs single-service path
+- `routes/projects.ts:1024-1035` — multipart upload monorepo path
+- `routes/projects.ts:1069-1092` — multipart upload single-service path
+
+**完整失敗鏈**：
+1. 使用者 submit/upload → 201 with project ID, status='scanning'
+2. Background IIFE: `uploadSourceToGcs` throw（GCS 503 / quota / auth blip / network）
+3. 唯一訊號：一行 console.error，淹沒在雜訊裡
+4. `project.config.gcsSourceUri` 仍是 undefined
+5. **runPipeline 仍執行**——scanner 跑 /tmp/<extracted>，scan_report 寫成 status='completed'
+6. Reviewer 看到綠燈，approve deploy
+7. deploy-engine 找不到 `gcsSourceUri` → Cloud Build 失敗，神秘錯誤「source URI required」
+8. 使用者上傳 30 分鐘後才看到 deploy 失敗，根因是分鐘 0 的 upload swallow
+
+**這次做的事**：
+- A) 新增 `apps/api/src/services/source-upload-verdict.ts`（pure-function module + thin orchestration helper）：
+  - 三種 verdict kind：
+    - `upload-and-persist-ok` → info（pipeline 繼續）
+    - `upload-failed` → critical, errorCode=`source_upload_failed`, requiresOperatorAction=true, **`blockPipeline: true`** literal flag。caller 必須 transition 到 'failed' 並跳過 runPipeline
+    - `upload-ok-persist-failed` → critical, errorCode=`source_upload_persist_drift`, requiresOperatorAction=true, **`blockPipeline: false`**（bytes 在 GCS，pipeline 還可以跑），verdict 內含**可直接複製貼上的 SQL recovery**：`UPDATE projects SET config = jsonb_set(config, '{gcsSourceUri}', '"<gcsUri>"'::jsonb) WHERE id = '<projectId>'`
+  - 新增 `uploadAndPersistSourceWithVerdict(args)` orchestration helper：包好 try/catch、build verdict、log，回傳 verdict 讓 caller 決定 blockPipeline
+- B) routes/projects.ts 四個 IIFE 全部改用 helper，dedupe 完。每個 IIFE 都加上「verdict.kind === 'upload-failed' → transitionProject('failed') + return」分支，杜絕 silent pipeline kick
+
+**Verdict 設計關鍵差異**（vs round 20 blockApproval / round 21 surface-only）：
+- Round 20 blockApproval：scan_report status='failed' 擋 reviewer approval
+- Round 21 surface-only：service is live，critical log + 等 operator 處理（不擋）
+- **Round 22 blockPipeline**：upload 失敗時連 pipeline 都不跑，project 直接轉 'failed'。這是第三種 user-flow 控制方式
+- 這三種 flow 控制粒度（block approval / surface only / block pipeline）形成完整 spectrum——下次 candidate 設計時要先想清楚是哪一類
+
+**「兩個 critical 但行為不同」的 dashboard contract**：
+- `source_upload_failed` → blockPipeline=true, project 直接 failed
+- `source_upload_persist_drift` → blockPipeline=false, pipeline 繼續但 deploy approval 之前 operator 必須補 SQL
+- 這兩個 errorCode 是 distinct 的（test R-4 specifically asserts），這樣 dashboard 可以分別篩選「需要重新上傳」vs「需要補 SQL」
+
+**Test 覆蓋**（`src/test-source-upload-verdict.ts`，5 sections）：
+- Section 1（25 tests）—— verdict kinds × outcome matrix（all-ok, upload-failed, persist-failed, defensive ok=true+gcsUri=null, persist=null fallback）
+- Section 2（11 tests）—— logSourceUploadVerdict console-capture（info → console.log [Upload] prefix、critical → console.error 並帶 `[CRITICAL errorCode=...]`）
+- Section 3（13 tests）—— errorCode contract + literal narrowing（success 嚴禁帶 errorCode/requiresOperatorAction/blockPipeline、blockPipeline literal 是 true/false 不是 boolean）
+- Section 4（14 tests）—— **`uploadAndPersistSourceWithVerdict` orchestration helper**：4a happy-path、4b upload throws → persist NEVER called（gating verified）、4c persist throws → gcsUri preserved、4d empty-string defensive、4e log routing
+- Section 5（31 tests）—— round-22 specific regressions（R-1 5 種 upload 錯誤都要 blockPipeline=true、R-2 SQL recovery URI 含 jsonb-quoted、R-3 兩個 critical 訊息可區分、R-4 errorCode distinct、R-5 idempotent、R-6 empty label 不 crash、R-7 helper 不 propagate persist throws、R-8 dashboard-grep contract）
+
+**遇到的坑**：
+- 一開始 section 4 用 `(async () => { ... })()` 不 await，section 5 同步 IIFE 跟著跑——cross-pollutes captured console（section 4 captureConsole 還在生效時 section 5 的 check() 走進去 cap.logs）。改成 `{ ... }` block + top-level await 就過了。記下來：以後寫 verdict test 的 console-capture section，要嘛全部同步 IIFE，要嘛全部 top-level await sequenced
+- `(v1.errorCode === v2.errorCode)` 因 TS 知道兩個 literal type 不可能相等而報 dead-code error。assert distinctness 改用 `(v1.errorCode as string) !== (v2.errorCode as string)`——但加 comment 解釋為什麼 cast，這是 runtime contract test 不是 TS narrowing test
+
+**Round 22 全綠**：94/94 passed。Cumulative pure-function sweep：975 passed / 0 failed across 25 zero-dep test files。typecheck 全綠。
+
+**架構決策補上 round 13-21 家族**：
+- errorCode 家族新增 `source_upload_failed` + `source_upload_persist_drift`
+- 第三種 user-flow 控制 literal flag：`blockPipeline`（前面有 `blockApproval`、IAM 的 surface-only）
+- **新概念**：verdict module 同時 export pure planner + thin async orchestration helper（`uploadAndPersistSourceWithVerdict`），把重複的 try/catch IIFE pattern 收斂成一個 call site。前面的 verdict module 都是 pure-only，這次因為有 4 個 dupe 所以 helper 值得抽出來
+- SQL recovery 字串內含 jsonb-quoted URI（`'"gs://..."'::jsonb`）——operator 從 critical log 直接複製貼上跑 psql 就能修
+
+**沒做的事**：
+- DB dump upload（routes/projects.ts:1079-1087）的 try/catch 還在原狀。原因：dump 上傳失敗本來就是 optional（deploy-engine 處理 missing dump 沒問題），impact 低，不值得這 round 處理
+- web dashboard 沒有「source upload drift」UI banner（後端 errorCode 已就位）
+
+**未來 round 23+ 的方向**：
+- 還剩 deploy-worker.ts:1078 redeploy 的 success=false swallow（round 21 加了 IAM verdict log，但 result.success=false 還是只 console.warn）
+- routes/projects.ts:1079-1087 DB dump upload 也類似 pattern（雖然 impact 低）
+- Spawn fresh architect scout 找新 round 候選
+
 **2026-04-26（autonomous overnight 第二十一段）—— deploy-engine IAM setIamPolicy 不再悄悄讓 public deploy 變成 403 服務**
 
 第二十段 fixed-source-upload-verdict 收尾、ship 兩個 commits 後，繼續往 architect 留下的 #2 candidate（IAM swallow）動手——這是 round-20 的 runner-up。
