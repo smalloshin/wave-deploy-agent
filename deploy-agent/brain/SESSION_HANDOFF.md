@@ -4,6 +4,82 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第二十一段）—— deploy-engine IAM setIamPolicy 不再悄悄讓 public deploy 變成 403 服務**
+
+第二十段 fixed-source-upload-verdict 收尾、ship 兩個 commits 後，繼續往 architect 留下的 #2 candidate（IAM swallow）動手——這是 round-20 的 runner-up。
+
+**Bug**（`apps/api/src/services/deploy-engine.ts:401-425`，pre-round-21）：
+```ts
+if (config.allowUnauthenticated) {
+  const iamRes = await gcpFetch(iamUrl, { method: 'POST', body: JSON.stringify({ policy: { bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] } }) });
+  if (!iamRes.ok) {
+    const iamErr = await iamRes.text();
+    console.error(`[Deploy]   IAM policy failed (${iamRes.status}): ${iamErr}`);
+    // Don't throw — service is deployed, just not public yet
+  } else {
+    console.log(`[Deploy]   IAM policy set: public access enabled`);
+  }
+}
+```
+
+原作者 confession comment：「Don't throw — service is deployed, just not public yet」——這是徹底的謊。`routes/projects.ts:196` schema 把 `allowUnauthenticated: z.boolean().default(true)`，DB schema 的 backfill 還主動把所有 project 設成 public（`db/schema.sql:107-112`）。使用者**就是要 public**。
+
+**完整失敗鏈**（IAM 503 / 403 / network blip 任何一個觸發）：
+1. Cloud Run create/update operation 成功 → service is live
+2. `deployToCloudRun` 回傳 `{success: true, serviceUrl: 'https://...run.app', ...}`
+3. deploy-worker 把 serviceUrl 寫進 deployments、transition 到 'live'
+4. post-deploy verdict 全綠
+5. Discord bot 發「Deploy succeeded! ${serviceUrl}」
+6. 使用者點 URL → **403 Forbidden**（allUsers binding 從沒寫進去）
+7. 使用者：「你說 deployed 啊」
+
+那個 line 420 的 console.error 是**唯一**訊號，淹沒在幾百行雜訊裡，dashboard、notifier 都看不到。
+
+**這次做的事**：
+- A) 新增 `apps/api/src/services/iam-policy-verdict.ts`（pure-function module，3 種 kind）：
+  - `not-applicable`（`allowUnauthenticated=false`）→ info
+  - `success`（public + IAM OK）→ info
+  - `iam-policy-failed-public-deploy`（public + IAM 失敗或 null outcome）→ critical, `errorCode='iam_policy_drift'`, `requiresOperatorAction: true`，verdict 內含**可直接複製貼上的 gcloud 修復指令**：`gcloud run services add-iam-policy-binding ${serviceName} --member=allUsers --role=roles/run.invoker --region=${gcpRegion} --project=${gcpProject}`
+- B) `deploy-engine.ts`：
+  - `DeployResult` interface 加 `iamPolicyOutcome?: { ok, httpStatus, error } | null`
+  - setIamPolicy 區塊用 try/catch 包好（連 fetch throw 都接），把 outcome 寫上 DeployResult
+  - 失敗路徑（success=false 的 catch）也補 `iamPolicyOutcome: null`
+- C) `deploy-worker.ts` 兩個 deployToCloudRun 呼叫站都接 verdict：
+  - line 778 主 deploy：build verdict + log（critical 不 throw、不擋 deploy，因為 service 已 live；單純 surface log + 等 dashboard contract）
+  - line 1078 URL env-var redeploy：以前**整個 result 直接丟掉**（`await deployToCloudRun(...)` 沒接），現在接 result 並補 verdict。注意：Cloud Run PATCH **不會**保留先前的 IAM binding，redeploy 必須重新跑 setIamPolicy，所以這條路徑也會中招
+- D) `service-lifecycle.ts:211`（/start path）也接 verdict，因為 `startProjectService` 同樣會跑 deployToCloudRun 跑新 revision
+
+**Verdict 設計關鍵差異**（vs round 20 blockApproval）：
+- Round 20 blockApproval 把 scan_report status='completed' 改成 'failed' 來擋 reviewer approval
+- Round 21 **不擋 deploy**：service 已 live，URL 已存在，operator 在 1 分鐘內 `gcloud run services add-iam-policy-binding` 就能補回；強制 rollback 反而更糟。verdict 只 surface critical log + dashboard contract，等 operator 處理
+
+**為什麼把 recoveryCommand 串進 verdict payload**：
+- 之前的 errorCode pattern 都是 dashboard 可 grep 的純標記
+- 這次更進一步，連修復指令本身都帶在 verdict 裡（已 interpolate 完 serviceName / region / project，operator 從 critical log 直接複製貼上就能跑）
+- Test R-3 specifically asserts no template placeholders left（`${`、`{{` 都不能出現）
+
+**Test 覆蓋**（`src/test-iam-policy-verdict.ts`，4 sections）：
+- Section 1（49 tests）—— verdict kinds × outcome matrix（lattice 全部、null fallback、fetch throw、奇異 200 + ok=true、null serviceUrl）
+- Section 2（13 tests）—— logIamPolicyVerdict console-capture（info → console.log、critical → console.error 並帶 `[CRITICAL errorCode=iam_policy_drift]` 前綴）
+- Section 3（11 tests）—— errorCode contract + literal-true narrowing（success/not-applicable 嚴禁帶 errorCode/requiresOperatorAction/recoveryCommand）
+- Section 4（42 tests）—— round-21 specific regressions（R-1 status 矩陣 7 種狀態都要 critical、R-2 「LIVE」「403 Forbidden」「Recover with」都要在 message、R-3 recoveryCommand 不能有 placeholder、R-6 verbatim error 不能被改寫、R-9 dashboard grep 線、R-10 lattice 6 個 case）
+
+Round 21 全綠：115/115 passed。Cumulative pure-function sweep：881 passed / 0 failed across 24 zero-dep test files。typecheck 全綠。
+
+**這次的架構決策**（補上 round 13-20 的家族）：
+- `iam_policy_drift` 加入 errorCode 家族（已有 `env_vars_db_drift`, `project_teardown_orphans`, `start_deployment_row_drift`, `domain_mapping_orphan`, `deployed_source_orphan`, `image_cache_drift`, `post_deploy_drift`, `monorepo_backend_url_not_stored`, `monorepo_sibling_discovery_failed`, `monorepo_sibling_url_drift`, `fixed_source_upload_failed`, `fixed_source_db_drift`）
+- 新型別 `IamPolicyOutcome` 加上 DeployResult，threading pattern 第三個範例（前面 fixed-source-upload 是 threaded 進 verdict、env-vars 是 split outcome、IAM 是 deploy engine 內部 outcome → caller verdict）
+- **新概念：verdict 內帶 runnable recovery command**（recoveryCommand 字串）—— 操作人從 critical log line 直接複製貼上就能修，不必查 wiki 或翻 GCP 文件
+- Critical verdict 但**不 block flow**——這是與 round 20 blockApproval 的關鍵對比，記在這份 handoff 是為了下次 candidate 設計時要先想清楚是哪一類（block flow vs surface only）
+
+**沒做的事**：
+- web dashboard 沒有「IAM drift」banner UI（後端 errorCode 已就位，前端等下次）
+- candidate #3（routes/projects.ts 四個 GCS-repack IIFE swallow）還沒動，留給 round 22
+
+**未來 round 22+ 的方向**：
+- Architect candidate pool 還剩 #3 background GCS-repack IIFE（MID, 4 處重複）
+- 還可重新 spawn architect 找新候選（pipeline-worker step 1078 的 redeploy 雖然 round-21 加了 verdict log，但 result.success=false 還是只 console.warn，沒寫進 DB 也沒 surface 到 dashboard——這是新發現的 bug，可作為 round 22 候選）
+
 **2026-04-26（autonomous overnight 第二十段）—— Pipeline Step 6a fixed-source 重傳不再悄悄失敗，security flagship lie 修掉**
 
 第十九段 monorepo-link-verdict 收尾，candidate pool 用完。Spawn fresh round-20 architect scout，回 3 個 ranked candidates：
