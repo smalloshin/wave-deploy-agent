@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import type { UploadErrorEnvelope, UploadFailure } from '@deploy-agent/shared';
 import { mapEnvelope, mapClientError, fetchDiagnostic } from '@/lib/upload-error-mapper';
+import { uploadResumable } from '@/lib/resumable-upload';
 import { saveDraft, loadDraft, clearDraft, gcExpiredDrafts, makeDebouncedSave } from '@/lib/upload-draft-storage';
 import { UploadErrorBlock } from '@/app/components/UploadErrorBlock';
 
@@ -423,65 +424,82 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
 
         const { uploadUrl, gcsUri, contentType } = initData;
 
-        // Stage: upload (XHR for progress events)
-        try {
-          await new Promise<void>((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
+        // Stage: upload (chunked GCS resumable PUT — Round 27 fix for 426 MB Firefox failures)
+        const uploadResult = await uploadResumable({
+          sessionUri: uploadUrl,
+          file,
+          contentType: contentType || file.type || 'application/octet-stream',
+          onProgress: (loaded, total) => {
+            setUploadProgress(Math.round((loaded / total) * 100));
+          },
+          onXhrCreated: (xhr) => {
             xhrRef.current = xhr;
-            xhr.open('PUT', uploadUrl);
-            xhr.setRequestHeader('Content-Type', contentType || file.type || 'application/octet-stream');
-            xhr.upload.onprogress = (e) => {
-              if (e.lengthComputable) {
-                const pct = Math.round((e.loaded / e.total) * 100);
-                setUploadProgress(pct);
-              }
-            };
-            xhr.onload = () => {
-              if (xhr.status >= 200 && xhr.status < 300) resolve();
-              else {
-                const code = xhr.status === 401 || xhr.status === 403 ? 'gcs_auth_failed' : 'submit_failed';
-                const env: UploadErrorEnvelope = {
+          },
+        });
+        xhrRef.current = null;
+        if (!uploadResult.ok) {
+          const env: UploadErrorEnvelope = (() => {
+            const f = uploadResult.failure;
+            switch (f.kind) {
+              case 'network_error':
+                return {
                   ok: false,
                   stage: 'upload',
-                  code,
-                  message: `GCS PUT failed: HTTP ${xhr.status}`,
-                  detail: { gcsStatus: xhr.status, body: xhr.responseText.slice(0, 200) },
+                  code: 'network_error',
+                  message: `Network error during GCS upload (chunk ${f.chunkStart}-${f.chunkEnd}, ${f.attempts} attempts)`,
+                  detail: { chunkStart: f.chunkStart, chunkEnd: f.chunkEnd, attempts: f.attempts, lastError: f.lastError },
                   retryable: true,
                 };
-                reject(env);
-              }
-            };
-            xhr.onerror = () => {
-              reject({
-                ok: false,
-                stage: 'upload',
-                code: 'network_error',
-                message: 'Network error during GCS upload',
-                retryable: true,
-              } satisfies UploadErrorEnvelope);
-            };
-            xhr.ontimeout = () => {
-              reject({
-                ok: false,
-                stage: 'upload',
-                code: 'gcs_timeout',
-                message: 'Upload timed out',
-                retryable: true,
-              } satisfies UploadErrorEnvelope);
-            };
-            xhr.send(file);
-          });
-        } catch (errOrEnv) {
-          const env =
-            errOrEnv && typeof errOrEnv === 'object' && 'code' in errOrEnv
-              ? (errOrEnv as UploadErrorEnvelope)
-              : mapClientError(errOrEnv, { stage: 'upload' }).raw;
+              case 'gcs_timeout':
+                return {
+                  ok: false,
+                  stage: 'upload',
+                  code: 'gcs_timeout',
+                  message: `Upload timed out on chunk ${f.chunkStart}-${f.chunkEnd}`,
+                  detail: { chunkStart: f.chunkStart, chunkEnd: f.chunkEnd, attempts: f.attempts },
+                  retryable: true,
+                };
+              case 'gcs_auth_failed':
+                return {
+                  ok: false,
+                  stage: 'upload',
+                  code: 'gcs_auth_failed',
+                  message: `GCS auth failed: HTTP ${f.status}`,
+                  detail: { gcsStatus: f.status, body: f.body },
+                  retryable: false,
+                };
+              case 'session_expired':
+                return {
+                  ok: false,
+                  stage: 'upload',
+                  code: 'init_session_failed',
+                  message: `Upload session expired (HTTP ${f.status}). Please retry — the system will create a new session.`,
+                  detail: { gcsStatus: f.status, body: f.body },
+                  retryable: true,
+                };
+              case 'gcs_http_error':
+                return {
+                  ok: false,
+                  stage: 'upload',
+                  code: 'submit_failed',
+                  message: `GCS PUT failed: HTTP ${f.status}`,
+                  detail: { gcsStatus: f.status, body: f.body, chunkStart: f.chunkStart, chunkEnd: f.chunkEnd },
+                  retryable: true,
+                };
+              case 'aborted':
+                return {
+                  ok: false,
+                  stage: 'upload',
+                  code: 'network_error',
+                  message: 'Upload cancelled',
+                  retryable: true,
+                };
+            }
+          })();
           await handleEnvelopeFailure(env);
           setSubmitting(false);
           setUploadProgress(null);
           return;
-        } finally {
-          xhrRef.current = null;
         }
         setUploadProgress(null);
 

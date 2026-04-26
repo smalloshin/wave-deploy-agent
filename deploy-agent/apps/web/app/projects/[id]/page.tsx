@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 import { useAuth } from '../../../lib/auth';
 import type { UploadErrorEnvelope, UploadFailure } from '@deploy-agent/shared';
 import { mapEnvelope, mapClientError, fetchDiagnostic } from '@/lib/upload-error-mapper';
+import { uploadResumable } from '@/lib/resumable-upload';
 import { UploadErrorBlock } from '@/app/components/UploadErrorBlock';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
@@ -362,59 +363,82 @@ export default function ProjectDetailPage() {
 
     const { uploadUrl, gcsUri, contentType } = initData;
 
-    // Stage: upload
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
+    // Stage: upload (chunked GCS resumable PUT — Round 27 fix for large-file network errors)
+    const upgradeResult = await uploadResumable({
+      sessionUri: uploadUrl,
+      file: upgradeFile,
+      contentType: contentType || upgradeFile.type || 'application/zip',
+      onProgress: (loaded, total) => {
+        setUpgradeProgress(Math.round((loaded / total) * 100));
+      },
+      onXhrCreated: (xhr) => {
         upgradeXhrRef.current = xhr;
-        xhr.open('PUT', uploadUrl);
-        xhr.setRequestHeader('Content-Type', contentType || upgradeFile.type || 'application/zip');
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) setUpgradeProgress(Math.round((e.loaded / e.total) * 100));
-        };
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else {
-            const code = xhr.status === 401 || xhr.status === 403 ? 'gcs_auth_failed' : 'submit_failed';
-            reject({
+      },
+    });
+    upgradeXhrRef.current = null;
+    if (!upgradeResult.ok) {
+      const env: UploadErrorEnvelope = (() => {
+        const f = upgradeResult.failure;
+        switch (f.kind) {
+          case 'network_error':
+            return {
               ok: false,
               stage: 'upload',
-              code,
-              message: `GCS PUT failed: HTTP ${xhr.status}`,
-              detail: { gcsStatus: xhr.status, body: xhr.responseText.slice(0, 200) },
+              code: 'network_error',
+              message: `Network error during GCS upload (chunk ${f.chunkStart}-${f.chunkEnd}, ${f.attempts} attempts)`,
+              detail: { chunkStart: f.chunkStart, chunkEnd: f.chunkEnd, attempts: f.attempts, lastError: f.lastError },
               retryable: true,
-            } satisfies UploadErrorEnvelope);
-          }
-        };
-        xhr.onerror = () =>
-          reject({
-            ok: false,
-            stage: 'upload',
-            code: 'network_error',
-            message: 'Network error during GCS upload',
-            retryable: true,
-          } satisfies UploadErrorEnvelope);
-        xhr.ontimeout = () =>
-          reject({
-            ok: false,
-            stage: 'upload',
-            code: 'gcs_timeout',
-            message: 'Upload timed out',
-            retryable: true,
-          } satisfies UploadErrorEnvelope);
-        xhr.send(upgradeFile);
-      });
-    } catch (errOrEnv) {
-      const env =
-        errOrEnv && typeof errOrEnv === 'object' && 'code' in errOrEnv
-          ? (errOrEnv as UploadErrorEnvelope)
-          : mapClientError(errOrEnv, { stage: 'upload' }).raw;
+            };
+          case 'gcs_timeout':
+            return {
+              ok: false,
+              stage: 'upload',
+              code: 'gcs_timeout',
+              message: `Upload timed out on chunk ${f.chunkStart}-${f.chunkEnd}`,
+              detail: { chunkStart: f.chunkStart, chunkEnd: f.chunkEnd, attempts: f.attempts },
+              retryable: true,
+            };
+          case 'gcs_auth_failed':
+            return {
+              ok: false,
+              stage: 'upload',
+              code: 'gcs_auth_failed',
+              message: `GCS auth failed: HTTP ${f.status}`,
+              detail: { gcsStatus: f.status, body: f.body },
+              retryable: false,
+            };
+          case 'session_expired':
+            return {
+              ok: false,
+              stage: 'upload',
+              code: 'init_session_failed',
+              message: `Upload session expired (HTTP ${f.status}). Please retry — the system will create a new session.`,
+              detail: { gcsStatus: f.status, body: f.body },
+              retryable: true,
+            };
+          case 'gcs_http_error':
+            return {
+              ok: false,
+              stage: 'upload',
+              code: 'submit_failed',
+              message: `GCS PUT failed: HTTP ${f.status}`,
+              detail: { gcsStatus: f.status, body: f.body, chunkStart: f.chunkStart, chunkEnd: f.chunkEnd },
+              retryable: true,
+            };
+          case 'aborted':
+            return {
+              ok: false,
+              stage: 'upload',
+              code: 'network_error',
+              message: 'Upload cancelled',
+              retryable: true,
+            };
+        }
+      })();
       await handleUpgradeFailure(env);
       setUpgrading(false);
       setUpgradeProgress(null);
       return;
-    } finally {
-      upgradeXhrRef.current = null;
     }
     setUpgradeProgress(null);
 
