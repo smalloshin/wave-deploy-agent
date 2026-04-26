@@ -810,6 +810,29 @@ export async function runDeployPipeline(
       revisionName: deployResult.revisionName,
     });
 
+    // ── Round 21: surface IAM policy verdict ──
+    // The legacy code logged a single line on failure and returned success=true,
+    // so the deploy notifier announced a "live" URL that returned 403 to every
+    // user. Now we build a structured verdict and log at the appropriate level
+    // so dashboard / alerting can grep `[CRITICAL errorCode=iam_policy_drift]`.
+    {
+      const wantsPublic = (project.config?.allowUnauthenticated ?? true) === true;
+      const { buildIamPolicyVerdict, logIamPolicyVerdict } = await import('./iam-policy-verdict');
+      const iamVerdict = buildIamPolicyVerdict({
+        allowUnauthenticated: wantsPublic,
+        serviceName: deployResult.serviceName,
+        gcpProject,
+        gcpRegion,
+        serviceUrl: deployResult.serviceUrl,
+        iamOutcome: deployResult.iamPolicyOutcome ?? null,
+      });
+      logIamPolicyVerdict(iamVerdict);
+      // Note: we intentionally do NOT throw on iam-policy-failed-public-deploy.
+      // The service is live; a manual `gcloud run services add-iam-policy-binding`
+      // closes the gap in <1 minute. Forcing a full re-deploy would be worse UX.
+      // The critical log is the operator's signal.
+    }
+
     // Tag revision for preview URL: https://v3---service.a.run.app
     let previewUrl: string | undefined;
     if (deployResult.revisionName && deployResult.serviceUrl) {
@@ -1075,7 +1098,11 @@ export async function runDeployPipeline(
         console.log(`[Deploy]   Updating URL env vars with Cloud Run URL: ${Object.keys(urlVarsToUpdate).join(', ')}`);
         Object.assign(finalEnvVars, urlVarsToUpdate);
         // Re-deploy with corrected env vars (quick update, same image)
-        await deployToCloudRun({
+        // Round 21: previously this awaited the call and discarded the result
+        // entirely — even success=false was invisible. We now capture it and
+        // surface the IAM verdict on the redeploy too (Cloud Run PATCH does
+        // NOT carry the prior IAM binding through; it must be re-applied).
+        const redeployResult = await deployToCloudRun({
           projectSlug: project.slug,
           gcpProject,
           gcpRegion,
@@ -1090,6 +1117,22 @@ export async function runDeployPipeline(
           port,
           cloudSqlInstance,
         }, buildResult.imageUri);
+
+        if (!redeployResult.success) {
+          console.warn(`[Deploy]   URL env-var redeploy failed: ${redeployResult.error} (env vars not updated, but original deploy is live)`);
+        } else {
+          const wantsPublic = (project.config?.allowUnauthenticated ?? true) === true;
+          const { buildIamPolicyVerdict, logIamPolicyVerdict } = await import('./iam-policy-verdict');
+          const iamVerdict = buildIamPolicyVerdict({
+            allowUnauthenticated: wantsPublic,
+            serviceName: redeployResult.serviceName,
+            gcpProject,
+            gcpRegion,
+            serviceUrl: redeployResult.serviceUrl,
+            iamOutcome: redeployResult.iamPolicyOutcome ?? null,
+          });
+          logIamPolicyVerdict(iamVerdict);
+        }
       }
     }
 

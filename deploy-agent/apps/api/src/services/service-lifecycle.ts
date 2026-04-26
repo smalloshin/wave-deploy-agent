@@ -235,6 +235,25 @@ export async function startProjectService(projectId: string, triggeredBy = 'user
     error: result.success ? null : (result.error ?? 'unknown'),
   };
 
+  // ── Round 21: surface IAM policy verdict on the /start path too ──
+  // The /start command goes through deployToCloudRun (it deploys a fresh
+  // revision on cached image), so the same IAM-binding-not-applied silent
+  // failure can occur here. Log critical so operators see "URL is private"
+  // before the user complains about 403s.
+  if (result.success) {
+    const wantsPublic = ((project.config?.allowUnauthenticated as boolean | undefined) ?? true) === true;
+    const { buildIamPolicyVerdict, logIamPolicyVerdict } = await import('./iam-policy-verdict');
+    const iamVerdict = buildIamPolicyVerdict({
+      allowUnauthenticated: wantsPublic,
+      serviceName: result.serviceName,
+      gcpProject,
+      gcpRegion,
+      serviceUrl: result.serviceUrl,
+      iamOutcome: result.iamPolicyOutcome ?? null,
+    });
+    logIamPolicyVerdict(iamVerdict);
+  }
+
   // Skip-flag for the deployment row: legitimately absent when there's
   // no `latest` row to update. Verdict planner uses this to distinguish
   // skipped from failed.

@@ -43,6 +43,14 @@ export interface DeployResult {
   // Versioning: captured after deploy for immutable deploy model
   revisionName?: string;
   imageUri?: string;
+  /**
+   * Round 21: outcome of the setIamPolicy call when the user requested
+   * public access (config.allowUnauthenticated=true). Always present in that
+   * case, including the success path. null when allowUnauthenticated=false
+   * (no IAM call attempted). Caller (deploy-worker) builds an iam-policy
+   * verdict from this field — see services/iam-policy-verdict.ts.
+   */
+  iamPolicyOutcome?: { ok: boolean; httpStatus: number | null; error: string | null } | null;
 }
 
 // ─── Cloud Build: build and push image ───
@@ -398,29 +406,45 @@ export async function deployToCloudRun(config: DeployConfig, imageUri: string): 
       }
     }
 
-    // Set IAM policy for unauthenticated access if needed
+    // Round 21: Set IAM policy for unauthenticated access if needed.
+    // The legacy code logged failures and moved on, returning success=true even
+    // when the allUsers binding never landed — caller had no way to detect the
+    // service was live but private. Now we capture the outcome on the
+    // DeployResult and let the caller (deploy-worker) build a verdict via
+    // services/iam-policy-verdict.ts. We still don't throw here (the Cloud Run
+    // service is live, deploy itself succeeded), but the truth surfaces.
+    let iamPolicyOutcome: { ok: boolean; httpStatus: number | null; error: string | null } | null = null;
     if (config.allowUnauthenticated) {
       console.log(`[Deploy]   Setting IAM policy: allUsers → run.invoker for ${serviceName}`);
       const iamUrl = `https://run.googleapis.com/v2/${parent}/services/${serviceName}:setIamPolicy`;
-      const iamRes = await gcpFetch(iamUrl, {
-        method: 'POST',
-        body: JSON.stringify({
-          policy: {
-            bindings: [
-              {
-                role: 'roles/run.invoker',
-                members: ['allUsers'],
-              },
-            ],
-          },
-        }),
-      });
-      if (!iamRes.ok) {
-        const iamErr = await iamRes.text();
-        console.error(`[Deploy]   IAM policy failed (${iamRes.status}): ${iamErr}`);
-        // Don't throw — service is deployed, just not public yet
-      } else {
-        console.log(`[Deploy]   IAM policy set: public access enabled`);
+      try {
+        const iamRes = await gcpFetch(iamUrl, {
+          method: 'POST',
+          body: JSON.stringify({
+            policy: {
+              bindings: [
+                {
+                  role: 'roles/run.invoker',
+                  members: ['allUsers'],
+                },
+              ],
+            },
+          }),
+        });
+        if (!iamRes.ok) {
+          const iamErr = await iamRes.text();
+          console.error(`[Deploy]   IAM policy failed (${iamRes.status}): ${iamErr}`);
+          iamPolicyOutcome = { ok: false, httpStatus: iamRes.status, error: iamErr };
+        } else {
+          console.log(`[Deploy]   IAM policy set: public access enabled`);
+          iamPolicyOutcome = { ok: true, httpStatus: iamRes.status, error: null };
+        }
+      } catch (iamFetchErr) {
+        // Network/fetch threw before getting a response. Same end-user impact
+        // (service live but private) — surface as failure outcome.
+        const msg = (iamFetchErr as Error).message;
+        console.error(`[Deploy]   IAM policy fetch threw: ${msg}`);
+        iamPolicyOutcome = { ok: false, httpStatus: null, error: msg };
       }
     }
 
@@ -432,6 +456,7 @@ export async function deployToCloudRun(config: DeployConfig, imageUri: string): 
       duration: Date.now() - start,
       revisionName: latestRevision,
       imageUri,
+      iamPolicyOutcome,
     };
   } catch (err) {
     return {
@@ -440,6 +465,7 @@ export async function deployToCloudRun(config: DeployConfig, imageUri: string): 
       serviceName,
       error: (err as Error).message,
       duration: Date.now() - start,
+      iamPolicyOutcome: null,
     };
   }
 }
