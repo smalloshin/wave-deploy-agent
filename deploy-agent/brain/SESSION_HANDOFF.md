@@ -4,6 +4,70 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十四段）—— PATCH /env-vars 不再 silently desync DB 跟 Cloud Run，dashboard 拿到 machine-readable drift code**
+
+第十三段把 stopProjectService 收尾後，spawn architect 做 round-14 scout 找下一隻 silent bug。架構師 flag 三隻：
+- **Bug A**：deploy-worker 內部 retry 寫 partial scan-report 沒 rollback（mid 風險）
+- **Bug B**：`PATCH /api/projects/:id/env-vars` 兩段 write 無 atomicity、DB write 沒 try/catch（**high 風險，operator 日常會踩**）
+- **Bug C**：`discord-notifier.ts` 把所有 fetch 失敗吞掉沒 surface（low 風險）
+
+Engineering lead 選 **Bug B**：env-vars 編輯是 routine 操作（每次調 LOG_LEVEL、API_BASE 都會走這條），失敗時 dashboard 顯示舊值，operator 拿舊值再 PATCH 一次就 silently 把 production 的新設定 overwrite 回去。Operator-reversible damage，最惡毒的那種 lying-state。
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/env-vars-update.ts`（新純函式 module）** —— 抽出 plan + verdict：
+   - `planEnvVarsUpdate(existing, patch)` → `EnvVarsUpdatePlan`：算 merged map + 把 keys 分到 changed / cleared / unchanged 三桶。Empty patch 或全 unchanged → caller 可短路完全不打 Cloud Run 不打 DB。
+   - `interpretEnvVarsUpdateResult({ plan, cloudRun, db })` → 5-kind discriminated `EnvVarsUpdateVerdict`：
+     - `success`（兩段都成功）—— info
+     - `success-noop`（plan 沒事可做）—— info，從未 call IO
+     - `cloud-run-failed`（CR PATCH 拒絕）—— warn，DB 沒被碰，operator 可安心 retry
+     - `db-failed-after-cloud-run`（**ROUND-14 核心**）—— **CRITICAL**，carries：
+       - `errorCode: 'env_vars_db_drift'`（dashboard contract）
+       - `requiresManualReconcile: true`
+       - `cloudRunValues`（Cloud Run 是 source of truth）
+       - `changed` / `cleared`（給 log）
+     - `db-failed-with-cloud-run-failed-too`（兩段都失敗）—— warn，DB 沒被碰，等同 cloud-run-failed
+   - 純函式：不打 IO、不 mutate input、由 test 驗證（regression guard）
+
+B. **`apps/api/src/routes/projects.ts:1579-1717`** —— 重寫 PATCH /env-vars handler：
+   - 先 plan，noop 短路
+   - Phase 1：call `updateServiceEnvVars`，capture outcome
+   - Phase 2：**只在 Cloud Run 成功時** wrap `updateProjectConfig` 在 try/catch 收 outcome
+   - 餵給 verdict planner，switch 出五種回應：
+     - success / noop → 200 + 帶 `changed` / `cleared`
+     - cloud-run-failed → 500 + warn log
+     - both-failed → 500 + warn log（CR error 為主訊息）
+     - **db-failed-after-cloud-run → 500 + CRITICAL log + `errorCode: 'env_vars_db_drift'` + `requiresManualReconcile: true` + `cloudRunValues`**
+   - Dashboard 端拿到 `errorCode === 'env_vars_db_drift'` 就該拒絕 render `project.config.envVars`（已 stale），改 fallback 到 GET /env-vars 的 live read（projects.ts:1559 那條 path 已經 prefer live）
+
+C. **`apps/api/src/test-env-vars-update.ts`（新檔，45 tests）**：
+   - **Section 1 — planEnvVarsUpdate（11 tests）**：empty/empty、empty patch on existing、add new、override different、override same、clear existing、add empty (typo)、no-op clear、mixed all-four-buckets、key-removal-not-supported、purity (no input mutation × 2)
+   - **Section 2 — interpretEnvVarsUpdateResult（22 tests）**：success（3 fields）、success-noop（2 paths）、cloud-run-failed（4 fields, defensive null-cloudRun）、**db-failed-after-cloud-run（7 fields，含 db=null fallback）**、db-failed-with-cloud-run-failed-too（4 fields）
+   - **Section 3 — Regression guards（12 tests）**：只有 `db-failed-after-cloud-run` 帶 `requiresManualReconcile`（4 verdict 反例驗 negative）；只有它帶 `errorCode`（4 反例）；logLevel 三段精確 pin（info/warn/critical）
+
+**Test 通過率（累計）：179 unit pass / 0 fail**：
+- 9 個 zero-dep test 檔全綠：publish-split(14), post-canary(15), transition-plan(23), stop-verdict(19), env-vars-update(45), safe-number(27), scan-report-schemas(15), scanner-safe-parse(11), stage-events(10) = 179
+- typecheck `npx tsc --noEmit` 全綠
+
+**為什麼這隻會在生產咬人**：
+- `updateServiceEnvVars` 內部會等 Cloud Run revision ready，期間 5–30 秒，pool 連線可能 stale → DB write throw
+- env-vars 是 JSONB column，merged config 偶爾會踩到 PG 序列化邊角（key 含 unicode、值含 nested escape）
+- Project 在 PATCH 中途被另一個 admin 刪掉 → DB UPDATE rowCount=0 卻不 throw，但這條 path 在 deploy-engine 內部會 throw（FK or trigger）
+- 任何一條中標：Cloud Run 已新一個 revision serving 新值，DB 舊；refresh dashboard → 看到舊值 → operator 手動「修正」回去 → 把生產 production 滾回舊 config
+
+**架構決策（內含於 commit）**：
+- noop 短路在 route 層而非 verdict 內部，因為 noop 時根本不該打 IO，verdict 只負責解讀已經發生的事
+- `cloudRunValues` 用 `plan.merged`（intent）而非額外 readback，因為 `updateServiceEnvVars` 已經 confirm 寫入；額外 readback 只會多一個 failure point
+- `requiresManualReconcile: true` 是 literal type 不是 boolean，這樣 TypeScript narrowing 能保證只有 db-failed-after-cloud-run 會帶這個 flag
+- errorCode 是 discriminated union 的 `'env_vars_db_drift'` literal，而非 free-form string，dashboard 端可以靠 `if (resp.errorCode === 'env_vars_db_drift')` 切換 mode
+
+**這段沒做的事**：
+- Dashboard 端的 `errorCode === 'env_vars_db_drift'` handler 還沒實作（這要前端那邊另開 round）
+- 沒寫 reconcile job 自動把這種 drift 修回 DB（manual operator action 為先，避免自動修錯方向）
+- env-vars history / audit log 沒加（如果要 boil-the-lake，下幾段可以做）
+
+---
+
 **2026-04-26（autonomous overnight 第十三段）—— stopProjectService 不再說謊，partial failure 變成 CRITICAL 而非 silent success**
 
 第十二段把 transitionProject 改成 atomic optimistic concurrency 後，spawn 新 architect 找下一隻 silent bug。回報的是 service-lifecycle.ts 的 `stopProjectService`：三個 IO call 連跑，沒有錯誤處理，外加一個吞掉所有錯的 `try { } catch { }`。
