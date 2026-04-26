@@ -10,6 +10,19 @@ export const config = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
   openaiApiKey: process.env.OPENAI_API_KEY ?? '',
   digestHour: parseInt(process.env.DIGEST_HOUR ?? '9', 10), // Morning digest hour (24h format)
+  // Round 26: operator allowlist — only Discord user IDs in this list can use NL.
+  // Empty = open mode (warn at boot, allow all). Comma-separated snowflakes.
+  operatorDiscordIds: (process.env.OPERATOR_DISCORD_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+  // Round 26: ops channel allowlist — drops the @mention requirement in these
+  // channels (any message from any operator gets handled). Empty = strict
+  // @mention/DM-only mode. Comma-separated snowflakes.
+  opsChannelIds: (process.env.OPS_CHANNEL_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
 };
 
 // Validate required config

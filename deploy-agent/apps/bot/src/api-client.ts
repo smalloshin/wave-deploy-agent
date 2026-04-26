@@ -78,6 +78,34 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function apiDelete<T>(path: string): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const raw = await res.text();
+    let msg = raw;
+    try {
+      const parsed = JSON.parse(raw) as { message?: string; error?: string };
+      msg = parsed.message ?? parsed.error ?? raw;
+    } catch { /* not JSON, use raw */ }
+    throw new Error(`API ${path}: ${res.status} — ${msg}`);
+  }
+  // Some DELETE endpoints return 204 No Content; handle that gracefully.
+  const text = await res.text();
+  if (!text) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
+export async function deleteProjectApi(projectId: string): Promise<{ ok?: boolean }> {
+  return apiDelete<{ ok?: boolean }>(`/api/projects/${projectId}`);
+}
+
 // Projects
 export async function listProjects(): Promise<Project[]> {
   const data = await get<{ projects: Project[] }>('/api/projects');

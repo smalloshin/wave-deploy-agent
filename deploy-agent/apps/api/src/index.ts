@@ -14,6 +14,7 @@ import { infraRoutes } from './routes/infra';
 import { versioningRoutes } from './routes/versioning';
 import { webhookRoutes } from './routes/webhooks';
 import { authRoutes } from './routes/auth';
+import { discordAuditRoutes } from './routes/discord-audit';
 import { registerAuthHook, registerAuthCoverageCheck } from './middleware/auth';
 import { ensureAdmin } from './services/auth-service';
 import { startReconciler } from './services/reconciler';
@@ -77,6 +78,7 @@ app.get('/health', async () => ({
 
 // Register routes
 await app.register(authRoutes);
+await app.register(discordAuditRoutes);
 await app.register(projectRoutes);
 await app.register(reviewRoutes);
 await app.register(deployRoutes);

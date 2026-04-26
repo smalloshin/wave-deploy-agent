@@ -210,6 +210,35 @@ CREATE TABLE IF NOT EXISTS auth_audit_log (
 CREATE INDEX IF NOT EXISTS idx_auth_audit_created ON auth_audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_auth_audit_user ON auth_audit_log(user_id);
 
+-- ═══════════════════════════════════════════════════════════════
+-- Round 26 — Discord NL audit trail
+-- ═══════════════════════════════════════════════════════════════
+-- Records every Discord NL tool intent BEFORE the API call (`pending`)
+-- and stamps the result AFTER (`success` / `error` / `denied` /
+-- `cancelled`). Sanitization (strip `da_k_*` API keys, bcrypt hashes,
+-- secret/token/password values) happens client-side before INSERT —
+-- the bot never sends raw secrets to this table.
+--
+-- TTL: 180 days, swept by the existing auth-cleanup cron pattern.
+CREATE TABLE IF NOT EXISTS discord_audit (
+  id BIGSERIAL PRIMARY KEY,
+  discord_user_id VARCHAR(64) NOT NULL,        -- Discord user snowflake
+  channel_id VARCHAR(64) NOT NULL,             -- Channel snowflake
+  message_id VARCHAR(64),                      -- Source message snowflake (null for synthetic)
+  tool_name VARCHAR(64) NOT NULL,              -- e.g. 'publish_version'
+  tool_input JSONB NOT NULL DEFAULT '{}',      -- sanitized
+  intent_text TEXT,                            -- truncated user message (max 500 chars)
+  status VARCHAR(16) NOT NULL,                 -- 'pending' | 'success' | 'error' | 'denied' | 'cancelled'
+  result_text TEXT,                            -- sanitized response or error message (max 2000 chars)
+  llm_provider VARCHAR(16),                    -- 'claude' | 'gpt'
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_discord_audit_user ON discord_audit(discord_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_discord_audit_created ON discord_audit(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_discord_audit_status ON discord_audit(status);
+
 -- Seed system roles (idempotent via ON CONFLICT)
 INSERT INTO roles (name, permissions, description, is_system)
 VALUES

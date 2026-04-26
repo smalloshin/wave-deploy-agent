@@ -81,6 +81,14 @@ export const ROUTE_PERMISSIONS: Array<[string, Permission]> = [
   ['POST:/mcp/tools/list', 'mcp:access'],
   ['POST:/mcp/tools/call', 'mcp:access'],
 
+  // Discord NL audit (bot writes pending+result rows around every tool exec).
+  // Uses projects:deploy because that's already in the bot's API-key
+  // permission set (reviews:*, versions:*, projects:deploy). Not a security-
+  // sensitive endpoint — the bot is the only writer and the data is
+  // sanitized at both bot-side and API-side ingress.
+  ['POST:/api/discord-audit', 'projects:deploy'],
+  ['PATCH:/api/discord-audit/:id', 'projects:deploy'],
+
   // Users management (auth routes handle their own granular permissions,
   // but users CRUD requires users:manage)
   ['GET:/api/auth/users', 'users:manage'],

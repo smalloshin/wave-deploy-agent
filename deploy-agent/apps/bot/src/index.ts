@@ -6,6 +6,7 @@ import { Client, GatewayIntentBits, Events, type TextChannel } from 'discord.js'
 import { config } from './config.js';
 import { handleCommand, handleAutocomplete } from './commands/index.js';
 import { handleNaturalLanguage, startMorningDigest } from './nl-handler.js';
+import { checkMessageGate } from './message-gate-verdict.js';
 
 // Cloud Run requires a listening HTTP port — minimal health check server
 const port = parseInt(process.env.PORT ?? '8080', 10);
@@ -70,11 +71,15 @@ client.on(Events.MessageCreate, async (message) => {
   // Ignore bot messages
   if (message.author.bot) return;
 
-  // Only respond when @mentioned or in DMs
-  const isMentioned = message.mentions.has(client.user!);
-  const isDM = !message.guild;
-
-  if (!isMentioned && !isDM) return;
+  // Round 26: message gate — @mention OR DM OR ops-channel.
+  // Silent ignore for everything else (no spam in shared channels).
+  const verdict = checkMessageGate({
+    isMentioned: message.mentions.has(client.user!),
+    isDM: !message.guild,
+    channelId: message.channelId,
+    opsChannelIds: config.opsChannelIds,
+  });
+  if (verdict.kind === 'denied-not-mentioned-no-ops') return;
 
   try {
     await handleNaturalLanguage(message);
