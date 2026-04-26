@@ -899,69 +899,165 @@ export async function runDeployPipeline(
       logPostDeployVerdict(postDeployVerdict);
     }
 
-    // ── Monorepo: backend notifies frontend siblings of its URL ──
-    if (projectGroup && serviceRole === 'backend' && deployResult.serviceUrl) {
-      try {
-        // Store our URL in config so frontend siblings can find it
-        const backendConfig = {
-          ...(project.config ?? {}),
-          resolvedBackendUrl: deployResult.serviceUrl,
-          lastDeployedImage: buildResult.imageUri,
-        };
-        await updateProjectConfig(project.id, backendConfig);
-        console.log(`[Deploy]   Stored resolvedBackendUrl for frontend siblings: ${deployResult.serviceUrl}`);
+    // ── Monorepo: backend notifies frontend siblings of its URL (verdict-driven, round 19) ──
+    // Three steps that used to be wrapped in nested try/catch with all
+    // failures silenced into console.warn:
+    //   (1) Write backend's own resolvedBackendUrl to its config (CRITICAL —
+    //       future siblings depend on this for cold lookup)
+    //   (2) Discover live frontend siblings (warn-level if it fails)
+    //   (3) Per-sibling hot-update of Cloud Run env vars
+    // We capture each outcome structurally, build a verdict, and log at the
+    // right level. Failed sibling lists let the operator know exactly which
+    // frontends are still pointing at the old backend URL.
+    {
+      const applicable = !!(projectGroup && serviceRole === 'backend' && deployResult.serviceUrl);
+      const backendUrl = deployResult.serviceUrl ?? '';
 
-        // If a frontend sibling already deployed, hot-update its runtime env vars
-        const allProjects = await listProjects();
-        const frontendSiblings = allProjects.filter(p =>
-          (p.config?.projectGroup as string) === projectGroup &&
-          p.id !== project.id &&
-          (p.config?.serviceRole as string) === 'frontend'
-        );
-        for (const frontend of frontendSiblings) {
-          const frontendDeploys = await getDeploymentsByProject(frontend.id);
-          const liveFrontend = frontendDeploys.find(d => d.cloudRunService);
-          if (liveFrontend?.cloudRunService) {
-            console.log(`[Deploy]   Hot-updating frontend "${frontend.name}" runtime env vars with backend URL`);
-            // Update runtime env vars (helps server-side rendering; client-side NEXT_PUBLIC_* needs rebuild)
+      let backendConfigOutcome: { ok: boolean; error: string | null } | null = null;
+      let siblingDiscoveryOutcome:
+        | { ok: boolean; error: string | null; totalSiblings: number; liveSiblings: number }
+        | null = null;
+      const siblingUpdateOutcomes: Array<{
+        siblingId: string;
+        siblingName: string;
+        ok: boolean;
+        error: string | null;
+      }> = [];
+
+      if (applicable) {
+        // Step 1: Write backend's own config.
+        try {
+          const backendConfig = {
+            ...(project.config ?? {}),
+            resolvedBackendUrl: deployResult.serviceUrl,
+            lastDeployedImage: buildResult.imageUri,
+          };
+          await updateProjectConfig(project.id, backendConfig);
+          backendConfigOutcome = { ok: true, error: null };
+        } catch (err) {
+          backendConfigOutcome = { ok: false, error: (err as Error).message };
+        }
+
+        // Step 2 & 3: Discovery + per-sibling PATCH (only if backend
+        // config write succeeded — no point notifying siblings about a
+        // URL we couldn't persist).
+        if (backendConfigOutcome.ok) {
+          let discoveryError: string | null = null;
+          let frontendSiblings: Awaited<ReturnType<typeof listProjects>> = [];
+          try {
+            const allProjects = await listProjects();
+            frontendSiblings = allProjects.filter(p =>
+              (p.config?.projectGroup as string) === projectGroup &&
+              p.id !== project.id &&
+              (p.config?.serviceRole as string) === 'frontend'
+            );
+          } catch (err) {
+            discoveryError = (err as Error).message;
+          }
+
+          if (discoveryError) {
+            siblingDiscoveryOutcome = {
+              ok: false,
+              error: discoveryError,
+              totalSiblings: 0,
+              liveSiblings: 0,
+            };
+          } else {
+            // Walk siblings, capturing each one's update outcome.
+            const liveOnes: Array<{ id: string; name: string; cloudRunService: string }> = [];
             try {
-              const updateUrl = `https://run.googleapis.com/v2/projects/${gcpProject}/locations/${gcpRegion}/services/${liveFrontend.cloudRunService}`;
-              const svcRes = await (await import('./gcp-auth')).gcpFetch(updateUrl);
-              if (svcRes.ok) {
-                const svc = await svcRes.json() as { template?: { containers?: Array<{ env?: Array<{ name: string; value: string }> }> } };
-                const existingEnv = svc.template?.containers?.[0]?.env ?? [];
-                const urlKeys = ['API_URL', 'BACKEND_URL', 'NEXT_PUBLIC_API_URL', 'VITE_API_URL', 'REACT_APP_API_URL'];
-                const updatedEnv = existingEnv.map(e =>
-                  urlKeys.includes(e.name) ? { ...e, value: deployResult.serviceUrl! } : e
-                );
-                // Also add keys that don't exist yet
-                for (const key of urlKeys) {
-                  if (!updatedEnv.find(e => e.name === key)) {
-                    updatedEnv.push({ name: key, value: deployResult.serviceUrl! });
-                  }
-                }
-                const patchRes = await (await import('./gcp-auth')).gcpFetch(updateUrl, {
-                  method: 'PATCH',
-                  body: JSON.stringify({
-                    template: {
-                      ...svc.template,
-                      containers: [{ ...svc.template?.containers?.[0], env: updatedEnv }],
-                    },
-                  }),
-                });
-                if (patchRes.ok) {
-                  console.log(`[Deploy]   Frontend "${frontend.name}" env vars updated with backend URL`);
-                } else {
-                  console.warn(`[Deploy]   Frontend env update failed: HTTP ${patchRes.status}`);
+              for (const frontend of frontendSiblings) {
+                const frontendDeploys = await getDeploymentsByProject(frontend.id);
+                const liveFrontend = frontendDeploys.find(d => d.cloudRunService);
+                if (liveFrontend?.cloudRunService) {
+                  liveOnes.push({
+                    id: frontend.id,
+                    name: frontend.name,
+                    cloudRunService: liveFrontend.cloudRunService,
+                  });
                 }
               }
-            } catch (patchErr) {
-              console.warn(`[Deploy]   Frontend hot-update failed: ${(patchErr as Error).message}`);
+            } catch (err) {
+              // getDeploymentsByProject failure is part of "discovery",
+              // not per-sibling update. Surface as discovery failure.
+              siblingDiscoveryOutcome = {
+                ok: false,
+                error: `getDeploymentsByProject: ${(err as Error).message}`,
+                totalSiblings: frontendSiblings.length,
+                liveSiblings: 0,
+              };
+            }
+
+            if (!siblingDiscoveryOutcome) {
+              siblingDiscoveryOutcome = {
+                ok: true,
+                error: null,
+                totalSiblings: frontendSiblings.length,
+                liveSiblings: liveOnes.length,
+              };
+
+              // Per-sibling PATCH attempts.
+              for (const sibling of liveOnes) {
+                let outcome: { ok: boolean; error: string | null } = { ok: false, error: 'not attempted' };
+                try {
+                  const updateUrl = `https://run.googleapis.com/v2/projects/${gcpProject}/locations/${gcpRegion}/services/${sibling.cloudRunService}`;
+                  const svcRes = await (await import('./gcp-auth')).gcpFetch(updateUrl);
+                  if (!svcRes.ok) {
+                    outcome = { ok: false, error: `svc-fetch-failed: HTTP ${svcRes.status}` };
+                  } else {
+                    const svc = await svcRes.json() as { template?: { containers?: Array<{ env?: Array<{ name: string; value: string }> }> } };
+                    const existingEnv = svc.template?.containers?.[0]?.env ?? [];
+                    const urlKeys = ['API_URL', 'BACKEND_URL', 'NEXT_PUBLIC_API_URL', 'VITE_API_URL', 'REACT_APP_API_URL'];
+                    const updatedEnv = existingEnv.map(e =>
+                      urlKeys.includes(e.name) ? { ...e, value: deployResult.serviceUrl! } : e
+                    );
+                    for (const key of urlKeys) {
+                      if (!updatedEnv.find(e => e.name === key)) {
+                        updatedEnv.push({ name: key, value: deployResult.serviceUrl! });
+                      }
+                    }
+                    const patchRes = await (await import('./gcp-auth')).gcpFetch(updateUrl, {
+                      method: 'PATCH',
+                      body: JSON.stringify({
+                        template: {
+                          ...svc.template,
+                          containers: [{ ...svc.template?.containers?.[0], env: updatedEnv }],
+                        },
+                      }),
+                    });
+                    if (patchRes.ok) {
+                      outcome = { ok: true, error: null };
+                    } else {
+                      outcome = { ok: false, error: `patch-failed: HTTP ${patchRes.status}` };
+                    }
+                  }
+                } catch (patchErr) {
+                  outcome = { ok: false, error: `throw: ${(patchErr as Error).message}` };
+                }
+                siblingUpdateOutcomes.push({
+                  siblingId: sibling.id,
+                  siblingName: sibling.name,
+                  ...outcome,
+                });
+              }
             }
           }
         }
-      } catch (err) {
-        console.warn(`[Deploy]   Backend→frontend notification failed: ${(err as Error).message}`);
+      }
+
+      const { buildMonorepoLinkVerdict, logMonorepoLinkVerdict } = await import('./monorepo-link-verdict');
+      const linkVerdict = buildMonorepoLinkVerdict({
+        applicable,
+        backendName: project.name,
+        backendUrl,
+        backendConfigWrite: backendConfigOutcome,
+        siblingDiscovery: siblingDiscoveryOutcome,
+        siblingUpdates: siblingUpdateOutcomes,
+      });
+      // Skip the not-applicable info log for non-monorepo deploys to keep
+      // output clean (every deploy would otherwise emit it).
+      if (linkVerdict.kind !== 'not-applicable') {
+        logMonorepoLinkVerdict(linkVerdict);
       }
     }
 
