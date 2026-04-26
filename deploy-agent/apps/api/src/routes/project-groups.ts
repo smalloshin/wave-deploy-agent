@@ -15,6 +15,13 @@ import { stopProjectService, startProjectService } from '../services/service-lif
 import { deleteService, deleteDomainMapping, deleteContainerImage } from '../services/deploy-engine';
 import { deleteCname } from '../services/dns-manager';
 import { deleteProjectFromDb } from '../services/orchestrator';
+import { releaseProjectRedis } from '../services/redis-provisioner';
+import {
+  buildTeardownVerdict,
+  outcomeToLogEntry,
+  type TeardownStepOutcome,
+  type TeardownVerdict,
+} from '../services/teardown-verdict';
 import type { Project, ProjectResource, ProjectWithResources, ProjectGroup } from '@deploy-agent/shared';
 
 async function enrichProjectWithResources(project: Project): Promise<ProjectWithResources> {
@@ -200,8 +207,27 @@ export async function projectGroupRoutes(app: FastifyInstance) {
             const r = await startProjectService(p.id, 'bulk-group-action');
             results.push({ serviceId: p.id, name: p.name, success: r.success, message: r.message });
           } else if (body.action === 'delete') {
-            const teardownLog = await teardownSingleProject(p.id);
-            results.push({ serviceId: p.id, name: p.name, success: true, message: `Deleted (${teardownLog.length} resources cleaned)` });
+            // Round 15: teardownSingleProject now returns the verdict so the
+            // bulk-action caller honors orphan-detection. If a service can't
+            // be cleaned in GCP, we report it as a failure for that service
+            // and keep its DB row (audit trail) intact.
+            const { verdict, teardownLog } = await teardownSingleProject(p.id);
+            if (verdict.kind === 'partial-orphans') {
+              const orphanList = verdict.orphans.map((o) => `${o.kind}=${o.reference}`).join(', ');
+              results.push({
+                serviceId: p.id,
+                name: p.name,
+                success: false,
+                message: `Partial cleanup: ${verdict.orphans.length} orphan(s) [${orphanList}]. DB row preserved; manual cleanup required.`,
+              });
+            } else {
+              results.push({
+                serviceId: p.id,
+                name: p.name,
+                success: true,
+                message: `Deleted (${teardownLog.length} resources cleaned)`,
+              });
+            }
           }
         } catch (err) {
           results.push({ serviceId: p.id, name: p.name, success: false, message: (err as Error).message });
@@ -213,48 +239,90 @@ export async function projectGroupRoutes(app: FastifyInstance) {
   );
 }
 
-// Internal: full teardown of a single project (mirrors DELETE /api/projects/:id)
-async function teardownSingleProject(projectId: string): Promise<Array<{ step: string; status: string }>> {
+// Internal: full teardown of a single project (mirrors DELETE /api/projects/:id).
+//
+// Round 15: returns the verdict so the bulk-action route honors orphan
+// detection — same safety as DELETE /api/projects/:id. If any GCP step
+// fails, the DB row is NOT deleted (audit trail preserved). The caller
+// decides how to surface the partial result.
+async function teardownSingleProject(
+  projectId: string,
+): Promise<{ verdict: TeardownVerdict; teardownLog: Array<{ step: string; status: 'ok' | 'error'; error?: string }> }> {
   const project = await getProject(projectId);
   if (!project) throw new Error('Project not found');
 
   const gcpProject = (project.config?.gcpProject as string) || process.env.GCP_PROJECT || '';
   const gcpRegion = (project.config?.gcpRegion as string) || process.env.GCP_REGION || 'asia-east1';
-  const log: Array<{ step: string; status: string }> = [];
+  const outcomes: TeardownStepOutcome[] = [];
 
   const deployments = await getDeploymentsByProject(projectId);
   for (const d of deployments) {
     if (d.cloudRunService && gcpProject) {
-      // Round 13: deleteService now returns a structured result instead of throwing.
-      // The old try/catch never fired (function swallowed errors internally to console).
       const delRes = await deleteService(gcpProject, gcpRegion, d.cloudRunService);
-      if (delRes.ok) {
-        log.push({ step: `Deleted ${d.cloudRunService}${delRes.alreadyGone ? ' (already gone)' : ''}`, status: 'ok' });
-      } else {
-        log.push({ step: `Delete ${d.cloudRunService}`, status: `error: ${delRes.error ?? 'unknown'}` });
-      }
+      outcomes.push({
+        kind: 'cloud_run_service',
+        reference: d.cloudRunService,
+        ok: delRes.ok,
+        alreadyGone: delRes.alreadyGone,
+        error: delRes.error,
+      });
     }
     if (d.customDomain && gcpProject) {
-      try { await deleteDomainMapping(gcpProject, gcpRegion, d.customDomain); log.push({ step: `Domain mapping ${d.customDomain}`, status: 'ok' }); }
-      catch (err) { log.push({ step: `Domain ${d.customDomain}`, status: `error: ${(err as Error).message}` }); }
+      try {
+        await deleteDomainMapping(gcpProject, gcpRegion, d.customDomain);
+        outcomes.push({ kind: 'domain_mapping', reference: d.customDomain, ok: true, error: null });
+      } catch (err) {
+        outcomes.push({ kind: 'domain_mapping', reference: d.customDomain, ok: false, error: (err as Error).message });
+      }
 
       const cfToken = process.env.CLOUDFLARE_TOKEN || '';
       const cfZoneId = process.env.CLOUDFLARE_ZONE_ID || '';
       const cfZoneName = process.env.CLOUDFLARE_ZONE_NAME || '';
       if (cfToken && cfZoneId && cfZoneName) {
         const subdomain = d.customDomain.replace(`.${cfZoneName}`, '');
-        try { await deleteCname({ cloudflareToken: cfToken, zoneId: cfZoneId, subdomain, zoneName: cfZoneName }); log.push({ step: `DNS ${d.customDomain}`, status: 'ok' }); }
-        catch (err) { log.push({ step: `DNS ${d.customDomain}`, status: `error: ${(err as Error).message}` }); }
+        try {
+          const result = await deleteCname({ cloudflareToken: cfToken, zoneId: cfZoneId, subdomain, zoneName: cfZoneName });
+          outcomes.push({
+            kind: 'cloudflare_dns',
+            reference: d.customDomain,
+            ok: result.success,
+            error: result.error ?? null,
+          });
+        } catch (err) {
+          outcomes.push({ kind: 'cloudflare_dns', reference: d.customDomain, ok: false, error: (err as Error).message });
+        }
       }
     }
   }
 
   if (gcpProject && gcpRegion) {
-    try { await deleteContainerImage(gcpProject, gcpRegion, project.slug); log.push({ step: `Image ${project.slug}`, status: 'ok' }); }
-    catch (err) { log.push({ step: `Image ${project.slug}`, status: `error: ${(err as Error).message}` }); }
+    try {
+      await deleteContainerImage(gcpProject, gcpRegion, project.slug);
+      outcomes.push({ kind: 'container_image', reference: project.slug, ok: true, error: null });
+    } catch (err) {
+      outcomes.push({ kind: 'container_image', reference: project.slug, ok: false, error: (err as Error).message });
+    }
+  }
+
+  try {
+    await releaseProjectRedis(projectId);
+    outcomes.push({ kind: 'redis_allocation', reference: projectId, ok: true, error: null });
+  } catch (err) {
+    outcomes.push({ kind: 'redis_allocation', reference: projectId, ok: false, error: (err as Error).message });
+  }
+
+  const verdict = buildTeardownVerdict(outcomes);
+  const teardownLog = outcomes.map(outcomeToLogEntry);
+
+  if (verdict.kind === 'partial-orphans') {
+    // Refuse DB delete — same contract as the single-project route.
+    console.error(
+      `[CRITICAL][teardown-bulk] project ${project.name} (${projectId}) has ${verdict.orphans.length} orphan(s); DB row preserved. Orphans: ${verdict.orphans.map((o) => `${o.kind}=${o.reference}(${o.error})`).join('; ')}`,
+    );
+    return { verdict, teardownLog };
   }
 
   await deleteProjectFromDb(projectId);
-  log.push({ step: 'DB records', status: 'ok' });
-  return log;
+  teardownLog.push({ step: 'Delete database records', status: 'ok' });
+  return { verdict, teardownLog };
 }

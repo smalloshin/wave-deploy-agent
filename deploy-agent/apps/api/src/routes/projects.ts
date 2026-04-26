@@ -28,6 +28,12 @@ import { deleteCname, setupCustomDomainWithDns, type DnsConfig } from '../servic
 import { stopProjectService, startProjectService } from '../services/service-lifecycle';
 import { analyzeUploadFailure } from '../services/upload-diagnostic';
 import { planEnvVarsUpdate, interpretEnvVarsUpdateResult } from '../services/env-vars-update';
+import {
+  buildTeardownVerdict,
+  outcomeToLogEntry,
+  type TeardownStepOutcome,
+} from '../services/teardown-verdict';
+import { releaseProjectRedis } from '../services/redis-provisioner';
 import type { UploadErrorEnvelope, UploadFailureCode, UploadStage } from '@deploy-agent/shared';
 
 const execFileAsync = promisify(execFile);
@@ -1462,7 +1468,20 @@ export async function projectRoutes(app: FastifyInstance) {
     return { project: { ...project, status: 'review_pending' }, scanReport };
   });
 
-  // Delete project and tear down all GCP resources
+  // Delete project and tear down all GCP resources.
+  //
+  // Round 15: this used to unconditionally `await deleteProjectFromDb` after
+  // best-effort GCP cleanup, even when one or more GCP steps errored. Result
+  // was permanent billed orphans (Cloud Run service / domain mapping /
+  // Cloudflare CNAME / Artifact Registry image) plus zero audit trail to
+  // debug from. The Redis allocation row was ALSO never released because
+  // nobody called releaseProjectRedis (and the table has no FK CASCADE).
+  //
+  // Now: collect each step's outcome into a structured array, classify via
+  // buildTeardownVerdict, and refuse to touch the DB if any orphan exists.
+  // Operator gets a 500 with errorCode='project_teardown_orphans' + the
+  // orphan list so they can clean up manually then retry — with the DB row
+  // and audit trail still intact.
   app.delete<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
@@ -1470,73 +1489,124 @@ export async function projectRoutes(app: FastifyInstance) {
     const gcpProject = project.config?.gcpProject || process.env.GCP_PROJECT || '';
     const gcpRegion = project.config?.gcpRegion || process.env.GCP_REGION || 'asia-east1';
 
-    const teardownLog: { step: string; status: string; error?: string }[] = [];
+    const outcomes: TeardownStepOutcome[] = [];
 
-    // 1. Find deployments to know what GCP resources to clean up
+    // 1. Per-deployment cleanup: Cloud Run service, domain mapping, Cloudflare DNS.
     const deployments = await getDeploymentsByProject(project.id);
-
     for (const deploy of deployments) {
-      // 2. Delete Cloud Run service
-      // Round 13: deleteService returns a structured result; old try/catch
-      // never fired because the function used to swallow errors internally.
       if (deploy.cloudRunService && gcpProject) {
         const delRes = await deleteService(gcpProject, gcpRegion, deploy.cloudRunService);
-        if (delRes.ok) {
-          teardownLog.push({
-            step: `Delete Cloud Run service: ${deploy.cloudRunService}${delRes.alreadyGone ? ' (already gone)' : ''}`,
-            status: 'ok',
-          });
-        } else {
-          teardownLog.push({
-            step: `Delete Cloud Run service: ${deploy.cloudRunService}`,
-            status: 'error',
-            error: delRes.error ?? 'unknown',
-          });
-        }
+        outcomes.push({
+          kind: 'cloud_run_service',
+          reference: deploy.cloudRunService,
+          ok: delRes.ok,
+          alreadyGone: delRes.alreadyGone,
+          error: delRes.error,
+        });
       }
 
-      // 3. Delete domain mapping & Cloudflare DNS
       if (deploy.customDomain && gcpProject) {
         try {
           await deleteDomainMapping(gcpProject, gcpRegion, deploy.customDomain);
-          teardownLog.push({ step: `Delete domain mapping: ${deploy.customDomain}`, status: 'ok' });
+          outcomes.push({ kind: 'domain_mapping', reference: deploy.customDomain, ok: true, error: null });
         } catch (err) {
-          teardownLog.push({ step: `Delete domain mapping: ${deploy.customDomain}`, status: 'error', error: (err as Error).message });
+          outcomes.push({
+            kind: 'domain_mapping',
+            reference: deploy.customDomain,
+            ok: false,
+            error: (err as Error).message,
+          });
         }
 
-        // Delete Cloudflare DNS record
         const cfToken = process.env.CLOUDFLARE_TOKEN || '';
         const cfZoneId = process.env.CLOUDFLARE_ZONE_ID || '';
         const cfZoneName = process.env.CLOUDFLARE_ZONE_NAME || '';
-
         if (cfToken && cfZoneId && cfZoneName) {
-          // Extract subdomain from custom_domain (e.g. "kol-studio.punwave.com" → "kol-studio")
           const subdomain = deploy.customDomain.replace(`.${cfZoneName}`, '');
           try {
             const result = await deleteCname({ cloudflareToken: cfToken, zoneId: cfZoneId, subdomain, zoneName: cfZoneName });
-            teardownLog.push({ step: `Delete DNS: ${deploy.customDomain}`, status: result.success ? 'ok' : 'error', error: result.error ?? undefined });
+            outcomes.push({
+              kind: 'cloudflare_dns',
+              reference: deploy.customDomain,
+              ok: result.success,
+              error: result.error ?? null,
+            });
           } catch (err) {
-            teardownLog.push({ step: `Delete DNS: ${deploy.customDomain}`, status: 'error', error: (err as Error).message });
+            outcomes.push({
+              kind: 'cloudflare_dns',
+              reference: deploy.customDomain,
+              ok: false,
+              error: (err as Error).message,
+            });
           }
         }
       }
     }
 
-    // 4. Delete container images from Artifact Registry
+    // 2. Container images from Artifact Registry.
     if (gcpProject && gcpRegion) {
       try {
         await deleteContainerImage(gcpProject, gcpRegion, project.slug);
-        teardownLog.push({ step: `Delete container image: ${project.slug}`, status: 'ok' });
+        outcomes.push({ kind: 'container_image', reference: project.slug, ok: true, error: null });
       } catch (err) {
-        teardownLog.push({ step: `Delete container image: ${project.slug}`, status: 'error', error: (err as Error).message });
+        outcomes.push({
+          kind: 'container_image',
+          reference: project.slug,
+          ok: false,
+          error: (err as Error).message,
+        });
       }
     }
 
-    // 5. Delete from database (CASCADE deletes scan_reports, reviews, deployments, state_transitions)
+    // 3. Redis allocation row (round 15: previously orphaned forever — no FK CASCADE).
+    try {
+      await releaseProjectRedis(project.id);
+      outcomes.push({ kind: 'redis_allocation', reference: project.id, ok: true, error: null });
+    } catch (err) {
+      outcomes.push({
+        kind: 'redis_allocation',
+        reference: project.id,
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
+    const verdict = buildTeardownVerdict(outcomes);
+    const teardownLog = outcomes.map(outcomeToLogEntry);
+
+    if (verdict.kind === 'partial-orphans') {
+      // CRITICAL — refuse to delete DB row. Operator must clean up GCP
+      // manually then retry. Project + audit trail stay intact.
+      request.log.error(
+        {
+          projectId: project.id,
+          projectName: project.name,
+          orphans: verdict.orphans.map((o) => ({ kind: o.kind, reference: o.reference, error: o.error })),
+        },
+        '[CRITICAL][teardown] GCP cleanup failed; DB row preserved to keep audit trail; manual cleanup required',
+      );
+      return reply.status(500).send({
+        error: `GCP cleanup failed for ${verdict.orphans.length} resource(s). Project DB row preserved so you can retry. Clean up manually in the GCP console, then DELETE again.`,
+        errorCode: verdict.errorCode,
+        requiresManualCleanup: true,
+        orphans: verdict.orphans.map((o) => ({
+          kind: o.kind,
+          reference: o.reference,
+          error: o.error,
+        })),
+        teardownLog,
+        project: { id: project.id, name: project.name },
+      });
+    }
+
+    // clean-teardown OR nothing-to-delete → safe to drop the DB row.
     await deleteProjectFromDb(project.id);
     teardownLog.push({ step: 'Delete database records', status: 'ok' });
 
-    console.log(`[Teardown] Project "${project.name}" (${project.id}) deleted:`, JSON.stringify(teardownLog));
+    request.log.info(
+      { projectId: project.id, projectName: project.name, kind: verdict.kind, steps: outcomes.length },
+      '[teardown] project deleted cleanly',
+    );
 
     return { success: true, project: { id: project.id, name: project.name }, teardownLog };
   });
