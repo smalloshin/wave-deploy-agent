@@ -4,6 +4,40 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27（Round 26 — Discord NL bot security hardening，engineer subagent）**
+
+- ✅ **8 個項目全部 ship，tsc 全綠（API + bot + web 三個 package）**
+- ✅ **Item #8（DB 先做，純加法）**：
+  - 新表 `discord_audit`（`apps/api/src/db/schema.sql`）：14 欄 + 3 indexes，自動透過 `runMigrations()` 套用
+  - 新檔 `apps/api/src/services/discord-audit-mapper.ts`（106 行）：純函式 `sanitizeToolInput` + `sanitizeResultText`，redact `password|secret|token|api_key|private_key|credential` 鍵、`da_k_*` 值、bcrypt hashes，深度上限 5、字串長度 500/2000
+  - 新檔 `apps/api/src/routes/discord-audit.ts`（115 行）：`POST /api/discord-audit`（pending）+ `PATCH /api/discord-audit/:id`（result），zod schema 驗證，bot 端 sanitize + API 端 sanitize 雙保險
+  - `apps/api/src/index.ts` 註冊新 route；`middleware/auth.ts` 新增兩條 ROUTE_PERMISSIONS（`projects:deploy`，已在 bot key 權限內）
+  - 新檔 `apps/bot/src/discord-audit-writer.ts`（96 行）：`logDiscordAuditPending` / `logDiscordAuditResult`，所有錯誤吞掉只 console.warn（audit 不可阻塞 NL flow）
+- ✅ **Item #7**：`apps/bot/src/tool-input-verdict.ts`（116 行）— zod schema per tool（含 #6 新增的 `delete_project`），discriminated union，pure function；nl-handler 在 allowlist + confirm 之前先驗證
+- ✅ **Item #1**：`apps/bot/src/discord-allowlist-verdict.ts`（45 行）— `OPERATOR_DISCORD_IDS` env，3 種 verdict（allowed / denied-not-on-allowlist / allowed-empty-allowlist）；`config.ts` parse env；`nl-handler.ts` 在 userText 之後立即 gate，empty 時 console.warn
+- ✅ **Item #5**：`DANGEROUS_TOOLS` 從 3 擴成 6（加 `approve_deploy`、`reject_deploy`、`delete_project`），askConfirmation descriptions 同步補齊
+- ✅ **Item #2**：`apps/bot/src/message-gate-verdict.ts`（49 行）— @mention / DM / ops-channel / silent-deny 4 種 verdict；`OPS_CHANNEL_IDS` env；`apps/bot/src/index.ts` 用新 verdict 取代原本 `!isMentioned && !isDM` 條件
+- ✅ **Item #6**：
+  - `apps/bot/src/name-confirm-verdict.ts`（39 行）— 純函式 `verifyNameMatch`（trim + 大小寫敏感），3 種 verdict（match / mismatch / empty）
+  - `apps/bot/src/api-client.ts` 新增 `apiDelete<T>()` helper + `deleteProjectApi(projectId)`（DELETE `/api/projects/:id`）
+  - nl-handler 加 `delete_project` tool（含 zod schema），executeTool 內第二段確認：`message.channel.awaitMessages` 30s timeout，輸入 slug 比對；mismatch/empty/timeout 全部 cancel；`PartialGroupDMChannel` edge case 友善拒絕
+- ✅ **Item #4**：`apps/bot/src/untrusted-history-verdict.ts`（85 行）— `wrapUntrustedHistory` + `escapeXmlContent` + `escapeXmlAttr`；歷史訊息包 `<untrusted_channel_history>`、assistant 包 `<assistant_turn>`、operator 當下訊息包 `<operator_turn>`；SYSTEM_PROMPT 加上反 prompt-injection 段落
+- ✅ **Item #3**：`apps/bot/src/pronoun-context-verdict.ts`（115 行）— `fetchPronounContext`（從 channel.messages.fetch 拉 50 則，filter operator + maxAgeMs，預設 30 分鐘 / 10 則）+ `mergeContextEntries`（in-memory 優先，dedupe by `role:content`）；nl-handler `handleNaturalLanguage` 整合
+- ✅ **bot package.json 加 `zod ^3.24.0`**，`bun install` 通過
+- ✅ **ContextEntry shape upgrade**：from `{role, content}` → `{role, content, authorId?, timestamp?}`（與 wrapUntrustedHistory + pronoun fetcher 共用）
+- ✅ **QA subagent 完成**（8 個新 test file、162 個新測試、0 fail）：
+  - `apps/api/src/test-discord-audit-mapper.ts`（31 tests）— sanitize 鍵名 + 值 patterns + 深度限制 + 字串截斷 + idempotent
+  - `apps/bot/src/test-discord-allowlist-verdict.ts`（11 tests）— 三種 verdict 邊界、whitespace、duplicate
+  - `apps/bot/src/test-message-gate-verdict.ts`（12 tests）— mention/DM/ops-channel 4 種、優先順序、空 list 退化
+  - `apps/bot/src/test-name-confirm-verdict.ts`（13 tests）— trim、大小寫、empty、unicode
+  - `apps/bot/src/test-pronoun-context-verdict.ts`（18 tests）— `mergeContextEntries` pure helper、dedupe、ordering、in-memory 優先（`fetchPronounContext` 因有 Discord I/O 不測）
+  - `apps/bot/src/test-tool-input-verdict.ts`（34 tests）— 8 個 tool 各自的 valid/invalid case、boundary（120/121 字元、長度限制、negative version）
+  - `apps/bot/src/test-untrusted-history-verdict.ts`（22 tests）— XML escape `<>&"'`、tag 不被 break、entryCount 一致
+  - `apps/bot/src/test-prompt-injection-regression.ts`（21 tests）— 跨 module 整合 regression：`<operator_turn>` 注入、`</untrusted_channel_history>` 注入、`<system>` 偽裝、SQL-string version、path-traversal、emoji/CJK/zero-width 保留
+- ✅ **Cumulative sweep**：`./scripts/sweep-zero-dep-tests.sh` 25 個 zero-dep test file，**1398 passed, 0 failed**（Round 25 是 1250；+148 新測試實際數差是因為 `test-discord-audit-mapper.ts` 31 個被算進 API、bot 七檔案 131 個算進 bot；script 把 R25 既有檔的 17 個沒被舊 parser 認出的測試也加回來了）
+- ✅ **新增 sweep script**：`deploy-agent/scripts/sweep-zero-dep-tests.sh`（4 種 summary format parser，跳過需 live infra 的 14 個 file，自動 exit code 1 on any failure）
+- ⏳ **下一步（Round 27 候選）**：（1）Phase 2 切到 `AUTH_MODE=enforced` 的最後驗證 + 文件，（2）`fetchPronounContext` integration test（需 mock Discord client），（3）`audit retention cron`（180-day TTL sweeper for `discord_audit` 表，借用 `auth-cleanup.ts` pattern）
+
 **2026-04-17（中午 MCP key + SKILL.md Bearer）**
 
 - ✅ **Bot API key 已上線**（raw key: `da_k_ebe3...`，已掛到 `deploy-agent-bot` Cloud Run 的 `DEPLOY_AGENT_API_KEY`）
