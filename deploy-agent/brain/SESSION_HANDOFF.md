@@ -4,6 +4,76 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-26（autonomous overnight 第十六段）—— `startProjectService` 不再說謊，partial failure 變成 CRITICAL（mirror round 13）**
+
+第十五段 teardown-verdict 收尾後，依 round-15 architect scout 留下的候選名單實作下一段。三個候選裡選 **`startProjectService`**：round 13 stop 的孿生 bug，scope 中等、命中率高（每次 stop/start 都會跑），影響面實質（false-stopped service 持續 billing）。
+
+**Bug**（`apps/api/src/services/service-lifecycle.ts:147-226`，pre-round-16）：
+```ts
+const result = await deployToCloudRun(...);     // heavy: 新 revision
+if (latest) await updateDeployment(...);        // (1) NO try/catch
+await updateProjectConfig(...);                 // (2) NO try/catch
+try { await transitionProject(...); } catch { /* ignore */ }  // (3) 全吞
+return { success: true, ... };                  // partial 也說 success
+```
+
+**3 種 silent 失敗**：
+- **A（critical）**：deploy OK + updateDeployment throw → Cloud Run 在跑且 billing，但 deployment row 還是 stop 留下的 `cloudRunUrl='', healthStatus='unknown'`。Dashboard 顯示「停止」實際在跑。Operator 按 Start 又跑一次 deploy → 浪費 build + 可能 traffic split
+- **B（warn）**：deploy + row OK + updateProjectConfig throw → service 在跑，但 `lastDeployedImage` 沒寫進去。下次 stop+start cycle 沒 cache，掉到「請走 /resubmit」error path，operator 以為專案壞掉
+- **C（warn）**：deploy + DB OK + transition fail → service + DB OK，但 project.status 沒改。Round-10 reconciler 看到 live traffic 會修，soft partial
+
+**這段做了什麼**：
+
+A. **`apps/api/src/services/start-verdict.ts`（新純函式 module）** —— mirror round-13 stop-verdict 的 5-kind shape：
+   - `DeployOutcome`（從 deploy-engine 已有的 `DeployResult` 換型）
+   - `DbWriteOutcome` / `TransitionOutcome`（mirror stop-verdict）
+   - `buildStartVerdict({ deploy, deploymentRow, projectConfig, transition, deploymentRowSkipped })` → 5-kind discriminated union：
+     - `success`（全 OK）—— info
+     - `deploy-failed`（heavy IO 失敗）—— warn
+     - `partial-deployment-row-mismatch`（**ROUND-16 critical**）—— **CRITICAL**，carries：
+       - `errorCode: 'start_deployment_row_drift'`
+       - `requiresManualReconcile: true`（literal）
+       - `serviceName` + `serviceUrl`（讓 operator 直接點開驗證）
+       - `dbError`
+     - `partial-config-not-persisted`（cache 沒寫）—— warn
+     - `partial-transition-failed`（status 沒改）—— warn
+   - **Phase ordering 設計決策**：row + config 都失敗時 verdict 要 surface row 失敗（更 critical 的那個），不能讓 operator 修了 cache 以為 dashboard 問題消失了。test 有專門守這個
+   - `deploymentRowSkipped` flag 區分「沒 latest deployment 所以合法 skip」vs「有 latest 但寫失敗」
+   - `verdictToLifecycleResult` mapping：
+     - `partial-config-not-persisted` / `partial-transition-failed` → `success: true`（service 已活，soft partial）
+     - `partial-deployment-row-mismatch` → `success: false`（CRITICAL，operator 必須知道）
+
+B. **`apps/api/src/services/service-lifecycle.ts:147-273`** —— 重寫成薄 orchestrator：
+   - Phase 1: `deployToCloudRun`，map 成 `DeployOutcome`
+   - Phase 2: `updateDeployment` 包 try/catch 收 outcome（只在 deploy.ok 時）
+   - Phase 3: `updateProjectConfig` 包 try/catch（只在 row OK 或 skipped 時 —— 不堆寫到壞 state 上）
+   - Phase 4: `transitionProject` 包 try/catch capture errorName（只在 config OK 時）
+   - 餵給 `buildStartVerdict` 拿 verdict
+   - 按 verdict.logLevel log（critical 用 `[CRITICAL]` 前綴方便 grep）
+   - 回 `startVerdictToLifecycleResult(verdict)`
+
+C. **`apps/api/src/test-start-verdict.ts`（新檔，59 tests）**：
+   - **Section 1 — 5 verdict kinds（17 tests）**：success（含 deploymentRow legitimately skipped）、deploy-failed（含 null-error fallback）、**partial-deployment-row-mismatch（5 fields，含 dbError null fallback）**、partial-config-not-persisted（含 null projectConfig）、partial-transition-failed（real error + InvalidTransitionError flavor + null）
+   - **Section 2 — verdictToLifecycleResult（5 tests）**：success / deploy-failed / critical / soft-config / soft-transition 的 success=true/false 契約全 pin
+   - **Section 3 — Regression guards（17 tests）**：只有 critical 帶 errorCode + requiresManualReconcile（4 反例）、logLevel 五段精確 pin、**phase-ordering invariant（row+config 都 fail surface row）**、serviceName-preservation property
+
+**Test 通過率（累計）：290 unit pass / 0 fail**：
+- 11 個 zero-dep test 檔全綠：publish-split(14), post-canary(15), transition-plan(23), stop-verdict(19), env-vars-update(45), teardown-verdict(52), start-verdict(59), safe-number(27), scan-report-schemas(15), scanner-safe-parse(11), stage-events(10) = 290
+- typecheck `npx tsc --noEmit` 全綠
+
+**架構決策（內含於 commit）**：
+- **Phase 間 gating（不堆寫到壞 state 上）**：第三段 only 在 deploymentRow.ok（或 skipped）時才跑；第四段 only 在 projectConfig.ok 時才跑。否則接 db 異常的下游寫只會疊更多 lying-state
+- **`partial-config-not-persisted` 算 success=true**：service 已起來，cache miss 是 next-cycle 才會踩到的問題，不該讓 operator 看到紅燈以為剛才那次 start 失敗
+- **`partial-transition-failed` 也算 success=true**：reconciler 會修，這是 round 10 既有保護；critical alarm 留給 row-mismatch（reconciler 救不了的那個）
+- **errorCode `'start_deployment_row_drift'`** 跟 round 14 的 `'env_vars_db_drift'`、round 15 的 `'project_teardown_orphans'` 同家族；前端可以用同一套 drift-handler pattern
+
+**這段沒做的事**：
+- Dashboard 端的 `start_deployment_row_drift` UI 還沒做（要顯示「Cloud Run 在跑但 DB 不知道」+ 提供 reconcile 按鈕）
+- 沒做 round 17 scout —— 候選池還剩 `discord-notifier.ts`（low）和 `setupCustomDomainWithDns`（mid，新發現的 mapping orphan）
+- 也沒實作把 round 13 的 stop-verdict 跟 round 16 的 start-verdict 共用 helper（兩邊各自寫 `DbWriteOutcome` / `TransitionOutcome`，shape 一樣但獨立宣告，因為兩個 verdict 的 phase semantics 不同，過早抽象會擋路）
+
+---
+
 **2026-04-26（autonomous overnight 第十五段）—— 專案 DELETE 不再悄悄丟下 GCP 孤兒，DB row 和 audit trail 在 partial failure 時被保住**
 
 第十四段把 PATCH /env-vars 收尾後，spawn architect 做 round-15 scout。Architect 自掃 services/ + routes/ 找到第三隻**比之前 backup 候選 (discord-notifier, startProjectService) 都更危險**的：
