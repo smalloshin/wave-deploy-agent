@@ -12,6 +12,7 @@ import {
   buildReviewsListSql,
   buildReviewsCountSql,
 } from '../services/reviews-query';
+import { scopeForRequest, type AuthMode } from '../services/projects-query';
 
 const reviewSchema = z.object({
   decision: z.enum(['approved', 'rejected']),
@@ -38,17 +39,23 @@ export async function reviewRoutes(app: FastifyInstance) {
     }
     const q = verdict.query;
 
+    // R33 — RBAC scope filter at SQL layer (closes IDOR on GET /api/reviews).
+    // Admin → see all; non-admin → only reviews on projects they own;
+    // anonymous + permissive → all (legacy compat); anonymous + enforced → denied.
+    const authMode = (process.env.AUTH_MODE === 'enforced' ? 'enforced' : 'permissive') as AuthMode;
+    const scope = scopeForRequest(request.auth, authMode);
+
     if (!wantsPaged) {
       // Legacy envelope: bot + existing dashboards rely on this shape.
       // Use the parsed status (default 'pending') but skip pagination.
-      const list = buildReviewsListSql({ ...q, limit: 200, offset: 0 });
+      const list = buildReviewsListSql({ ...q, limit: 200, offset: 0 }, scope);
       const result = await query(list.text, list.values);
       return { reviews: result.rows };
     }
 
     // Paged envelope
-    const list = buildReviewsListSql(q);
-    const count = buildReviewsCountSql(q);
+    const list = buildReviewsListSql(q, scope);
+    const count = buildReviewsCountSql(q, scope);
     const [listResult, countResult] = await Promise.all([
       query(list.text, list.values),
       query(count.text, count.values),

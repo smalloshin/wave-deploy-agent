@@ -36,6 +36,7 @@
  */
 
 import { z } from 'zod';
+import type { ListProjectsScope } from './projects-query.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -141,10 +142,27 @@ interface FilterFragment {
   values: unknown[];
 }
 
-function buildWhere(query: ValidatedReviewsQuery): FilterFragment {
+function buildWhere(
+  query: ValidatedReviewsQuery,
+  scope: ListProjectsScope = { kind: 'all' },
+): FilterFragment {
   const conds: string[] = [];
   const values: unknown[] = [];
   let i = 1;
+
+  // R33 — RBAC scope FIRST, so its placeholder is $1 and downstream user
+  // filters numbered after it. This puts the server-side enforcement at the
+  // top of the WHERE clause (auditors reading the SQL see "filtered by
+  // owner first, then user query"). For 'denied' we emit FALSE — not a
+  // parameterized predicate — so empty result regardless of other filters.
+  if (scope.kind === 'owner') {
+    conds.push(`p.owner_id = $${i++}`);
+    values.push(scope.ownerId);
+  } else if (scope.kind === 'denied') {
+    // Postgres optimizer short-circuits FALSE; no scan, no rows.
+    conds.push('FALSE');
+  }
+  // scope.kind === 'all' adds no predicate
 
   // Status maps to a SQL predicate, not a parameter (the predicate shape
   // differs per branch — IS NULL vs IS NOT NULL — so it's structural, not
@@ -173,11 +191,14 @@ function buildWhere(query: ValidatedReviewsQuery): FilterFragment {
   return { whereClause, values };
 }
 
-export function buildReviewsListSql(query: ValidatedReviewsQuery): {
+export function buildReviewsListSql(
+  query: ValidatedReviewsQuery,
+  scope: ListProjectsScope = { kind: 'all' },
+): {
   text: string;
   values: unknown[];
 } {
-  const { whereClause, values } = buildWhere(query);
+  const { whereClause, values } = buildWhere(query, scope);
   const limitParam = `$${values.length + 1}`;
   const offsetParam = `$${values.length + 2}`;
   const text = `
@@ -192,11 +213,14 @@ export function buildReviewsListSql(query: ValidatedReviewsQuery): {
   return { text, values: [...values, query.limit, query.offset] };
 }
 
-export function buildReviewsCountSql(query: ValidatedReviewsQuery): {
+export function buildReviewsCountSql(
+  query: ValidatedReviewsQuery,
+  scope: ListProjectsScope = { kind: 'all' },
+): {
   text: string;
   values: unknown[];
 } {
-  const { whereClause, values } = buildWhere(query);
+  const { whereClause, values } = buildWhere(query, scope);
   const text = `
     SELECT COUNT(*)::int AS total
       FROM reviews r

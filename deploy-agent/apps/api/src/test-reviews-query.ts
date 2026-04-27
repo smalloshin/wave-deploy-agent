@@ -11,7 +11,12 @@ import {
   parseReviewsListQuery,
   buildReviewsListSql,
   buildReviewsCountSql,
+  type ValidatedReviewsQuery,
 } from './services/reviews-query.js';
+
+// R33 RBAC scope test fixtures — UUIDs to mirror real owner_id shapes.
+const SAMPLE_USER_ID = '11111111-2222-3333-4444-555555555555';
+const SAMPLE_USER_ID_2 = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 let passed = 0;
 let failed = 0;
@@ -387,6 +392,162 @@ function assertEq<T>(actual: T, expected: T, name: string): void {
     assertEq(v.query.sinceIso, undefined, 'empty since → undefined');
     assertEq(v.query.untilIso, undefined, 'empty until → undefined');
   }
+})();
+
+// ─── Round 33: RBAC scope filter (IDOR fix for GET /api/reviews) ───────
+//
+// Reviews are linked to projects via scan_reports.project_id, and the
+// existing buildReviewsListSql/buildReviewsCountSql already JOIN
+// `projects p ON sr.project_id = p.id`. Round 33 adds an optional
+// `scope: ListProjectsScope` parameter to both SQL builders so the route
+// can pass a viewer's owner_id to filter at SQL time.
+//
+// The scope is server-side RBAC (derived from request.auth via
+// scopeForRequest), distinct from the user-supplied query filters. We
+// pass it as a separate parameter rather than folding it into
+// ValidatedReviewsQuery to keep the concern boundary clean (user filters
+// vs server enforcement).
+//
+// Default: { kind: 'all' } — preserves backwards compat for any internal
+// caller that doesn't have an auth context (CLI, tests).
+
+(() => {
+  // Default scope (omitted) → no owner filter, same SQL as before round 33.
+  const q: ValidatedReviewsQuery = {
+    limit: 50, offset: 0, status: 'pending',
+  };
+  const sql = buildReviewsListSql(q);
+  assert(!sql.text.includes('owner_id'), 'r33: default scope omits owner_id filter');
+})();
+
+(() => {
+  // scope=all → no owner filter
+  const q: ValidatedReviewsQuery = { limit: 50, offset: 0, status: 'pending' };
+  const sql = buildReviewsListSql(q, { kind: 'all' });
+  assert(!sql.text.includes('owner_id'), 'r33: scope=all omits owner_id filter');
+})();
+
+(() => {
+  // scope=owner → adds `p.owner_id = $X` predicate
+  const q: ValidatedReviewsQuery = { limit: 50, offset: 0, status: 'pending' };
+  const sql = buildReviewsListSql(q, { kind: 'owner', ownerId: SAMPLE_USER_ID });
+  assert(sql.text.includes('p.owner_id ='), 'r33: scope=owner adds p.owner_id predicate');
+  assert(sql.values.includes(SAMPLE_USER_ID), 'r33: ownerId in values');
+})();
+
+(() => {
+  // scope=denied → must produce a query that returns ZERO rows even if
+  // the route handler accidentally executes it.
+  const q: ValidatedReviewsQuery = { limit: 50, offset: 0, status: 'pending' };
+  const sql = buildReviewsListSql(q, { kind: 'denied' });
+  assert(
+    sql.text.includes('FALSE') || sql.text.includes('1=0') || sql.text.includes('1 = 0'),
+    'r33: scope=denied uses zero-row predicate',
+  );
+})();
+
+(() => {
+  // count SQL gets the same scope treatment
+  const q: ValidatedReviewsQuery = { limit: 50, offset: 0, status: 'pending' };
+  const sql = buildReviewsCountSql(q, { kind: 'owner', ownerId: SAMPLE_USER_ID });
+  assert(sql.text.includes('p.owner_id ='), 'r33: count SQL also gets owner_id predicate');
+  assert(sql.values.includes(SAMPLE_USER_ID), 'r33: count SQL ownerId in values');
+})();
+
+(() => {
+  // Scope predicate stacks with user filters: owner + status=decided + decision=approved + range
+  const q: ValidatedReviewsQuery = {
+    limit: 50, offset: 0, status: 'decided', decision: 'approved',
+    sinceIso: '2026-01-01T00:00:00Z', untilIso: '2026-12-31T23:59:59Z',
+  };
+  const sql = buildReviewsListSql(q, { kind: 'owner', ownerId: SAMPLE_USER_ID });
+  assert(sql.text.includes('r.decision IS NOT NULL'), 'r33: stacks with status filter');
+  assert(sql.text.includes('r.decision = $'), 'r33: stacks with decision filter');
+  assert(sql.text.includes('r.created_at >= $'), 'r33: stacks with since');
+  assert(sql.text.includes('r.created_at <= $'), 'r33: stacks with until');
+  assert(sql.text.includes('p.owner_id = $'), 'r33: stacks with owner scope');
+  // ownerId is in values, plus the user filter values
+  assert(sql.values.includes(SAMPLE_USER_ID), 'r33: ownerId is parameterized');
+  assert(sql.values.includes('approved'), 'r33: decision still parameterized');
+})();
+
+(() => {
+  // Placeholder numbering remains sequential when scope is added
+  const q: ValidatedReviewsQuery = { limit: 50, offset: 0, status: 'all' };
+  const sql = buildReviewsListSql(q, { kind: 'owner', ownerId: SAMPLE_USER_ID });
+  // values: [ownerId, limit, offset] — that's 3 placeholders
+  assertEq(sql.values, [SAMPLE_USER_ID, 50, 0], 'r33: scope-only values are [ownerId, limit, offset]');
+  // Should reference $1, $2, $3 in order
+  assert(sql.text.includes('$1') && sql.text.includes('$2') && sql.text.includes('$3'),
+    'r33: placeholders $1, $2, $3 present');
+})();
+
+(() => {
+  // Security regression: ownerId NEVER embedded as literal in SQL text
+  const evilLookingButValid = '99999999-aaaa-bbbb-cccc-dddddddddddd';
+  const q: ValidatedReviewsQuery = { limit: 50, offset: 0, status: 'pending' };
+  const sql = buildReviewsListSql(q, { kind: 'owner', ownerId: evilLookingButValid });
+  assert(
+    !sql.text.includes(evilLookingButValid),
+    'r33 security: ownerId not embedded as literal in SQL text',
+  );
+  assert(sql.values.includes(evilLookingButValid),
+    'r33 security: ownerId goes through pg parameter');
+})();
+
+(() => {
+  // Even SQL-injection-shaped ownerId stays in pg params
+  const evil = "'; DROP TABLE reviews;--";
+  const q: ValidatedReviewsQuery = { limit: 50, offset: 0, status: 'pending' };
+  const sql = buildReviewsListSql(q, { kind: 'owner', ownerId: evil });
+  assert(!sql.text.includes(evil), 'r33 security: SQL-injection-shaped ownerId not embedded');
+  assert(sql.values.includes(evil), 'r33 security: malicious value in values, not text');
+})();
+
+(() => {
+  // IDOR contract: viewer scope is locked to their ownerId. Even if the
+  // route handler somehow had a bug that passed the wrong scope, the SQL
+  // composer wouldn't widen back to 'all'. This asserts the type
+  // discriminant is honored.
+  const q: ValidatedReviewsQuery = { limit: 50, offset: 0, status: 'all' };
+  const aliceSql = buildReviewsListSql(q, { kind: 'owner', ownerId: SAMPLE_USER_ID });
+  const bobSql = buildReviewsListSql(q, { kind: 'owner', ownerId: SAMPLE_USER_ID_2 });
+  assert(aliceSql.values.includes(SAMPLE_USER_ID),
+    'r33 IDOR: alice scope SQL contains alice ownerId');
+  assert(!aliceSql.values.includes(SAMPLE_USER_ID_2),
+    'r33 IDOR: alice scope SQL does NOT contain bob ownerId');
+  assert(bobSql.values.includes(SAMPLE_USER_ID_2),
+    'r33 IDOR: bob scope SQL contains bob ownerId');
+  assert(!bobSql.values.includes(SAMPLE_USER_ID),
+    'r33 IDOR: bob scope SQL does NOT contain alice ownerId');
+})();
+
+(() => {
+  // JOIN preserved when scope is added — still need scan_reports + projects
+  // to evaluate p.owner_id at all.
+  const q: ValidatedReviewsQuery = { limit: 50, offset: 0, status: 'pending' };
+  const sql = buildReviewsListSql(q, { kind: 'owner', ownerId: SAMPLE_USER_ID });
+  assert(sql.text.includes('JOIN scan_reports sr'), 'r33: scan_reports JOIN preserved');
+  assert(sql.text.includes('JOIN projects p'), 'r33: projects JOIN preserved');
+})();
+
+(() => {
+  // ORDER BY + LIMIT/OFFSET preserved
+  const q: ValidatedReviewsQuery = { limit: 25, offset: 10, status: 'pending' };
+  const sql = buildReviewsListSql(q, { kind: 'owner', ownerId: SAMPLE_USER_ID });
+  assert(sql.text.includes('ORDER BY r.created_at DESC'), 'r33: ORDER BY preserved');
+  assert(sql.text.includes('LIMIT'), 'r33: LIMIT preserved');
+  assert(sql.text.includes('OFFSET'), 'r33: OFFSET preserved');
+})();
+
+(() => {
+  // count SQL ignores LIMIT/OFFSET but still applies scope
+  const q: ValidatedReviewsQuery = { limit: 25, offset: 10, status: 'pending' };
+  const sql = buildReviewsCountSql(q, { kind: 'owner', ownerId: SAMPLE_USER_ID });
+  assert(!sql.text.includes('LIMIT'), 'r33: count SQL has no LIMIT');
+  assert(!sql.text.includes('OFFSET'), 'r33: count SQL has no OFFSET');
+  assert(sql.text.includes('p.owner_id = $1'), 'r33: count SQL still scope-filtered');
+  assertEq(sql.values, [SAMPLE_USER_ID], 'r33: count SQL values is just [ownerId]');
 })();
 
 // ─── Summary ──────────────────────────────────────────────────────────
