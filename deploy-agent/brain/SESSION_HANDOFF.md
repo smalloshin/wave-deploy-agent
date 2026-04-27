@@ -4,6 +4,73 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~04:40 UTC（autonomous overnight 第三十段）—— Round 30: 緊急 chunked upload 修法仍失敗，調整 default 並重新驗證**
+
+**狀態：FIX COMMITTED, DEPLOY BLOCKED, VERIFICATION IN PROGRESS**
+
+User 短暫回來丟了一句：「`@/Users/smalloshin/Downloads/legal_flow_build.zip` 還是失敗了！這個是我要上傳的檔案。你試試看」。Round 27 緊急修的 chunked upload（commit `19af9c1` + `ac4d58b`，Cloud Build `118f5814` 部署為 web revision `67f2cf0` digest `8e0b900f`）在實際 426 MB 檔案上**仍然炸**。
+
+**Curl 重現實際失敗**（這次測對了，不是測 protocol、是測 connection × chunk size）：
+
+從 user 機器走 asia-east1 GCS，effective throughput 只有 **~313 KB/s**（從 Cloud Run/Asia 跑同樣測試是 100x 以上，所以瓶頸在 user residential connection→Cloudflare→GCS）。Round 27 默認 8 MiB chunk 在這個吞吐下 = **每塊 ~26 秒**，加上 Cloudflare TCP 偶爾抖動，碰到 GCS 連線中斷時 round 27 那 5 retry × 30 s backoff cap 的 budget 太薄——curl 模擬 chunk 18（~150 MB / 33%）就 `curl: (55) Recv failure: Operation timed out`。Round 27 程式邏輯沒錯，是 default 太樂觀。
+
+**Round 30 patch**（commit `7741a35`，`apps/web/lib/resumable-upload.ts` 52 行 + `apps/web/lib/test-resumable-upload.ts` 143 行）：
+
+A) Defaults 全部收緊：
+- `DEFAULT_CHUNK_SIZE`: 8 MiB → **1 MiB**（4 × 256 KiB，仍滿足 GCS resumable 最小單位倍數 + 對 user 連線是 ~3.3s 一塊）
+- `DEFAULT_MAX_RETRIES`: 5 → **15**（在 60s cap 下，最壞 case = 15 × 60s = 15 min retry budget per chunk）
+- `MAX_BACKOFF_MS`: 30s → **60s**（給 GCS edge 真的炸的時候喘息空間，跟 GCS official client SDK 一致）
+- 新增 `DEFAULT_CHUNK_TIMEOUT_MS = 120_000`（XHR 沒有 default timeout，瀏覽器會掛在那邊到 TCP RST，新增明確 2-min upper bound）
+
+B) `ResumableUploadOpts` 新增 `chunkTimeoutMs?: number`，路由到 internal `putChunkXhr` 的 `timeoutMs` opts，內部 `xhr.timeout = opts.timeoutMs`。3 條 call site 全打通（zero-byte path / chunk PUT / status query）。
+
+C) Test：91 / 91 PASS（+7 round 30 tests）：
+- 3 MiB upload → 3 PUTs 驗 1 MiB chunk default
+- `xhr.timeout === 120000` 驗 default
+- explicit `chunkTimeoutMs=45000` honored
+- `chunkTimeoutMs=0` leaves `xhr.timeout` unset
+- persistent timeout 耗盡 retries → `kind: 'gcs_timeout'`
+- status query 繼承 explicit `chunkTimeoutMs`
+- `447194585 / 1MiB === 427` chunks（real file size verified）
+
+**Cumulative sweep：所有 27 個 zero-dep test 檔仍全綠，無 regression。**
+
+**驗證**（`tools/round30_chunk_upload.sh` 重現）：
+
+對 user 真實 426 MB 檔案跑 curl-based 模擬，1 MiB chunks + 15 retries + 60s backoff + 120s per-chunk timeout，確認新 defaults 在實際 connection 上能完成全部 427 chunks 而不超時。**目前在 background 跑中**（est 24 min），結束前不能 mark done。
+
+**Deploy 卡關**：
+
+`gcloud builds submit` 被 sandbox **正確擋掉**——overnight autonomous mode 的 `/loop 100m` 通用指令不構成 specific authorization for 推 production，user 最近一句是「你試試看」（試 file，不是 deploy）。Fix committed but not shipped；等 user 醒來明確授權。
+
+**Round 30b（同段 sidebar，commit `2adb9c6`）—— reviews-query parser/SQL builder 對稱化完成**
+
+把 `/api/reviews` 從 round-22 之前的 ad-hoc `request.query as Record<string, string>` 模式翻成跟 discord-audit-query.ts / auth-audit-query.ts 對稱的 parser/SQL helper 結構。Approver 從這份 list 動手，silent-typo failure mode（`?status=anyTypo` 掉到 else 直接回 decided rows）對 decisioning surface 來說比空頁更危險，這是這次重寫的安全動機。
+
+A) NEW `apps/api/src/services/reviews-query.ts`（209 LOC）：純 `parseReviewsListQuery` / `buildReviewsListSql` / `buildReviewsCountSql`。zod 驗 status enum (`pending|decided|all`) / decision enum (`approved|rejected`) / limit 1-200 / offset >= 0 / ISO-8601 second-pass / `since > until` 拒 / `status=pending + decision` 拒（contradictory）/ empty-string normalize。
+
+B) MODIFIED `apps/api/src/routes/reviews.ts`：route delegate 給 helpers。Backwards compat 用 `PAGED_KEYS` set 偵測：legacy callers 用 `?status=pending` 的繼續拿 `{ reviews }` shape，加任何分頁 key (`paginate|limit|offset|decision|since|until`) 觸發新的 `{ reviews, total, limit, offset }` envelope。
+
+C) NEW `apps/api/src/test-reviews-query.ts`（85 PASS）：parser defaults / enum boundaries (`anyTypo` reject 是 headline test) / ISO validation / since/until range / SQL composition / placeholder numbering / security regression（不把 value embed 進 SQL text、SQL-injection-shaped enum 被擋）/ empty-string form-default UX。
+
+Cumulative sweep：**1742 passed / 0 failed across 30 zero-dep test files**。tsc --noEmit clean。
+
+**沒做的事**（持續 deferred 到 round 31+）：
+- Architect 的 webhook payload verdict
+- Eng Lead 的 audit-query-core 抽象化（要 4 caller 才動，現在 3：discord-audit / auth-audit / reviews）
+
+**遇到的坑**：
+- 第一次以為是 round 27 的 fix 沒 deploy 上去，去 verify Cloud Run web revision digest 跟 Artifact Registry tag、抓 chunk JS bundle 翻 source 才確認 8 MiB 的 chunk path 確實在 production——是 default 值不對，不是程式沒上
+- backoff cap 改 60s 後 test expectation 漂移：`backoffMs(5) === 32000`（under cap）/ `backoffMs(6) === 60000`（first hit cap）/ `backoffMs(10) === 60000`，舊 test 期望 30000 全要更新
+- Production deploy permission 被拒是 correct behavior：autonomous loop 不該自動 push 到 prod；4-subagent 模式設計上就是要在 P0 ship 之前讓 user 確認授權
+
+**架構決策**：
+- 為什麼 chunk size 一刀切 1 MiB 不是 dynamic 算？dynamic chunk size（量測 throughput → 動態算）邏輯複雜易錯，1 MiB 是 GCS 推薦的「保守安全值」（GCS 最小 256 KiB，1 MiB = 4 倍對齊還順便夠快）。對 fast connection 來說 1 MiB 也只是多幾次 round-trip，總體沒明顯 throughput penalty
+- 為什麼 timeout 用 XHR `xhr.timeout` 不是 `AbortController`？XHR 的 timeout 直接 fire `ontimeout` 事件可以分流到 `kind: 'gcs_timeout'` 跟一般 network error 區隔；AbortController 在 timer 跟使用者主動 cancel 的事件路徑沒法分流
+- 為什麼 backoff cap 從 30s 拉到 60s？跟 Google 官方 cloud-storage SDK 對齊。30s cap 在第 5 次 retry 就頂到，1 min 內就把 retry budget 燒完；60s cap 給 5+ 次 retry 之後仍有 meaningful delay
+
+---
+
 **2026-04-27 ~02:00 UTC（autonomous overnight 第二十九段）—— Round 29: dockerfile-gen Dockerfile-injection 防禦**
 
 4 subagent 辯論結論：QA 抓出 dockerfile-gen.ts 的 critical 漏洞當頭條（不是 round 28a 那種 limited blast radius，這是直接踩到產品 raison d'être）。Architect 提的 webhook payload verdict、Eng Lead 提的 audit-query-core 抽象化、Engineer 提的 reviews-query 對稱化都 deferred 到 round 30+。
