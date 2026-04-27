@@ -28,7 +28,9 @@ import {
   isGranted,
   type AccessCheckInput,
 } from '../services/access-denied-verdict';
-import type { Project, ProjectResource, ProjectWithResources, ProjectGroup } from '@deploy-agent/shared';
+import { scopeForRequest, type AuthMode } from '../services/projects-query';
+import { groupProjects, filterProjectsByGroupId } from '../services/project-groups-pure';
+import type { Project, ProjectResource, ProjectWithResources } from '@deploy-agent/shared';
 
 async function enrichProjectWithResources(project: Project): Promise<ProjectWithResources> {
   const deployments = await getDeploymentsByProject(project.id);
@@ -119,63 +121,41 @@ async function enrichProjectWithResources(project: Project): Promise<ProjectWith
   };
 }
 
-function groupProjects(projects: ProjectWithResources[]): ProjectGroup[] {
-  const groups = new Map<string, ProjectWithResources[]>();
-
-  for (const p of projects) {
-    const gid = (p.config?.projectGroup as string) ?? p.id;
-    if (!groups.has(gid)) groups.set(gid, []);
-    groups.get(gid)!.push(p);
-  }
-
-  const out: ProjectGroup[] = [];
-  for (const [gid, services] of groups.entries()) {
-    // Sort services: backend first (deploy order), then alphabetical
-    services.sort((a, b) => {
-      const ra = (a.config?.serviceRole as string) ?? 'z';
-      const rb = (b.config?.serviceRole as string) ?? 'z';
-      if (ra !== rb) return ra.localeCompare(rb);
-      return a.name.localeCompare(b.name);
-    });
-
-    const groupName = (services[0]?.config?.groupName as string) ?? services[0]?.name ?? gid;
-    const createdAt = services.reduce<Date>((acc, s) => (s.createdAt < acc ? s.createdAt : acc), services[0].createdAt);
-    const updatedAt = services.reduce<Date>((acc, s) => (s.updatedAt > acc ? s.updatedAt : acc), services[0].updatedAt);
-
-    out.push({
-      groupId: gid,
-      groupName,
-      createdAt,
-      updatedAt,
-      serviceCount: services.length,
-      liveCount: services.filter((s) => s.status === 'live').length,
-      stoppedCount: services.filter((s) => s.status === 'stopped').length,
-      failedCount: services.filter((s) => s.status === 'failed').length,
-      services,
-    });
-  }
-
-  // Most recently updated groups first
-  out.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  return out;
-}
+// `groupProjects` extracted to services/project-groups-pure.ts in round 32 so
+// it's testable in isolation alongside the RBAC scope-filter contract.
 
 export async function projectGroupRoutes(app: FastifyInstance) {
-  // List all groups with services + resources
-  app.get('/api/project-groups', async () => {
-    const projects = await listProjects();
+  // Round 32 — RBAC scope-filter on the groups view (OWASP A01:2021 IDOR).
+  //
+  // Both GET handlers below derive a scope from `request.auth` and pass it
+  // to `listProjects(scope)`. The SQL filter happens at the projects query
+  // layer; `filterProjectsByGroupId` and `groupProjects` then aggregate the
+  // already-filtered rows. This means a viewer never sees a group built from
+  // another user's projects (the rows are gone before they reach
+  // `enrichProjectWithResources`, which also avoids wasted GCP API calls).
+  //
+  // Round 25 RBAC fixed mutating routes; round 31 fixed `GET /api/projects`;
+  // round 32 closes the silent regression where this side-door GET handler
+  // was still calling `listProjects()` with no scope and leaking everything.
+  //
+  // Reference: brain/decisions/2026-04-27-rbac-scope-list-pattern.md
+  const authMode = (process.env.AUTH_MODE === 'enforced' ? 'enforced' : 'permissive') as AuthMode;
+
+  // List all groups with services + resources (scope-filtered)
+  app.get('/api/project-groups', async (request) => {
+    const scope = scopeForRequest(request.auth, authMode);
+    const projects = await listProjects(scope);
     const enriched = await Promise.all(projects.map(enrichProjectWithResources));
     const groups = groupProjects(enriched);
     return { groups };
   });
 
-  // Get a single group
+  // Get a single group (scope-filtered before the groupId match)
   app.get<{ Params: { groupId: string } }>('/api/project-groups/:groupId', async (request, reply) => {
-    const projects = await listProjects();
+    const scope = scopeForRequest(request.auth, authMode);
+    const projects = await listProjects(scope);
     const enriched = await Promise.all(
-      projects
-        .filter((p) => (p.config?.projectGroup as string) === request.params.groupId || p.id === request.params.groupId)
-        .map(enrichProjectWithResources),
+      filterProjectsByGroupId(projects, request.params.groupId).map(enrichProjectWithResources),
     );
     if (enriched.length === 0) return reply.status(404).send({ error: 'Group not found' });
     const [group] = groupProjects(enriched);

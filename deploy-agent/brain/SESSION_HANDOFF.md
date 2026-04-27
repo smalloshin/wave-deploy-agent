@@ -4,6 +4,54 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~06:15 UTC（autonomous overnight 第三十二段）—— Round 32: GET /api/project-groups RBAC scope-filter（IDOR audit follow-through 第 1/3）**
+
+**狀態：FIX COMMITTED `<round-32-sha>`，DEPLOY BLOCKED（同 R31，行為改變需 boss 授權）**
+
+接續 round 31 audit 找到的 3 個 P0 list IDOR。4-subagent 辯論結論：先修 `project-groups`
+（最痛——response 是 enriched per-project resources + GCP service URLs + custom domains
++ SSL status，比單純 projects metadata 洩更多）。
+
+A) NEW `apps/api/src/services/project-groups-pure.ts`（86 LOC pure helpers）：
+- `groupProjects(projects)` — 從 `routes/project-groups.ts:122-161` 搬出來（原本就是 pure 但鎖在 route 檔不可測）
+- `filterProjectsByGroupId(projects, groupId)` — `:177` 那條 inline JS filter 提煉成 named helper
+- 為什麼不另開 `project-groups-query.ts`：groups view 是 projects 的 *aggregation*，不是獨立 resource，scope/SQL 已經由 `projects-query.ts` 處理；複製一份反而 god-helper
+
+B) MODIFIED `apps/api/src/routes/project-groups.ts:163-200`：
+- Import `scopeForRequest, AuthMode` from `projects-query`
+- Import `groupProjects, filterProjectsByGroupId` from new pure module（remove inline def）
+- Both GET handlers derive `scope = scopeForRequest(request.auth, authMode)` 然後 pass 給 `listProjects(scope)`
+- POST `/api/project-groups/:groupId/actions` 不在這輪修（mutating，需 per-target `requireOwnerOrAdmin` 不是 list-scope filter）
+
+C) NEW `apps/api/src/test-project-groups-scope.ts`（38 PASS，超 19 minimum）：
+- `filterProjectsByGroupId` match by `config.projectGroup` / 自身 id / both / unknown / IDOR contract（**永遠不會 widen** input — viewer 用任何 groupId 都不可能看到別人的 group）
+- `groupProjects` 單 service / 多 service bucketing / 不同 group 分開 / 各 status 計數正確 / sort（backend-first deploy order + recent group first）/ no-Cartesian product
+- E2E：viewer scope 解析正確 + groupProjects 在 scope-filtered input 上的 IDOR contract / admin scope 看到 mixed-owner group 的兩邊
+- Anonymous + permissive→all（legacy compat）/ enforced→denied / empty role_name→owner（fail closed）/ reviewer→owner（reviewer 不是 admin）
+- Snapshot test 鎖 partial-membership 行為：viewer 看 mixed-owner group 時 `serviceCount` 反映 scope-filtered subset，**NOT** full cross-owner true total（這是正確 RBAC outcome；未來 refactor 想「修」這個 count 會被 test 擋）
+- Type-only AuthContext shape guard（middleware 改 interface 時 compile-time fail）
+
+Cumulative sweep：**1805 / 1805 PASS across 32 zero-dep test files**（was 1767/31 at end of R31）。tsc clean。
+
+D) ADR `brain/decisions/2026-04-27-rbac-scope-list-pattern.md` 加 "Round 32 Follow-Through" section，登記做法 + IDOR 不變式 + snapshot rationale + 5th-caller-trigger 規則。
+
+**附帶好處**（debate 沒提，動完才看到）：scope-filter 在 `enrichProjectWithResources` 之前，所以 viewer 看 groups 時順便少做 `O(N projects)` 個 GCP API call（Cloud Run / domain mapping / Redis）。RBAC 修法 = 順便省 GCP cost。
+
+**Audit follow-through 進度**：
+- ✅ R31: `GET /api/projects` (commit `6c2d9a4`)
+- ✅ R32: `GET /api/project-groups` LIST + GET-by-id (this round)
+- ⏸️ R33: `GET /api/reviews`（要 JOIN scan_reports → projects 才能拿 owner_id）
+- ⏸️ R34: `GET /api/deploys`（直接 JOIN projects）
+- ⏸️ R35+: 6 個 P1 single-resource endpoint（Pattern B：`requireOwnerOrAdmin` per-record）
+- ⏸️ R??: `POST /api/project-groups/:groupId/actions` per-target check（mutating，出 list 範疇）
+
+**遇到的坑**：
+- 一開始想直接在 route 裡 inline 用 `scopeForRequest`（不抽純 helper），QA 反對：抽出來才能 zero-dep test 鎖 IDOR contract。改成 extract pure module。
+- `ProjectGroup` import 在 `routes/project-groups.ts` 變 dead import（原本是 `groupProjects` 的 return type），strict mode 沒報但清掉。
+- POST 那個 handler 也 call `listProjects()` 沒 scope（也是 silent IDOR），但 verdict 明確說「out of scope this round」——POST 邏輯是先 find 全部 members 再 per-target verdict，跟 list 不同 pattern；強塞會破現有 `buildAccessVerdict` 流程。R?? 再修。
+
+---
+
 **2026-04-27 ~05:30 UTC（autonomous overnight 第三十一段）—— Round 31: GET /api/projects RBAC scope-filter 修 IDOR + 完整 audit 9 個 endpoint**
 
 **狀態：FIX COMMITTED `6c2d9a4`，DEPLOY BLOCKED（行為改變需 boss 授權），AUDIT FILED**

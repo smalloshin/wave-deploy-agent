@@ -159,6 +159,53 @@ Round 31 同時做了完整 audit。除了已修的 `GET /api/projects`，還有
 
 P0 應在 Round 32+ 依此 pattern 一次 boil 完。P1 用 Pattern B（per-resource check）。
 
+## Round 32 Follow-Through (2026-04-27)
+
+`GET /api/project-groups` 兩個 handler 修完，commit `<round-32>`。
+
+**做法**：因為 groups view 是 projects 的 *aggregation* 不是獨立 resource，沒新增
+`project-groups-query.ts`。改成：
+
+1. **Extract pure aggregation helpers** 到 `apps/api/src/services/project-groups-pure.ts`：
+   - `groupProjects(projects)` — 從 `routes/project-groups.ts:122-161` 搬出來
+   - `filterProjectsByGroupId(projects, groupId)` — `:177` 那條 inline filter 提煉成 named helper
+2. **Re-use existing `scopeForRequest`** — 不複製 verdict 邏輯，直接 import from
+   `services/projects-query.ts`
+3. **兩個 GET handler**（`/api/project-groups` LIST + `/api/project-groups/:groupId` GET-by-id）
+   都從 `request.auth` derive scope，pass 給 `listProjects(scope)`，下游 SQL 自動 filter
+4. **POST `/api/project-groups/:groupId/actions` 不在這輪修**（mutating，需要 per-target
+   `requireOwnerOrAdmin` 而不是 list-scope filter）
+
+**IDOR 不變式**（test 鎖死）：`filterProjectsByGroupId` **永遠不會 widen** input。
+所以只要 SQL 層已經 scope-filter（admin → all rows；viewer → 只有自己 ownerId 的 rows），
+output groups 就 IDOR-safe。一個 viewer 不可能透過任何 groupId 猜測值看到別人的 group。
+
+**附帶好處**：scope-filter 在 `enrichProjectWithResources` 之前，所以 viewer 看 groups
+時也少做 `O(N projects)` 個 GCP API call（Cloud Run service detail / domain mapping
+/ Redis allocation 查詢）。RBAC 修法順便省 GCP cost。
+
+**Snapshot test**（locked behavior）：viewer 看 mixed-owner 的 group 時，`serviceCount`
+反映**scope-filtered subset**（不是全 owner 的 true total）。例：Alice + Bob 共享
+`projectGroup=shared-group`，viewer Alice 看 `serviceCount=1`（只有自己的）不是 2。
+這是正確 RBAC outcome；未來 refactor 想「修」這個 count 之前，這個 test 會擋。
+
+**新測試**：`apps/api/src/test-project-groups-scope.ts` — 38 PASS。Cumulative sweep
+**1805 / 1805 PASS across 32 zero-dep files**（was 1767/31 at end of round 31）。
+
+**Audit follow-through 進度**：
+- ✅ R31: `GET /api/projects` (commit `6c2d9a4`)
+- ✅ R32: `GET /api/project-groups` LIST + GET-by-id (this round)
+- ⏸️ R33: `GET /api/reviews`（要 join scan_reports → projects 才能拿 owner_id）
+- ⏸️ R34: `GET /api/deploys`（直接 join projects 就行）
+- ⏸️ R35+: 6 個 P1 single-resource endpoint (Pattern B)
+- ⏸️ R??: `POST /api/project-groups/:groupId/actions` per-target check (mutating, 出 list 範疇)
+
+**5th-caller-trigger for `audit-query-core` abstraction**：目前 4 callers
+（discord-audit / auth-audit / reviews / projects）。如果 R33 reviews refactor
+後仍是「parser + SQL builder + scope」這同樣三件事，且 R34 deploys 也是同樣
+shape，那 R34 就是觸發點，再決定要不要抽 generic `audit-query-core`。在那之前
+deferred。
+
 ## References
 
 - Commit: `6c2d9a4` — fix(api): RBAC scope-filter on GET /api/projects (round 31)
