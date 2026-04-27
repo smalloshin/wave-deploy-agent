@@ -7,6 +7,7 @@ import { fetchBuildLogOnce } from '../services/build-log-poller';
 import { diagnoseDeployment, type DiagnosticKind } from '../services/deployment-diagnostics';
 import { scopeForRequest, type AuthMode } from '../services/projects-query';
 import { buildListDeploysSql } from '../services/deploys-query';
+import { requireOwnerOrAdmin } from '../services/owner-check';
 
 export async function deployRoutes(app: FastifyInstance) {
   // List deployments
@@ -24,20 +25,28 @@ export async function deployRoutes(app: FastifyInstance) {
   // Get single deployment
   app.get<{ Params: { id: string } }>('/api/deploys/:id', async (request, reply) => {
     const result = await query(
-      `SELECT d.*, p.name as project_name, p.slug as project_slug
+      `SELECT d.*, p.name as project_name, p.slug as project_slug, p.owner_id as project_owner_id
        FROM deployments d
        JOIN projects p ON d.project_id = p.id
        WHERE d.id = $1`,
       [request.params.id]
     );
     if (result.rows.length === 0) return reply.status(404).send({ error: 'Deployment not found' });
-    return { deployment: result.rows[0] };
+    // R35 — Pattern B owner check (closes IDOR on GET /api/deploys/:id).
+    const row = result.rows[0];
+    const owner = await requireOwnerOrAdmin(
+      request, reply,
+      { id: row.project_id, ownerId: row.project_owner_id },
+      'deployment_read',
+    );
+    if (!owner.ok) return;
+    return { deployment: row };
   });
 
   // Get live SSL certificate status for a deployment
   app.get<{ Params: { id: string } }>('/api/deploys/:id/ssl-status', async (request, reply) => {
     const result = await query(
-      `SELECT d.custom_domain, d.ssl_status, d.project_id, p.config, p.status as project_status
+      `SELECT d.custom_domain, d.ssl_status, d.project_id, p.config, p.status as project_status, p.owner_id as project_owner_id
        FROM deployments d
        JOIN projects p ON d.project_id = p.id
        WHERE d.id = $1`,
@@ -47,6 +56,15 @@ export async function deployRoutes(app: FastifyInstance) {
     if (result.rows.length === 0) {
       return reply.status(404).send({ error: 'Deployment not found' });
     }
+
+    // R35 — Pattern B owner check (closes IDOR on GET /api/deploys/:id/ssl-status).
+    // SSL status leaks custom_domain — same sensitivity as the deploy itself.
+    const ownerCheck = await requireOwnerOrAdmin(
+      request, reply,
+      { id: result.rows[0].project_id, ownerId: result.rows[0].project_owner_id },
+      'deployment_ssl_status_read',
+    );
+    if (!ownerCheck.ok) return;
 
     const row = result.rows[0];
     const domain = row.custom_domain as string;
@@ -369,8 +387,24 @@ export async function deployRoutes(app: FastifyInstance) {
 
   // Get deployment logs (state transitions)
   app.get<{ Params: { id: string } }>('/api/deploys/:id/logs', async (request, reply) => {
-    const deploy = await query('SELECT project_id FROM deployments WHERE id = $1', [request.params.id]);
+    const deploy = await query(
+      `SELECT d.project_id, p.owner_id as project_owner_id
+       FROM deployments d
+       JOIN projects p ON d.project_id = p.id
+       WHERE d.id = $1`,
+      [request.params.id]
+    );
     if (deploy.rows.length === 0) return reply.status(404).send({ error: 'Deployment not found' });
+
+    // R35 — Pattern B owner check (closes IDOR on GET /api/deploys/:id/logs).
+    // State transitions leak deploy timing, build durations, error messages
+    // — same sensitivity surface as the deployment row itself.
+    const ownerCheck = await requireOwnerOrAdmin(
+      request, reply,
+      { id: deploy.rows[0].project_id, ownerId: deploy.rows[0].project_owner_id },
+      'deployment_logs_read',
+    );
+    if (!ownerCheck.ok) return;
 
     const transitions = await query(
       `SELECT * FROM state_transitions

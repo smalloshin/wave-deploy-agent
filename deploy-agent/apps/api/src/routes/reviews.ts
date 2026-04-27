@@ -13,6 +13,7 @@ import {
   buildReviewsCountSql,
 } from '../services/reviews-query';
 import { scopeForRequest, type AuthMode } from '../services/projects-query';
+import { requireOwnerOrAdmin } from '../services/owner-check';
 
 const reviewSchema = z.object({
   decision: z.enum(['approved', 'rejected']),
@@ -73,7 +74,7 @@ export async function reviewRoutes(app: FastifyInstance) {
     const result = await query(
       `SELECT r.*, sr.project_id, sr.semgrep_findings, sr.trivy_findings,
               sr.llm_analysis, sr.auto_fixes, sr.threat_summary, sr.cost_estimate,
-              p.name as project_name, p.slug as project_slug
+              p.name as project_name, p.slug as project_slug, p.owner_id as project_owner_id
        FROM reviews r
        JOIN scan_reports sr ON r.scan_report_id = sr.id
        JOIN projects p ON sr.project_id = p.id
@@ -82,7 +83,21 @@ export async function reviewRoutes(app: FastifyInstance) {
     );
 
     if (result.rows.length === 0) return reply.status(404).send({ error: 'Review not found' });
-    return { review: result.rows[0] };
+
+    // R35 — Pattern B owner check (closes IDOR on GET /api/reviews/:id).
+    // Single-review payload is the most sensitive read in the system:
+    // semgrep + trivy findings, LLM analysis, threat summary, auto-fix
+    // proposals, cost estimate. Round 33 scope-filtered the LIST; this
+    // closes the matching per-record gap.
+    const row = result.rows[0];
+    const owner = await requireOwnerOrAdmin(
+      request, reply,
+      { id: row.project_id, ownerId: row.project_owner_id },
+      'review_read',
+    );
+    if (!owner.ok) return;
+
+    return { review: row };
   });
 
   // Submit review decision

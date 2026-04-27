@@ -35,6 +35,13 @@ export async function versioningRoutes(app: FastifyInstance) {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
 
+    // R35 — Pattern B owner check (closes IDOR on GET /api/projects/:id/versions).
+    // Versions list leaks the same infra metadata as GET /api/deploys
+    // (cloudRunService, cloudRunUrl, customDomain, imageUri) — was missing
+    // from R34's list-endpoint sweep because it's parameterized by project.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'versions_read');
+    if (!owner.ok) return;
+
     const deployments = await getDeploymentsByProject(project.id);
 
     return {

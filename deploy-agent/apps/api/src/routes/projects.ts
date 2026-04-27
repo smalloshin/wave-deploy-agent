@@ -233,6 +233,12 @@ export async function projectRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
     const project = await getProject(request.params.id);
     if (!project) return reply.status(404).send({ error: 'Project not found' });
+    // R35 — Pattern B owner check (closes IDOR on GET /api/projects/:id).
+    // The single-project endpoint leaks the same metadata as the LIST
+    // endpoint that R31 already scope-filtered (slug, owner, config). Per
+    // the round-31 audit findings, this is the matching read-side P1.
+    const owner = await requireOwnerOrAdmin(request, reply, project, 'project_read');
+    if (!owner.ok) return;
     return { project };
   });
 
