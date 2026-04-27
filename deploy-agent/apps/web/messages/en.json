@@ -505,12 +505,20 @@
     "audit": {
       "all": "All",
       "refresh": "Refresh",
+      "reset": "Reset filters",
       "time": "Time",
       "user": "User",
       "action": "Action",
       "resource": "Resource",
       "ip": "IP",
-      "metadata": "Metadata"
+      "metadata": "Metadata",
+      "userIdPlaceholder": "User UUID",
+      "ipPlaceholder": "IP address",
+      "since": "From",
+      "until": "Until",
+      "prev": "← Prev",
+      "next": "Next →",
+      "empty": "No matching audit entries."
     },
     "discordAudit": {
       "all": "All",

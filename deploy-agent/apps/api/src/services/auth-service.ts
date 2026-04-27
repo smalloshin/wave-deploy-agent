@@ -304,6 +304,46 @@ export async function listAuditLog(limit = 100): Promise<unknown[]> {
   return result.rows;
 }
 
+/**
+ * Filter-aware audit log read. Caller must already have parsed + validated
+ * the query via parseAuthAuditQuery; this just executes the parameterized
+ * SQL composer's output and returns rows + total for pagination UI.
+ */
+export async function listAuditLogFiltered(opts: {
+  text: string;
+  values: unknown[];
+}): Promise<unknown[]> {
+  const result = await query(opts.text, opts.values);
+  return result.rows;
+}
+
+export async function countAuditLogFiltered(opts: {
+  text: string;
+  values: unknown[];
+}): Promise<number> {
+  const result = await query(opts.text, opts.values);
+  const row = result.rows[0] as { total?: number } | undefined;
+  return row?.total ?? 0;
+}
+
+/** Single-row drill-down. Returns null if not found. */
+export async function getAuditLogEntry(id: string): Promise<unknown | null> {
+  // id comes from the URL path; safePositiveInt-style guard so SQL never
+  // sees garbage, even though pg parameter binding would catch it.
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) return null;
+  const result = await query(
+    `SELECT al.id, al.user_id, u.email, al.action, al.resource,
+            al.ip_address, al.metadata, al.created_at
+       FROM auth_audit_log al
+       LEFT JOIN users u ON u.id = al.user_id
+      WHERE al.id = $1
+      LIMIT 1`,
+    [numericId]
+  );
+  return result.rows[0] ?? null;
+}
+
 // ─── Permission check ───────────────────────────────────────
 
 export function hasPermission(perms: Permission[], required: Permission): boolean {

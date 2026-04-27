@@ -14,10 +14,18 @@ import {
   listApiKeysForUser,
   revokeApiKey,
   listAuditLog,
+  listAuditLogFiltered,
+  countAuditLogFiltered,
+  getAuditLogEntry,
   logAuth,
 } from '../services/auth-service.js';
 import { SESSION_COOKIE } from '../middleware/auth.js';
 import { safePositiveInt } from '../utils/safe-number.js';
+import {
+  parseAuthAuditQuery,
+  buildAuthAuditListSql,
+  buildAuthAuditCountSql,
+} from '../services/auth-audit-query.js';
 
 const VALID_PERMISSIONS: Permission[] = [
   'projects:read','projects:write','projects:deploy','projects:delete',
@@ -290,15 +298,48 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET /api/auth/audit-log (users:manage)
-  app.get('/api/auth/audit-log', async (request) => {
-    // ?limit=abc would give Number(...) === NaN → Math.min(NaN, 1000) === NaN
-    // → SQL `LIMIT NaN` blows up. safePositiveInt clamps to [1, 1000].
-    const limit = safePositiveInt(
-      (request.query as { limit?: string })?.limit,
-      100,
-      { max: 1000 },
-    );
-    const entries = await listAuditLog(limit);
-    return { entries };
+  // Backwards-compatible: with no query params returns the same {entries} shape.
+  // With filters or paginate=true returns {entries, total, limit, offset} for
+  // admin dashboard pagination UI.
+  app.get('/api/auth/audit-log', async (request, reply) => {
+    const raw = (request.query ?? {}) as Record<string, unknown>;
+
+    // Legacy mode: only ?limit, no other filter, no paginate=true → keep old shape.
+    const onlyLegacyLimit =
+      Object.keys(raw).length === 0 ||
+      (Object.keys(raw).length === 1 && 'limit' in raw && raw.paginate !== 'true');
+    if (onlyLegacyLimit) {
+      const limit = safePositiveInt(raw.limit, 100, { max: 1000 });
+      const entries = await listAuditLog(limit);
+      return { entries };
+    }
+
+    const verdict = parseAuthAuditQuery(raw);
+    if (verdict.kind === 'invalid') {
+      reply.code(400);
+      return { error: verdict.reason };
+    }
+    const listSql = buildAuthAuditListSql(verdict.query);
+    const countSql = buildAuthAuditCountSql(verdict.query);
+    const [entries, total] = await Promise.all([
+      listAuditLogFiltered(listSql),
+      countAuditLogFiltered(countSql),
+    ]);
+    return {
+      entries,
+      total,
+      limit: verdict.query.limit,
+      offset: verdict.query.offset,
+    };
+  });
+
+  // GET /api/auth/audit-log/:id (users:manage) — drill-down
+  app.get<{ Params: { id: string } }>('/api/auth/audit-log/:id', async (request, reply) => {
+    const entry = await getAuditLogEntry(request.params.id);
+    if (!entry) {
+      reply.code(404);
+      return { error: 'audit log entry not found' };
+    }
+    return { entry };
   });
 }

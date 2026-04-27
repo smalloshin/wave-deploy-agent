@@ -100,6 +100,7 @@ export const ROUTE_PERMISSIONS: Array<[string, Permission]> = [
   ['PATCH:/api/auth/users/:id', 'users:manage'],
   ['DELETE:/api/auth/users/:id', 'users:manage'],
   ['GET:/api/auth/audit-log', 'users:manage'],
+  ['GET:/api/auth/audit-log/:id', 'users:manage'],
 ];
 
 // Public routes — skip auth entirely.

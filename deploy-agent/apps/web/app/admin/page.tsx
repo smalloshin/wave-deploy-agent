@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, FormEvent } from 'react';
+import { useState, useEffect, useCallback, FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../lib/auth';
@@ -623,55 +623,166 @@ function CreateApiKeyForm({ onDone, onCancel }: { onDone: (rawKey: string) => vo
 
 // ─── Audit Log ───────────────────────────────────────────────
 
+// Round 28b: server-side filter + pagination + IP/UUID/date range.
+// Uses /api/auth/audit-log with filter params. Old behavior preserved
+// because the API stays backwards-compatible: with no filters and no
+// paginate=true, it still returns {entries} only.
+const AUDIT_PAGE_SIZE = 50;
+
 function AuditLogSection() {
   const t = useTranslations('admin.audit');
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
+  const [total, setTotal] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<string>('');
+  const [actionFilter, setActionFilter] = useState<string>(''); // pill click
+  const [userIdFilter, setUserIdFilter] = useState<string>('');
+  const [ipFilter, setIpFilter] = useState<string>('');
+  const [sinceFilter, setSinceFilter] = useState<string>('');
+  const [untilFilter, setUntilFilter] = useState<string>('');
+  const [offset, setOffset] = useState<number>(0);
+  const [loading, setLoading] = useState<boolean>(false);
 
-  async function refresh() {
+  // Action-counts pills are loaded once from a wider sample so we can show
+  // counts even when filtered. Without this, switching action would lose
+  // the rest of the action pills.
+  const [actionCounts, setActionCounts] = useState<Record<string, number>>({});
+
+  async function loadActionCounts() {
     try {
       const data = await apiGet<{ entries: AuditEntry[] }>('/api/auth/audit-log?limit=500');
-      setEntries(data.entries);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load audit log');
+      const counts = data.entries.reduce<Record<string, number>>((acc, e) => {
+        acc[e.action] = (acc[e.action] ?? 0) + 1;
+        return acc;
+      }, {});
+      setActionCounts(counts);
+    } catch {
+      // pills are nice-to-have; do not block the table on this
     }
   }
 
-  useEffect(() => { refresh(); }, []);
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('paginate', 'true');
+      params.set('limit', String(AUDIT_PAGE_SIZE));
+      params.set('offset', String(offset));
+      if (actionFilter) params.set('action', actionFilter);
+      if (userIdFilter.trim()) params.set('userId', userIdFilter.trim());
+      if (ipFilter.trim()) params.set('ipAddress', ipFilter.trim());
+      if (sinceFilter) params.set('since', sinceFilter);
+      if (untilFilter) params.set('until', untilFilter);
+      const data = await apiGet<{ entries: AuditEntry[]; total: number }>(
+        `/api/auth/audit-log?${params.toString()}`
+      );
+      setEntries(data.entries);
+      setTotal(data.total);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load audit log');
+    } finally {
+      setLoading(false);
+    }
+  }, [actionFilter, userIdFilter, ipFilter, sinceFilter, untilFilter, offset]);
+
+  useEffect(() => { loadActionCounts(); }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  function applyAction(action: string) {
+    setActionFilter(action);
+    setOffset(0);
+  }
+  function applyUserId(v: string) {
+    setUserIdFilter(v);
+    setOffset(0);
+  }
+  function applyIp(v: string) {
+    setIpFilter(v);
+    setOffset(0);
+  }
+  function applySince(v: string) {
+    setSinceFilter(v);
+    setOffset(0);
+  }
+  function applyUntil(v: string) {
+    setUntilFilter(v);
+    setOffset(0);
+  }
+  function resetFilters() {
+    setActionFilter('');
+    setUserIdFilter('');
+    setIpFilter('');
+    setSinceFilter('');
+    setUntilFilter('');
+    setOffset(0);
+  }
 
   if (error) return <div style={{ color: 'var(--status-critical)' }}>{error}</div>;
-  if (!entries) return <div>Loading...</div>;
+  if (entries === null) return <div>Loading...</div>;
 
-  const shown = filter
-    ? entries.filter(e => e.action === filter)
-    : entries;
-
-  const actionCounts = entries.reduce<Record<string, number>>((acc, e) => {
-    acc[e.action] = (acc[e.action] ?? 0) + 1;
-    return acc;
-  }, {});
+  const hasPrev = offset > 0;
+  const hasNext = offset + AUDIT_PAGE_SIZE < total;
+  const pageStart = total === 0 ? 0 : offset + 1;
+  const pageEnd = Math.min(offset + AUDIT_PAGE_SIZE, total);
+  const totalActionsSampled = Object.values(actionCounts).reduce((a, b) => a + b, 0);
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-        <button onClick={() => setFilter('')} style={filter === '' ? btnPrimary : btnGhost}>
-          {t('all')} ({entries.length})
+      {/* Action pills */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        <button onClick={() => applyAction('')} style={actionFilter === '' ? btnPrimary : btnGhost}>
+          {t('all')} ({totalActionsSampled})
         </button>
         {Object.entries(actionCounts)
           .sort((a, b) => b[1] - a[1])
           .map(([action, count]) => (
             <button
               key={action}
-              onClick={() => setFilter(action)}
-              style={filter === action ? btnPrimary : btnGhost}
+              onClick={() => applyAction(action)}
+              style={actionFilter === action ? btnPrimary : btnGhost}
             >
               {action} ({count})
             </button>
-          ))
-        }
-        <button onClick={refresh} style={btnGhost}>{t('refresh')}</button>
+          ))}
+      </div>
+
+      {/* Text filters + dates */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+        <input
+          type="text"
+          placeholder={t('userIdPlaceholder')}
+          value={userIdFilter}
+          onChange={(e) => applyUserId(e.target.value)}
+          style={auditInputStyle}
+        />
+        <input
+          type="text"
+          placeholder={t('ipPlaceholder')}
+          value={ipFilter}
+          onChange={(e) => applyIp(e.target.value)}
+          style={auditInputStyle}
+        />
+        <input
+          type="datetime-local"
+          value={sinceFilter}
+          onChange={(e) => applySince(e.target.value ? `${e.target.value}:00Z` : '')}
+          style={auditInputStyle}
+          aria-label={t('since')}
+        />
+        <input
+          type="datetime-local"
+          value={untilFilter}
+          onChange={(e) => applyUntil(e.target.value ? `${e.target.value}:00Z` : '')}
+          style={auditInputStyle}
+          aria-label={t('until')}
+        />
+        <button onClick={resetFilters} style={btnGhost}>{t('reset')}</button>
+        <button onClick={refresh} style={btnGhost} disabled={loading}>
+          {loading ? '…' : t('refresh')}
+        </button>
+        <span style={{ marginLeft: 'auto', color: 'var(--ink-500)', fontSize: 'var(--fs-sm)' }}>
+          {pageStart}-{pageEnd} / {total}
+        </span>
       </div>
 
       <table style={tableStyle}>
@@ -686,7 +797,14 @@ function AuditLogSection() {
           </tr>
         </thead>
         <tbody>
-          {shown.map(e => (
+          {entries.length === 0 && (
+            <tr>
+              <td colSpan={6} style={{ ...td, textAlign: 'center', color: 'var(--ink-500)', padding: 'var(--sp-5)' }}>
+                {t('empty') ?? '—'}
+              </td>
+            </tr>
+          )}
+          {entries.map(e => (
             <tr key={e.id} style={{ borderTop: '1px solid var(--border)' }}>
               <td style={{ ...td, fontSize: 12 }}>{new Date(e.created_at).toLocaleString()}</td>
               <td style={{ ...td, fontSize: 12 }}>{e.email ?? '—'}</td>
@@ -712,9 +830,38 @@ function AuditLogSection() {
           ))}
         </tbody>
       </table>
+
+      {/* Pagination */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+        <button
+          onClick={() => setOffset(Math.max(0, offset - AUDIT_PAGE_SIZE))}
+          disabled={!hasPrev || loading}
+          style={hasPrev ? btnGhost : { ...btnGhost, opacity: 0.4, cursor: 'not-allowed' }}
+        >
+          {t('prev')}
+        </button>
+        <button
+          onClick={() => setOffset(offset + AUDIT_PAGE_SIZE)}
+          disabled={!hasNext || loading}
+          style={hasNext ? btnGhost : { ...btnGhost, opacity: 0.4, cursor: 'not-allowed' }}
+        >
+          {t('next')}
+        </button>
+      </div>
     </div>
   );
 }
+
+const auditInputStyle: React.CSSProperties = {
+  padding: '6px var(--sp-3)',
+  border: '1px solid var(--border)',
+  borderRadius: 'var(--r-md)',
+  fontSize: 'var(--fs-sm)',
+  fontFamily: 'inherit',
+  background: 'var(--surface-1)',
+  color: 'var(--ink-900)',
+  minWidth: 160,
+};
 
 // ─── Shared styles ───────────────────────────────────────────
 

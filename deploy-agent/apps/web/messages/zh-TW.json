@@ -505,12 +505,20 @@
     "audit": {
       "all": "全部",
       "refresh": "重新整理",
+      "reset": "重設篩選",
       "time": "時間",
       "user": "使用者",
       "action": "動作",
       "resource": "資源",
       "ip": "IP",
-      "metadata": "Metadata"
+      "metadata": "Metadata",
+      "userIdPlaceholder": "使用者 UUID",
+      "ipPlaceholder": "IP 位址",
+      "since": "從",
+      "until": "到",
+      "prev": "← 上一頁",
+      "next": "下一頁 →",
+      "empty": "沒有符合的稽核紀錄。"
     },
     "discordAudit": {
       "all": "全部",
