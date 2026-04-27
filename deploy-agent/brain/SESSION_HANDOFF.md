@@ -4,6 +4,62 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~12:00 UTC（autonomous overnight 第四十二段）—— Round 42: shared state-machine 規則 + state-classification predicates wire-contract lock**
+
+**狀態：TESTS COMMITTED（pending），ZERO 行為改動（只新增 test 檔；state-machine.ts 不變）**
+
+R41 鎖了 API cost-estimator pricing 常數。回到 shared package 找下一個高 fan-out 但只有部分覆蓋的 pure helper：`packages/shared/src/state-machine.ts`（129 LOC，6 個 exported helpers + 2 個 error class）—— 整個部署 pipeline 的 state machine 真理來源。`canTransition` / `buildTransitionPlan` / 兩個 error class 已被 `test-transition-plan.ts`（28 cases）+ `test-stop-verdict.ts` 覆蓋，但**四個 state-classification predicates 完全沒測**：
+- `getValidTransitions(from)` — 0 references
+- `isTerminalState(status)` — 0 references
+- `isActionableState(status)` — 0 references
+- `requiresHumanAction(status)` — 0 references
+
+這四個 predicate 是 dashboard UI 渲染（哪個 button 要顯示、哪個 badge 要亮、哪一列進「等你看」queue）+ Discord notifier（哪個狀態觸發通知）+ reconciler（drift correction 計畫）的源頭。silent regression 表現為錯 UX（review queue 漏 row、通知狂發但 queue 沒東西、settled badge 跑到該 polling 的 row 上）——沒 exception，沒 log。
+
+R37 → R38 → R39 → R40 → R41 → **R42**，第六次套同一個 wire-contract lock pattern，這次回到 shared package（R38 之後第一次）。
+
+NEW `packages/shared/src/test-state-machine.ts`（**100 PASS**）：
+
+- **`ALL_STATES` 完整性（2 cases）**：恰好 15 entries（mirror `types.ts` `ProjectStatus` union）+ 沒重複。`types.ts` 加新 status 沒同步這個 list 立刻失敗
+- **`getValidTransitions` per-state（15 cases）**：每個 state 對 inline `PINNED_TRANSITIONS` table 比對。**整張 adjacency table 釘死在測試與 source 兩處**，rules 改一條 → 失敗 by name
+- **`getValidTransitions` reference identity（1 case）**：repeated call 回同一個 reference。鎖「caller 不可 mutate」契約。如果 source 改 `.slice()` defensive copy，測試名字翻過來
+- **`canTransition` 15×15 = 225 cell adjacency sweep（2 cases）**：滿格 matrix vs `PINNED_TRANSITIONS`。一個 cell typo 翻一條 + 命名 cell。R11 `canary_check → failed` regression guard 內建
+- **`isTerminalState` 每 state 15 + cardinality 1 + unknown 1 = 17 cases**：`{live, failed, stopped}` 集合釘死
+- **`isActionableState` 每 state 15 + cardinality 1 + unknown 1 = 17 cases**：`{review_pending, needs_revision}` 集合釘死
+- **`requiresHumanAction` 每 state 15 + cardinality 1 + unknown 1 = 17 cases**：`{review_pending}` 集合釘死
+- **集合不變式（2 cases）**：`requiresHumanAction ⊆ isActionableState`（不會出現「通知狂發但 queue 沒東西」）+ `terminal ∩ actionable = ∅`（不會 settled-and-pending UI badge 衝突）
+- **Error class shape（12 cases）**：
+  - `InvalidTransitionError`：instanceof / `.name` / 訊息格式 `"Invalid state transition: X → Y"` / **R12 `deploy-worker.ts` 用的 `.startsWith("Invalid state transition:")` string-match 契約**
+  - `ConcurrentTransitionError`：instanceof / NOT instanceof InvalidTransitionError（distinct types） / `.expectedFrom` `.to` `.actualState` field 保留 / 訊息含 `state=X`（R12 canonical format）
+- **`buildTransitionPlan` idempotent-noop 只給 `live → live`（2 cases）**：`failed→failed` / `stopped→stopped` / `deploying→deploying` / `submitted→submitted` / `scanning→scanning` 全部要 REJECTED
+- **`buildTransitionPlan` allowed mirrors canTransition（1 case）**：14 個代表性 allowed transition 都 kind=allowed + `expectedFromState === currentState`
+- **`buildTransitionPlan` rejected（3 cases）**：kind / 完整 reason 格式 / startsWith 契約
+- **`buildTransitionPlan` 15×15 全 sweep vs canTransition（1 case）**：planner kind 對 rules 一致（除 live→live 走 idempotent-noop）。**planner 不能默默 diverge from rules**
+- **Determinism / purity（3 cases）**：same input → equal output / 不 mutate input / predicate 跨 call 穩定
+
+NEW ADR `brain/decisions/2026-04-27-state-machine-test-lock.md`。
+
+Sweep：**2413 / 40 PASS**（was 2313 / 39 at R41；+100 new tests in 1 new file）。tsc clean **across all four packages**：api / bot / web / shared。
+
+**累積堆積的 commit（DEPLOY BLOCKED 等 boss）**：
+- R30 chunked upload (`7741a35`)
+- R31 RBAC projects (`6c2d9a4`)
+- R32 RBAC project-groups (`637d1d4`)
+- R33 RBAC reviews (`a93169c`)
+- R34 RBAC deploys (`7d9d25e`)
+- R35 RBAC P1 single (`aec31c6`)
+- R36 doc correction (`614c94a`)
+- R37 bot wire contract (`0e3568f`)
+- R38 shared permission predicate (`11a28e0`)
+- R39 web upload-mapper test lock (`00588e1`)
+- R40 web upload-draft-storage test lock (`dc362ea`)
+- R41 api cost-estimator test lock (`6d8781d`)
+- R42 shared state-machine test lock（pending commit）
+
+R42 是 R38 之後第二個 shared 層 lock。R38 鎖 RBAC 三個 predicate，R42 鎖 state machine 四個 predicate + 整張 adjacency table。Pattern 已經很穩定：找出產品邏輯關鍵的 pure helper、把所有 input 的 output 釘死、額外鎖跨 predicate invariant。下一輪可以開始往 client-only / web-only 的更深 helper 推（form validation? URL builder? 路由表?），或考慮把這個 pattern 的 sweep 一次鎖 multiple files。
+
+---
+
 **2026-04-27 ~11:30 UTC（autonomous overnight 第四十一段）—— Round 41: GCP cost estimator wire-contract lock + pricing constants pinned**
 
 **狀態：TESTS COMMITTED（pending），ZERO 行為改動（只新增 test 檔；cost-estimator.ts 不變）**
