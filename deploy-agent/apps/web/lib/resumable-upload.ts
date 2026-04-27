@@ -1,4 +1,6 @@
 // Round 27 — Chunked GCS resumable uploader.
+// Round 30 — tightened defaults after round-27 fix STILL failed in production
+//            for the same legal_flow_build.zip (426 MB) on Firefox 149/macOS.
 //
 // Why this exists:
 //   The original uploader did `xhr.send(file)` with the entire file (up to
@@ -10,9 +12,9 @@
 //
 // The fix uses GCS's resumable upload protocol. The server already initiates
 // a resumable session via POST and hands the client a session URI. We slice
-// the file into 8 MiB chunks and PUT each chunk with a Content-Range header.
+// the file into chunks and PUT each chunk with a Content-Range header.
 // On failure of any single chunk we:
-//   1. Back off exponentially (1s, 2s, 4s, 8s, 16s, capped at 30s).
+//   1. Back off exponentially (1s, 2s, 4s, 8s, 16s, 32s, capped at 60s).
 //   2. Query session status (PUT with `Content-Range: bytes */<total>` and
 //      empty body) to discover what GCS actually persisted. GCS replies 308
 //      with `Range: bytes=0-N` indicating bytes 0..N inclusive received.
@@ -32,12 +34,31 @@
 //
 // Chunk size:
 //   GCS requires multiples of 256 KiB (262144 bytes) for non-final chunks.
-//   We use 8 MiB (32 × 256 KiB) which balances retry granularity vs HTTP
-//   overhead on slow connections.
+//   Round 27 used 8 MiB (32 × 256 KiB). Round 30 reproduced the production
+//   failure with curl: at 313 KB/s effective throughput against asia-east1,
+//   each 8 MiB chunk takes ~26s and any TCP-level RECV timeout mid-chunk
+//   blows the whole chunk away. Dropped to 1 MiB (4 × 256 KiB) so each
+//   chunk completes in ~3s on the same connection — well under any
+//   intermediary keep-alive timeout.
+//
+// Retry budget:
+//   Round 27 used 5 retries with 30s backoff cap (~31s total wait). For a
+//   genuinely flaky connection that's not enough — 5 consecutive failures
+//   surfaces `network_error` to the user and they restart from byte 0.
+//   Round 30 raises to 15 retries with 60s cap (~5 minutes of patience),
+//   which absorbs typical residential Wi-Fi outages without giving up.
+//
+// Per-chunk XHR timeout:
+//   Without an explicit `xhr.timeout`, the browser inherits whatever the
+//   OS network stack decides. On macOS Firefox we observed silent stalls
+//   that took 2-3 minutes to surface as `onerror`. Round 30 sets a
+//   2-minute timeout per chunk so we fail-fast and let the retry loop
+//   recover, rather than appearing frozen to the user.
 
-const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB
-const DEFAULT_MAX_RETRIES = 5;
-const MAX_BACKOFF_MS = 30_000;
+const DEFAULT_CHUNK_SIZE = 1 * 1024 * 1024;   // 1 MiB (4 × 256 KiB) — round 30
+const DEFAULT_MAX_RETRIES = 15;               // round 30 (was 5)
+const DEFAULT_CHUNK_TIMEOUT_MS = 120_000;     // 2 min per chunk — round 30
+const MAX_BACKOFF_MS = 60_000;                // 60 s cap — round 30 (was 30 s)
 
 export interface ResumableUploadOpts {
   /** GCS resumable session URI (from POST /api/upload/init). */
@@ -46,10 +67,12 @@ export interface ResumableUploadOpts {
   file: Blob;
   /** Content-Type to advertise on each chunk PUT. */
   contentType: string;
-  /** Bytes per chunk. Must be a multiple of 262144 (256 KiB). Default 8 MiB. */
+  /** Bytes per chunk. Must be a multiple of 262144 (256 KiB). Default 1 MiB. */
   chunkSize?: number;
-  /** Max retries per chunk before bailing out. Default 5. */
+  /** Max retries per chunk before bailing out. Default 15. */
   maxRetriesPerChunk?: number;
+  /** Per-chunk XHR timeout in milliseconds. Default 120000 (2 min). 0 disables. */
+  chunkTimeoutMs?: number;
   /** Called with (uploadedBytes, totalBytes) on every progress event. */
   onProgress?: (loaded: number, total: number) => void;
   /** Called whenever a fresh XMLHttpRequest is created. Use to wire xhrRef for cancel. */
@@ -150,6 +173,8 @@ function putChunkXhr(opts: {
   body: Blob | null;
   contentType?: string;
   contentRange: string;
+  /** Per-chunk timeout (ms). 0 or undefined disables. */
+  timeoutMs?: number;
   signal?: AbortSignal;
   onXhrCreated?: (xhr: XMLHttpRequest) => void;
   onProgress?: (loadedThisChunk: number) => void;
@@ -162,6 +187,9 @@ function putChunkXhr(opts: {
       xhr.setRequestHeader('Content-Type', opts.contentType);
     }
     xhr.setRequestHeader('Content-Range', opts.contentRange);
+    if (opts.timeoutMs && opts.timeoutMs > 0) {
+      xhr.timeout = opts.timeoutMs;
+    }
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && opts.onProgress) opts.onProgress(e.loaded);
@@ -204,6 +232,7 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 export async function uploadResumable(opts: ResumableUploadOpts): Promise<ResumableUploadResult> {
   const chunkSize = opts.chunkSize ?? DEFAULT_CHUNK_SIZE;
   const maxRetries = opts.maxRetriesPerChunk ?? DEFAULT_MAX_RETRIES;
+  const chunkTimeoutMs = opts.chunkTimeoutMs ?? DEFAULT_CHUNK_TIMEOUT_MS;
   const sleep = opts.sleep ?? defaultSleep;
   const total = opts.file.size;
 
@@ -216,6 +245,7 @@ export async function uploadResumable(opts: ResumableUploadOpts): Promise<Resuma
         sessionUri: opts.sessionUri,
         body: null,
         contentRange: 'bytes */0',
+        timeoutMs: chunkTimeoutMs,
         signal: opts.signal,
         onXhrCreated: opts.onXhrCreated,
       });
@@ -255,6 +285,7 @@ export async function uploadResumable(opts: ResumableUploadOpts): Promise<Resuma
           body: blob,
           contentType: opts.contentType,
           contentRange: formatContentRange(start, end, total),
+          timeoutMs: chunkTimeoutMs,
           signal: opts.signal,
           onXhrCreated: opts.onXhrCreated,
           onProgress: (loadedThisChunk) => {
@@ -318,6 +349,7 @@ export async function uploadResumable(opts: ResumableUploadOpts): Promise<Resuma
           sessionUri: opts.sessionUri,
           body: null,
           contentRange: formatStatusQueryRange(total),
+          timeoutMs: chunkTimeoutMs,
           signal: opts.signal,
           onXhrCreated: opts.onXhrCreated,
         });

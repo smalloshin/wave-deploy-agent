@@ -1,4 +1,6 @@
 // Round 27 — Tests for the resumable-upload helpers.
+// Round 30 — updated for tightened defaults (1 MiB chunks, 15 retries,
+//            60 s backoff cap, 120 s per-chunk XHR timeout).
 //
 // Pure-function tests: chunk math, header formatting/parsing, status
 // classification, exponential backoff. No XHR, no network, no real timers.
@@ -109,8 +111,9 @@ assertEq(backoffMs(1), 2000, 'backoffMs: attempt 1 → 2s');
 assertEq(backoffMs(2), 4000, 'backoffMs: attempt 2 → 4s');
 assertEq(backoffMs(3), 8000, 'backoffMs: attempt 3 → 8s');
 assertEq(backoffMs(4), 16000, 'backoffMs: attempt 4 → 16s');
-assertEq(backoffMs(5), 30000, 'backoffMs: attempt 5 capped at 30s');
-assertEq(backoffMs(10), 30000, 'backoffMs: attempt 10 still 30s');
+assertEq(backoffMs(5), 32000, 'backoffMs: attempt 5 → 32s (under cap)');
+assertEq(backoffMs(6), 60000, 'backoffMs: attempt 6 capped at 60s (round 30)');
+assertEq(backoffMs(10), 60000, 'backoffMs: attempt 10 still 60s');
 assertEq(backoffMs(-1), 0, 'backoffMs: negative attempt → 0');
 
 // ─── Integration: uploadResumable with fake XHR ──────────────────────────
@@ -132,6 +135,7 @@ interface FakeRequest {
   contentRange: string;
   contentType?: string;
   bodySize: number; // 0 for null body (status query)
+  timeout: number; // 0 = unset
 }
 
 class FakeXhrHarness {
@@ -150,6 +154,7 @@ class FakeXhrHarness {
       onabort: (() => void) | null = null;
       status = 0;
       responseText = '';
+      timeout = 0; // round 30: code may set xhr.timeout
       _url = '';
       _headers: Record<string, string> = {};
       _contentType: string | undefined;
@@ -175,6 +180,7 @@ class FakeXhrHarness {
           contentRange: this._headers['Content-Range'] ?? '',
           contentType: this._contentType,
           bodySize,
+          timeout: this.timeout,
         });
         const r = harness.responses[harness.cursor];
         harness.cursor++;
@@ -440,6 +446,139 @@ const noSleep = (_ms: number) => Promise.resolve();
   assert(progressEvents.length >= 1, 'integration: at least one progress event fired');
   const last = progressEvents[progressEvents.length - 1];
   assert(last.loaded === fileSize && last.total === fileSize, 'integration: final progress = total/total');
+}
+
+// ─── Round 30: tightened defaults ─────────────────────────────────────
+
+// ─ Test: default chunk size is 1 MiB (round 30, was 8 MiB) ─────────────
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  const fileSize = 3 * 1024 * 1024; // 3 MiB → 3 chunks of 1 MiB each
+  harness.responses = [
+    { kind: 'ok', status: 308, rangeHeader: 'bytes=0-1048575' },
+    { kind: 'ok', status: 308, rangeHeader: 'bytes=0-2097151' },
+    { kind: 'ok', status: 200 },
+  ];
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(fileSize),
+    contentType: 'application/zip',
+    // chunkSize OMITTED — must default to 1 MiB
+    sleep: noSleep,
+  });
+  restore();
+  assert(result.ok === true, 'round 30: 3 MiB upload with default chunk size succeeds');
+  assertEq(harness.requests.length, 3, 'round 30: default chunk size = 1 MiB → 3 chunks for 3 MiB file');
+  assertEq(harness.requests[0].contentRange, `bytes 0-1048575/${fileSize}`, 'round 30: default chunk 1 = 1 MiB');
+  assertEq(harness.requests[1].contentRange, `bytes 1048576-2097151/${fileSize}`, 'round 30: default chunk 2 = next 1 MiB');
+  assertEq(harness.requests[2].contentRange, `bytes 2097152-3145727/${fileSize}`, 'round 30: default chunk 3 = final 1 MiB');
+}
+
+// ─ Test: default per-chunk timeout is 120000 ms (round 30) ────────────
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  harness.responses = [{ kind: 'ok', status: 200 }];
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    // chunkTimeoutMs OMITTED — must default to 120000
+    sleep: noSleep,
+  });
+  restore();
+  assert(result.ok === true, 'round 30: default-timeout upload succeeds');
+  assertEq(harness.requests[0].timeout, 120000, 'round 30: xhr.timeout default = 120000 ms (2 min)');
+}
+
+// ─ Test: chunkTimeoutMs option is honored ──────────────────────────────
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  harness.responses = [{ kind: 'ok', status: 200 }];
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    chunkTimeoutMs: 45000,
+    sleep: noSleep,
+  });
+  restore();
+  assert(result.ok === true, 'round 30: explicit chunkTimeoutMs upload succeeds');
+  assertEq(harness.requests[0].timeout, 45000, 'round 30: xhr.timeout = explicit 45000 ms');
+}
+
+// ─ Test: chunkTimeoutMs=0 disables timeout (xhr.timeout stays 0) ─────
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  harness.responses = [{ kind: 'ok', status: 200 }];
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    chunkTimeoutMs: 0,
+    sleep: noSleep,
+  });
+  restore();
+  assert(result.ok === true, 'round 30: timeout=0 upload succeeds');
+  assertEq(harness.requests[0].timeout, 0, 'round 30: chunkTimeoutMs=0 leaves xhr.timeout unset');
+}
+
+// ─ Test: timeout fires `gcs_timeout` failure after retries exhaust ────
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  // every PUT and status query times out
+  for (let i = 0; i < 20; i++) harness.responses.push({ kind: 'timeout' });
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    maxRetriesPerChunk: 2,
+    sleep: noSleep,
+  });
+  restore();
+  assert(result.ok === false, 'round 30: persistent timeout → failure');
+  if (!result.ok) {
+    assertEq(result.failure.kind, 'gcs_timeout', 'round 30: timeout exhaustion → kind=gcs_timeout');
+  }
+}
+
+// ─ Test: status query also gets the timeout ───────────────────────────
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  // chunk PUT fails, status query needs the same timeout
+  harness.responses = [
+    { kind: 'network_error' },
+    { kind: 'ok', status: 308, rangeHeader: 'bytes=0-1023' },
+  ];
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    chunkTimeoutMs: 30000,
+    sleep: noSleep,
+  });
+  restore();
+  assert(result.ok === true, 'round 30: status query test passes');
+  assert(harness.requests.length >= 2, 'round 30: at least 2 requests recorded');
+  assertEq(harness.requests[1].timeout, 30000, 'round 30: status query also gets explicit chunkTimeoutMs');
+}
+
+// ─ Test: 426 MB file with default 1 MiB chunks → 427 chunks ────────────
+// Realistic stress: the actual production failure file. Verify the math.
+{
+  const FILE_SIZE_426 = 447_194_585; // exact bytes from /Users/.../legal_flow_build.zip
+  const DEFAULT_CHUNK_1MB = 1 * 1024 * 1024;
+  const expectedChunks = Math.ceil(FILE_SIZE_426 / DEFAULT_CHUNK_1MB);
+  // 447194585 / 1048576 = 426.4729... → ceil = 427 chunks
+  assertEq(expectedChunks, 427, 'round 30: 426 MB / 1 MiB = 427 chunks');
+  // Final chunk size
+  const finalChunkSize = FILE_SIZE_426 - (expectedChunks - 1) * DEFAULT_CHUNK_1MB;
+  assert(finalChunkSize > 0 && finalChunkSize <= DEFAULT_CHUNK_1MB, 'round 30: final chunk size in (0, 1 MiB]');
 }
 
 // ─── Summary ─────────────────────────────────────────────────────────────
