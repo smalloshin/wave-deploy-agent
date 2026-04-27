@@ -4,6 +4,24 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 00:07 UTC（autonomous overnight 第二十八段，user 半夜醒來插隊）—— 緊急 upload fix 部署上線**
+
+User 一句「先把上傳功能 deploy, 很急」插進 overnight loop。把 commit 67f2cf0（含 emergency chunked upload + round 27 整套）推上 production：
+
+- Cloud Build `118f5814-c9a0-453c-a656-4c16101237c3` async submit → SUCCESS（8 分 36 秒，00:07:13Z 完成）
+- 三 service 全部 rollout：`deploy-agent-api-00131-rtr`、`deploy-agent-web-00094-mvk`、`deploy-agent-bot-00042-hc7`，creation 都在 00:06-00:07Z
+- Smoke test：web `/` HTTP 200（2.18s 首頁），api `/health` HTTP 200（93ms）
+- Image SHA pinned：
+  - api `c5793d8b93ba9ef5501ea315b3fc2368e625644227ea14f0c1565469d9c59157`
+  - web `8e0b900f1d87d5fbd770af4ac8a9c70679deaff0853a51cbee3d8ff826df5d3f`
+  - bot `81ef8aabde9f36661107c11701654ed7f9ac0f7899edb2c7e2a32dbef296239e`
+
+**仍待 user 實機驗證**：Firefox 149/macOS 拖 426 MB legal_flow_build.zip 上去確認 chunked upload 真的能跑——production GCS 我這邊無法 reproduce。如果還報 `code: 'network_error'`，下一步要去看新 envelope 的 `attempts` / `chunkStart-chunkEnd` 數字判斷掛在哪一段。
+
+**部署 gotcha**：service 名是 `deploy-agent-{api,web,bot}` 不是 `wave-deploy-agent-*`。第一次 describe 拿錯名字噴 404。
+
+---
+
 **2026-04-27（autonomous overnight 第二十七段）—— Round 27: discord_audit lake completion（180d TTL + GET endpoints + admin tab）**
 
 緊急修完 426 MB upload bug 後（commits 19af9c1 + ac4d58b），接著 unpark round 27——round 26 把 Discord NL UX hardening 整套做完了，但 discord_audit 這張 table 寫入 surface 補完之後只有 POST/PATCH，**沒有 read endpoint、沒有 retention 排程**。一個 forensic table 不能讀也不能淘汰，等同沒做完。這個 round 把整條 lake boil 完。
