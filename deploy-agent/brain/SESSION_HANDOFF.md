@@ -4,6 +4,37 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~08:15 UTC（autonomous overnight 第三十六段）—— Round 36: POST /api/project-groups/:groupId/actions（已修，doc correction）**
+
+**狀態：NO CODE CHANGE，只 doc 補記，commit pending**
+
+R32/R33/R34/R35 ADR 反覆登記「⏸️ POST /api/project-groups/:groupId/actions per-target check 仍欠」。R36 4-subagent 辯論決定要修這條 mutating bulk endpoint，engineer 開檔 `apps/api/src/routes/project-groups.ts` 準備寫 code 時發現：
+
+**這段 RBAC per-target 檢查在 lines 185-228 已經實作完了**，commit `bd9f917`（round 25 RBAC Phase 1）就加進來了。
+
+實作 pattern 是 **Pattern B-batch**（不是 Pattern A scope-filter，也不是 Pattern B 單筆 `requireOwnerOrAdmin`）：
+- 對每個 target 算 `buildAccessVerdict`，全部 `isGranted` 才執行；任一不過 → 整批 401/403 envelope 帶 `rejected[]` array
+- 不用 `requireOwnerOrAdmin` 因為它每呼叫就 `reply.send()` 一次，bulk 要的是**一次 consolidated 回應**
+- inline 用 verdict primitive 是正解，不是反 pattern
+
+**為什麼 ADR deferred**：ADR 編寫者沒讀 commit bd9f917 的全 diff，看到 inline check 但沒辨識成「正確實作」，當成裸露登記。doc lag，不是 code gap。
+
+**OWASP 整體狀態**：
+- ✅ Read-side LIST endpoints (R31/R32/R33/R34, 4 P0)
+- ✅ Read-side single-resource (R35, 6 P1)
+- ✅ Mutating routes single-resource (R25, 16 handlers)
+- ✅ Mutating bulk action (R25 commit bd9f917, 1 endpoint)
+
+**所有 IDOR 入口收完。**
+
+R36 deliverable 是 doc correction：
+- 改 `brain/decisions/2026-04-27-rbac-scope-list-pattern.md` 加 R36 Follow-Through section
+- 改 SESSION_HANDOFF.md 把「⏸️ R??」一行從 audit 進度表移除
+
+下一個 mutating bulk endpoint 出現時，照 R25 那段 inline `buildAccessVerdict` + `rejected[]` pattern。
+
+---
+
 **2026-04-27 ~07:30 UTC（autonomous overnight 第三十五段）—— Round 35: P1 single-resource owner checks（IDOR audit punch list **完成**）**
 
 **狀態：FIX COMMITTED `aec31c6`，DEPLOY BLOCKED（同 R31/R32/R33/R34，行為改變需 boss 授權）**
@@ -21,13 +52,13 @@
 
 **為什麼沒寫新測試**：`requireOwnerOrAdmin` 的 verdict 邏輯在 round 25 已被 `test-access-denied-verdict.ts` 完整覆蓋。R35 只是「把 helper 接到 6 個 read handler」——沿用 round 25 同樣的 wiring 不需要 per-handler test 重複（round 25 wired 16 個 mutating handler 也是這樣）。Sweep 1879/33 全綠 + tsc clean = 沒回歸。
 
-**Audit follow-through 進度（COMPLETE）**：
+**Audit follow-through 進度（COMPLETE，含 mutating）**：
 - ✅ R31: `GET /api/projects` (commit `6c2d9a4`) — Pattern A
 - ✅ R32: `GET /api/project-groups` LIST + GET-by-id (commit `637d1d4`) — Pattern A + extracted pure module
 - ✅ R33: `GET /api/reviews` (commit `a93169c`) — Pattern A，scope param 加在 buildWhere 第一個 placeholder
 - ✅ R34: `GET /api/deploys` (commit `7d9d25e`) — Pattern A，新建 `deploys-query.ts`（minimal，無 parser）
 - ✅ R35: 6 P1 single-resource GETs (commit `aec31c6`) — Pattern B
-- ⏸️ R??: `POST /api/project-groups/:groupId/actions` per-target check（mutating，仍欠）
+- ✅ R25: `POST /api/project-groups/:groupId/actions` per-target check (commit `bd9f917`) — Pattern B-batch，R36 確認已存在
 
 **OWASP A01:2021 + OWASP API Top 10 #1 (BOLA) 對 read-side surface 已 COMPLETE**。Mutating 在 round 25 收掉。剩 1 個 mutating bulk action（project-groups POST）。
 

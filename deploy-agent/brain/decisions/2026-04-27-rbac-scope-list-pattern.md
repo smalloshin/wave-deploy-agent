@@ -282,10 +282,53 @@ handler 也是這樣）。Sweep 1879/33 全綠 + tsc clean = 沒回歸 = OK。
 - ✅ Read-side LIST endpoints（4 P0：projects / project-groups / reviews / deploys）
 - ✅ Read-side single-resource（6 P1）
 - ✅ Mutating routes（round 25 已收，16 個 handler）
-- ⏸️ `POST /api/project-groups/:groupId/actions`（bulk mutating，per-target check
-  pattern 不同，未修）
+- ✅ `POST /api/project-groups/:groupId/actions`（bulk mutating，per-target
+  Pattern B-batch，**round 25 已修**，commit `bd9f917`，見 R36 補記）
 
-剩 1 個 mutating bulk action endpoint。整體 RBAC read-path **complete**。
+整體 RBAC read-path + write-path **complete**。所有 IDOR 入口收完。
+
+## Round 36 Follow-Through (2026-04-27) — Bulk action endpoint 確認已修
+
+R32/R33/R34/R35 ADR 反覆寫「⏸️ `POST /api/project-groups/:groupId/actions`
+per-target check 仍欠」。R36 4-subagent 辯論決定要做這條，engineer 開檔
+`apps/api/src/routes/project-groups.ts` 準備寫 code 時發現：**這段已經在 lines
+185-228 實作完了**，commit `bd9f917`（round 25 RBAC Phase 1）就加進來。
+
+實作 pattern 是 **Pattern B-batch**（不是 Pattern A scope-filter，也不是
+Pattern B 單筆 `requireOwnerOrAdmin`）：
+
+```typescript
+// 對每個 target 算 verdict，全部過才執行；任一不過 → 整批 401/403
+const rejected: Array<{ serviceId; name; reason }> = [];
+for (const p of targets) {
+  const v = buildAccessVerdict({ ...auth, resourceOwnerId: p.ownerId, ... });
+  logAccessVerdict(v);
+  if (!isGranted(v)) rejected.push({ serviceId: p.id, name: p.name, reason: ... });
+}
+if (rejected.length > 0) {
+  const status = rejected.some(r => r.reason === 'auth_required') ? 401 : 403;
+  return reply.status(status).send({
+    error: status === 401 ? 'auth_required' : 'not_owner',
+    message: `Bulk ${action} refused: ${rejected.length} of ${targets.length} ...`,
+    groupId, action, rejected,
+  });
+}
+```
+
+**為什麼用 `buildAccessVerdict` 不用 `requireOwnerOrAdmin`**：後者每呼叫一次
+就 `reply.send()` 一次，bulk endpoint 要的是**一次 consolidated 401/403 envelope**
+帶 `rejected[]` array。inline 用 verdict primitive 是正解，不是反 pattern。
+
+**為什麼之前 ADR 寫 deferred**：ADR 編寫者沒讀 commit `bd9f917` 的全 diff，看到
+那段 inline check 但沒辨識成「正確實作」，就當成「裸露」記在 audit findings 裡。
+是 doc lag，不是 code gap。
+
+**驗證**：`grep -n "rejected" apps/api/src/routes/project-groups.ts` 顯示 lines
+193, 207, 215, 217, 223, 226 都有；`git log --all --oneline -- apps/api/src/routes/project-groups.ts`
+看到 bd9f917 是首版加 RBAC 的 commit。
+
+**R36 實作工作量 = 0**。這 round 的 deliverable 是 doc correction + audit punch
+list 正式 close。下一個 mutating bulk endpoint 出現時，照本段 pattern。
 
 ## References
 
