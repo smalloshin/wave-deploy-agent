@@ -7,6 +7,11 @@ import {
   transitionProject,
 } from '../services/orchestrator';
 import { runDeployPipeline } from '../services/deploy-worker';
+import {
+  parseReviewsListQuery,
+  buildReviewsListSql,
+  buildReviewsCountSql,
+} from '../services/reviews-query';
 
 const reviewSchema = z.object({
   decision: z.enum(['approved', 'rejected']),
@@ -15,33 +20,45 @@ const reviewSchema = z.object({
   comments: z.string().optional(),
 });
 
-export async function reviewRoutes(app: FastifyInstance) {
-  // List pending reviews
-  app.get('/api/reviews', async (request) => {
-    const status = (request.query as Record<string, string>).status ?? 'pending';
-    let sql: string;
-    let params: unknown[];
+// Pagination-related query keys. Presence of any one triggers the paged
+// response envelope `{ reviews, total, limit, offset }`. Absence keeps
+// the legacy `{ reviews }` envelope so existing bot/dashboard callers
+// using `?status=pending` keep working unchanged.
+const PAGED_KEYS = new Set(['paginate', 'limit', 'offset', 'decision', 'since', 'until']);
 
-    if (status === 'pending') {
-      sql = `SELECT r.*, sr.project_id, p.name as project_name, p.slug as project_slug
-             FROM reviews r
-             JOIN scan_reports sr ON r.scan_report_id = sr.id
-             JOIN projects p ON sr.project_id = p.id
-             WHERE r.decision IS NULL
-             ORDER BY r.created_at DESC`;
-      params = [];
-    } else {
-      sql = `SELECT r.*, sr.project_id, p.name as project_name, p.slug as project_slug
-             FROM reviews r
-             JOIN scan_reports sr ON r.scan_report_id = sr.id
-             JOIN projects p ON sr.project_id = p.id
-             ORDER BY r.created_at DESC
-             LIMIT 50`;
-      params = [];
+export async function reviewRoutes(app: FastifyInstance) {
+  // List reviews (filtered + optionally paged)
+  app.get('/api/reviews', async (request, reply) => {
+    const rawQuery = (request.query ?? {}) as Record<string, unknown>;
+    const wantsPaged = Object.keys(rawQuery).some((k) => PAGED_KEYS.has(k));
+
+    const verdict = parseReviewsListQuery(rawQuery);
+    if (verdict.kind === 'invalid') {
+      return reply.status(400).send({ error: verdict.reason });
+    }
+    const q = verdict.query;
+
+    if (!wantsPaged) {
+      // Legacy envelope: bot + existing dashboards rely on this shape.
+      // Use the parsed status (default 'pending') but skip pagination.
+      const list = buildReviewsListSql({ ...q, limit: 200, offset: 0 });
+      const result = await query(list.text, list.values);
+      return { reviews: result.rows };
     }
 
-    const result = await query(sql, params);
-    return { reviews: result.rows };
+    // Paged envelope
+    const list = buildReviewsListSql(q);
+    const count = buildReviewsCountSql(q);
+    const [listResult, countResult] = await Promise.all([
+      query(list.text, list.values),
+      query(count.text, count.values),
+    ]);
+    return {
+      reviews: listResult.rows,
+      total: countResult.rows[0]?.total ?? 0,
+      limit: q.limit,
+      offset: q.offset,
+    };
   });
 
   // Get single review
