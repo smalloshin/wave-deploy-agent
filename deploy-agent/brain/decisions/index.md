@@ -35,3 +35,4 @@
 | 2026-04-25 | [deployment-observability](./2026-04-25-deployment-observability.md) | Active | 部署觀測 3 層架構：Tier 1 timeline（7-stage stepper）+ Tier 2 SSE log stream + Tier 3 LLM 診斷（cached by build_id），Tier 4 cost/latency 圖表已 kill |
 | 2026-04-25 | [rbac-system-permissive-then-enforced](./2026-04-25-rbac-system-permissive-then-enforced.md) | Active | 全站 RBAC：3 角色（admin/reviewer/viewer）+ 16 權限 + bcrypt password + SHA-256 session + API key + audit log；零停機 permissive→enforced 兩段切換 |
 | 2026-04-26 | [live-build-log-streaming](./2026-04-26-live-build-log-streaming.md) | Active | Build log 從 post-mortem 升級成 live tail：`onBuildStarted` callback 早 leak buildId，背景 task 把 `pollBuildLog` chunks 透過 SSE 廣播到既有 deployment-event-stream |
+| 2026-04-27 | [chunked-upload-defaults](./2026-04-27-chunked-upload-defaults.md) | Active | Round 30 緊急 fix：chunked GCS resumable upload 預設值收緊（1 MiB chunks / 15 retries / 60s backoff cap / 120s XHR timeout）解 vibe-coded user 慢連線 426 MB 檔案上傳卡 33% 問題 |
