@@ -163,8 +163,24 @@ export async function getProject(id: string): Promise<Project | null> {
   return row ? rowToProject(row) : null;
 }
 
-export async function listProjects(): Promise<Project[]> {
-  const result = await query('SELECT * FROM projects ORDER BY created_at DESC');
+/**
+ * List projects, optionally filtered by RBAC scope.
+ *
+ * Default `{ kind: 'all' }` preserves backwards compat for internal callers
+ * (deploy-worker reconciler, infra route, project-groups, mcp). Route
+ * handlers MUST derive a scope from the request via
+ * `scopeForRequest(request.auth, mode)` (see services/projects-query.ts)
+ * to enforce per-user filtering.
+ *
+ * Round 31 RBAC IDOR fix: GET /api/projects previously returned ALL
+ * projects to ANY authenticated user. Now scope-aware.
+ */
+export async function listProjects(
+  scope: import('./projects-query.js').ListProjectsScope = { kind: 'all' },
+): Promise<Project[]> {
+  const { buildListProjectsSql } = await import('./projects-query.js');
+  const sql = buildListProjectsSql(scope);
+  const result = await query(sql.text, sql.values);
   return result.rows.map(rowToProject);
 }
 

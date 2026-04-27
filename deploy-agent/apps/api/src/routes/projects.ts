@@ -41,6 +41,7 @@ import {
 } from '../services/db-dump-upload-verdict';
 import { releaseProjectRedis } from '../services/redis-provisioner';
 import { requireOwnerOrAdmin } from '../services/owner-check';
+import { scopeForRequest } from '../services/projects-query';
 import type { UploadErrorEnvelope, UploadFailureCode, UploadStage } from '@deploy-agent/shared';
 
 const execFileAsync = promisify(execFile);
@@ -207,9 +208,24 @@ const submitSchema = z.object({
 });
 
 export async function projectRoutes(app: FastifyInstance) {
-  // List all projects
-  app.get('/api/projects', async () => {
-    const projects = await listProjects();
+  // List projects — RBAC scope-filtered (Round 31, OWASP A01:2021 IDOR fix).
+  //
+  // Before round 31 this returned ALL projects to ANY caller — a viewer could
+  // see every other user's slug, owner, status, and config. Round 25 RBAC
+  // gated mutating routes but missed this LIST endpoint.
+  //
+  // Now: admin → all rows; non-admin user → only rows where owner_id matches
+  // their user id; anonymous in permissive → all (legacy bot/dashboard compat
+  // during the round-25 transition window); anonymous in enforced → zero rows
+  // (defensive — auth hook should have already rejected before reaching here).
+  //
+  // The scope decision happens in scopeForRequest() (pure helper) and the SQL
+  // composition in buildListProjectsSql() inside listProjects(). Both are
+  // unit-tested in test-projects-query.ts (25 PASS).
+  app.get('/api/projects', async (request) => {
+    const mode = (process.env.AUTH_MODE ?? 'permissive') as 'permissive' | 'enforced';
+    const scope = scopeForRequest(request.auth, mode);
+    const projects = await listProjects(scope);
     return { projects };
   });
 
