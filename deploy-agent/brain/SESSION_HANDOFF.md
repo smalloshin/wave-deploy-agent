@@ -4,6 +4,73 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~01:30 UTC（autonomous overnight 第二十八段續）—— Round 28a/b: prototype-pollution defense + auth_audit_log lake completion**
+
+緊急 deploy 完之後接著做兩件事，符合 4-subagent 辯論的結論：QA 抓出來的 discord-audit-mapper prototype-pollution 缺洞當 sidebar，Engineer recommend 的 auth-audit-query 對稱（mirror round 27 discord_audit）當 headline。
+
+**Round 28a：discord-audit-mapper 防禦 `__proto__` / `constructor` / `prototype`**（commit `710f05f`）
+
+QA round 28 audit 抓出來「0 prototype-pollution tests」當下我以為是 false alarm（grep `assert` 抓不到是因為這個檔用 `check()` helper），但去 empirically 跑一遍後確認**真的有洞**——`sanitizeObject` 走進 JSON-parsed object 含 `__proto__` key 時，`out['__proto__'] = X` 觸發 `[[Prototype]]` setter 把 output 的 prototype chain 污染掉。Global `Object.prototype` 是乾淨的（一般 assignment 觸不到 global），但 output object 本身的 chain 被污染——pg JSONB persistence 跟下游 consumer 拿到的物件不是 plain Object。
+
+防禦三道：
+- `PROTOTYPE_POLLUTION_KEYS = new Set(['__proto__', 'constructor', 'prototype'])`，loop 入口直接 skip
+- `Object.create(null)` 配 null prototype，徹底斷 `__proto__`-via-assignment 的 setter chain
+- `Object.prototype.hasOwnProperty.call(out, k)` 跟 `JSON.stringify(out)` 在 null-prototype 物件上仍正常（pg JSONB write 不破）
+
+Tests：31 → 39（+8）。覆蓋 depth-0 + depth-1 dropping、global Object.prototype 不受污染、legitimate sibling key 倖存、`JSON.stringify` works for pg JSONB persistence。
+
+**Round 28b：auth_audit_log 完整化（filter / pagination / drill-down / admin tab）**（commit `eff4d96`）
+
+跟 round 27 discord_audit 對稱。auth_audit_log 之前只有 `GET /api/auth/audit-log?limit=N` 拿最新 N 列——表一旦長到幾千列（login attempts、permission denials、bot 每分鐘一次的 API key uses），admin UI 的 client-side filter 就廢了，搜不到 limit 之外的 row。
+
+A) `apps/api/src/services/auth-audit-query.ts`（NEW，238 LOC）：
+- `parseAuthAuditQuery(raw): { kind: 'valid' | 'invalid' }` 純 verdict 函式
+- Filters：`action` regex `^[a-z_]{1,50}$` / `userId` UUID（case-insensitive）/ `ipAddress` charset regex `^[0-9a-fA-F:.]{2,45}$`（IPv4 + IPv6） / `since` / `until` ISO 8601 含第二輪 NaN 檢查
+- `buildAuthAuditListSql(query)` 動態 placeholder 編號（`$1`, `$2`...），LEFT JOIN users 帶 email/display_name，**INET cast** `al.ip_address = $N::inet`
+- `buildAuthAuditCountSql(query)` mirror 但無 LIMIT/OFFSET
+- `since > until` 拒絕 / `since == until` 過 / 空字串視為 missing / unknown key strip / 全部 parameterized 過
+
+B) `apps/api/src/services/auth-service.ts`：3 個新 export
+- `listAuditLogFiltered(opts)` / `countAuditLogFiltered(opts)` / `getAuditLogEntry(id)` （positive integer 驗證）
+
+C) `apps/api/src/routes/auth.ts`：
+- `GET /api/auth/audit-log` **backwards-compatible**：legacy `?limit` alone 回 `{ entries }`；filter or `?paginate=true` 回 `{ entries, total, limit, offset }`，invalid filter → 400
+- `GET /api/auth/audit-log/:id` 新 drill-down，404 if missing
+
+D) `apps/api/src/middleware/auth.ts`：新增 `['GET:/api/auth/audit-log/:id', 'users:manage']`
+
+E) `apps/web/app/admin/page.tsx`：AuditLogSection 從 90 LOC client-only filter 改寫成 200 LOC server-side filter + offset pagination：
+- Action pills 用 `?limit=500` legacy endpoint 載入一次（顯示 count）
+- 主表用 `?paginate=true&limit=50&offset=N&action=&userId=&ipAddress=&since=&until=`
+- datetime-local input convert to ISO with `:00Z` suffix
+- prev / next 帶 disabled state
+- 新 `auditInputStyle` const（`minWidth: 160`）避開既有 `inputStyle` 的 TS2451 collision
+
+F) `apps/web/messages/{en,zh-TW}.json`：9 個新 admin.audit key（reset / userIdPlaceholder / ipPlaceholder / since / until / prev / next / empty）
+
+G) **Tests**：`test-auth-audit-query.ts`（NEW，89 PASS）覆蓋
+- Parser：defaults / limit & offset 邊界（200 / 0 / -1 / abc） / action regex 拒絕 uppercase + hyphen + digits + 51 chars / UUID case-insensitive / IP regex IPv4 + IPv6 + 拒絕 letters + 拒絕 SQL injection / ISO 第二輪 NaN check / empty string handling / since>until / since==until / unknown key strip / combined filters
+- SQL builders：empty filter 不出 WHERE / 單 filter / multi-filter parameter 編號（`$6 LIMIT $7 OFFSET`） / LEFT JOIN users / ORDER BY created_at DESC / count SQL no LIMIT/OFFSET
+- **Security regression**：filter values 從不出現在 SQL text（防參數化漏掉的回歸 trap）
+
+**Cumulative sweep**：893 passed / 0 failed across 26 zero-dep test files。三個 auth-cleanup / auth-coverage / auth 在本機因 bcrypt arch mismatch（x86_64 binary vs arm64 mac）跑不動但 CI/Docker 裡是 OK 的——pre-existing。test-deploy / test-pipeline 是要 `/tmp/kol-studio` 的整合測試也是 pre-existing。`apps/api` 跟 `apps/web` 兩個 tsc 全綠。
+
+**架構決策**：
+- 為什麼用 `Object.create(null)` 而不是只 skip dangerous keys？三層防禦：(1) skip blocks 直接寫入 (2) null prototype 斷 `__proto__` setter chain (3) 即使有什麼動態 key 漏網，沒 Object.prototype 在 chain 上也污染不到全域。安全層級 vs 簡單性的 trade-off 選了前者
+- 為什麼 audit-log GET 要 backwards-compatible？bot 跟現有監控都靠 `?limit=N` 拿最新 N 列——換 envelope 等於 breaking 全部 caller。Round 22 discord_audit-query 也是這個 pattern，繼承下來。新 client 想要 total 就 explicit 帶 `?paginate=true`
+- 為什麼 IP 驗證用 charset regex 而不是 zod `.ip()`？Zod 的 `.ip()` 嚴格驗 IPv4/IPv6 but pg INET cast 會幫我們做精準驗證——前面只要擋 SQL injection charset 就夠了，後面 INET cast 失敗 = 400 from pg。不重複 work
+- 為什麼 `auditInputStyle` 不直接 reuse `inputStyle`？既有 inputStyle 是 form 用（`padding: 8px`、無 minWidth），audit filter UI 是 inline filter bar 要 `minWidth: 160` 才不被 placeholder 撐爛。視覺需求不同就分開
+
+**遇到的坑**：
+- 第一次 commit 想成 single commit 把 28a + 28b 一起，但 28a 是 security fix 28b 是 feature，git history 後人查 CVE 會比較好讀就分開
+- TS2451 重複宣告 `inputStyle` 在 `apps/web/app/admin/page.tsx` 855 行——既有 inputStyle 在 893 行。改名我這個成 `auditInputStyle` 解掉，但 4 個 reference 也要一起改（一開始漏改、tsc 不會抓因為 fallback 到既有 inputStyle，但視覺壞掉）
+- bcrypt 在本機跑不動（ARM64 vs x86_64 binary）——pre-existing，CI 跑 Docker 就 OK
+
+**沒做的事 / 下一步**：
+- 4 subagent 還討論到 webhook idempotency（architect 的提案）跟 listProjects owner_id filter（eng lead 的提案）但夜間沒做：webhook 改 schema 風險高、listProjects user 講過要先 verify 才動。等明天上班 user 回來 review 再決定
+
+---
+
 **2026-04-27 00:07 UTC（autonomous overnight 第二十八段，user 半夜醒來插隊）—— 緊急 upload fix 部署上線**
 
 User 一句「先把上傳功能 deploy, 很急」插進 overnight loop。把 commit 67f2cf0（含 emergency chunked upload + round 27 整套）推上 production：
