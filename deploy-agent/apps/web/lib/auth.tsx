@@ -1,6 +1,8 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { checkUserPermission } from '@deploy-agent/shared';
+import type { Permission } from '@deploy-agent/shared';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -9,7 +11,10 @@ export interface CurrentUser {
   email: string;
   display_name: string | null;
   role_name: string;
-  permissions: string[];
+  // Round 38: tightened to Permission[] (was string[]) to match the
+  // server's GET /api/auth/me response shape and let checkUserPermission
+  // accept this object directly.
+  permissions: Permission[];
   via: 'session' | 'api_key' | 'anonymous';
 }
 
@@ -70,9 +75,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   }, []);
 
+  // Round 38: delegate to shared pure helper so server (apps/api auth-service)
+  // and client (this file) can never drift on the wildcard / membership rule.
+  // Cast `p` to Permission: callers may pass a string literal that's not yet
+  // in the union (e.g. permission added via API key), but the runtime check
+  // is just `Array.includes` and tolerates any string.
   const hasPermission = useCallback((p: string) => {
-    if (!user) return false;
-    return user.permissions.includes('*') || user.permissions.includes(p);
+    return checkUserPermission(user, p as Permission);
   }, [user]);
 
   return (

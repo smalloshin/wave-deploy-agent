@@ -122,6 +122,19 @@ for f in apps/bot/src/test-*.ts; do
   run_one "src/$base" apps/bot
 done
 
+# Round 38: shared-package tests (pure helpers like permission-check that
+# both apps depend on). Always run from packages/shared cwd so relative
+# imports resolve consistently.
+for f in packages/shared/src/test-*.ts; do
+  [[ -e "$f" ]] || continue   # nothing matched → skip silently
+  base=$(basename "$f")
+  if skip_match "$base"; then
+    echo "−  $base (skipped: needs live infra)"
+    continue
+  fi
+  run_one "src/$base" packages/shared
+done
+
 echo ""
 echo "=== Total: $TOTAL_PASS passed, $TOTAL_FAIL failed across $((FILES_OK + FILES_BAD)) files ==="
 if [[ "$FILES_BAD" -gt 0 ]]; then

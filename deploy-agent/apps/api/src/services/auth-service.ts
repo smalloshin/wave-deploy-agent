@@ -345,21 +345,12 @@ export async function getAuditLogEntry(id: string): Promise<unknown | null> {
 }
 
 // ─── Permission check ───────────────────────────────────────
-
-export function hasPermission(perms: Permission[], required: Permission): boolean {
-  if (perms.includes('*')) return true;
-  return perms.includes(required);
-}
-
-export function effectivePermissions(
-  userPerms: Permission[],
-  keyPerms?: Permission[] | null
-): Permission[] {
-  if (!keyPerms || keyPerms.length === 0) return userPerms;
-  // API key permissions are an ALLOW list: intersect with user's role
-  if (userPerms.includes('*')) return keyPerms;
-  return userPerms.filter(p => keyPerms.includes(p) || keyPerms.includes('*'));
-}
+//
+// Round 38: pure predicates moved to @deploy-agent/shared/permission-check
+// so server (this file) and client (apps/web/lib/auth.tsx) can share one
+// source of truth. Re-exported here for back-compat with all existing
+// imports of `hasPermission` / `effectivePermissions` from auth-service.
+export { hasPermission, effectivePermissions } from '@deploy-agent/shared';
 
 // ─── Bootstrap admin ────────────────────────────────────────
 

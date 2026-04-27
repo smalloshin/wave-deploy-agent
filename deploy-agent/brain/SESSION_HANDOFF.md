@@ -4,6 +4,51 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~09:45 UTC（autonomous overnight 第三十八段）—— Round 38: RBAC predicate 搬到 shared（消除 server/client drift）**
+
+**狀態：FIX COMMITTED（pending），DEPLOY 行為改動極小（auth-service / auth.tsx 只是換 import 來源，runtime 邏輯完全等價）**
+
+R37 鎖了 bot 那層 wire contract。同樣的 drift 問題在 server `auth-service.ts` 和 web `auth.tsx` 之間更嚴重——兩個檔案各自維護**同一個 RBAC 判斷式**`if perms.includes('*') return true; return perms.includes(required)`。drift 一發生就是 security regression：UI 顯示按鈕但 server 拒絕（user 點下去 403），或 UI 藏了 server 會放行的功能（feature 失蹤）。
+
+NEW `packages/shared/src/permission-check.ts`（67 LOC pure helpers）：
+- `hasPermission(perms, required)` — wildcard `*` + literal membership
+- `effectivePermissions(userPerms, keyPerms)` — API key narrowing（intersection 不是 union；admin user + scoped key = key only；non-admin + key = intersection；空 user perms 永遠空）
+- `checkUserPermission(user, required)` — UI gating 便利包裝（null user 自動 deny）
+- 新加 `PermissionSubject` interface（minimal `{ permissions: Permission[] }`），讓 web 不必 import 整個 server-side `AuthUser`（DB 欄位 `created_at` etc. web 用不到）
+
+NEW `packages/shared/src/test-permission-check.ts`（38 PASS）：
+- wildcard / 具名成員 / 空 perms 行為（11 cases）
+- `effectivePermissions` 三種路徑（no key / admin narrowed / intersection）（8 cases）
+- **escalation regression（3 cases）**：empty user + admin key 仍空、empty user + scoped key 仍空、reviewer + admin-only key escalation blocked
+- `checkUserPermission` null/undefined user → deny（5 cases）
+- 函式純度（input array 不被 mutate）（3 cases）
+- **server/client parity contract（7 pinned cases）**——這 7 條也在 `apps/api/src/test-auth.ts` 跑過，鎖死兩端對同一 (perms, required) pair 必須回相同結果
+
+MODIFIED `apps/api/src/services/auth-service.ts`：原本的 `hasPermission` / `effectivePermissions` 函式改成從 `@deploy-agent/shared` re-export，保留所有現有 `import { hasPermission } from './auth-service'` 不破。
+
+MODIFIED `apps/web/lib/auth.tsx`：`hasPermission` callback 內部改 call `checkUserPermission(user, p)`。順便把 `CurrentUser.permissions` 從 `string[]` 收緊成 `Permission[]`（match server 真實 wire shape）。
+
+MODIFIED `scripts/sweep-zero-dep-tests.sh`：加第三條 for-loop 掃 `packages/shared/src/test-*.ts`。未來 shared 任何 pure helper 加 `test-*.ts` 自動進 sweep。
+
+NEW ADR `brain/decisions/2026-04-27-permission-check-shared.md`。
+
+Sweep：**1935 / 35 PASS**（was 1897/34 at R37；+38 new tests in 1 new file）。tsc clean **across all four packages**：api / bot / web / shared。
+
+**累積堆積的 commit（DEPLOY BLOCKED 等 boss）**：
+- R30 chunked upload (`7741a35`)
+- R31 RBAC projects (`6c2d9a4`)
+- R32 RBAC project-groups (`637d1d4`)
+- R33 RBAC reviews (`a93169c`)
+- R34 RBAC deploys (`7d9d25e`)
+- R35 RBAC P1 single (`aec31c6`)
+- R36 doc correction (`614c94a`)
+- R37 bot wire contract (`0e3568f`)
+- R38 shared permission predicate（pending commit）
+
+R38 是 R37 同樣模式的下一層：**從「鎖住一個 consumer 的 wire shape」進化到「把整個 predicate 搬成 single source of truth」**。R37 鎖 bot/server，R38 鎖 web/server。
+
+---
+
 **2026-04-27 ~09:00 UTC（autonomous overnight 第三十七段）—— Round 37: Bot RBAC consumer wiring（contract lock + tests）**
 
 **狀態：FIX COMMITTED（pending），DEPLOY BLOCKED（boss 還沒醒，但這個 round 改動 0 行 production 行為，純加新 helper + 鎖測試）**
