@@ -29,6 +29,14 @@ const SECRET_KEY_REGEX = /password|secret|token|api[_-]?key|private[_-]?key|cred
 const API_KEY_VALUE_REGEX = /^da_k_[a-zA-Z0-9]+$/;
 const BCRYPT_REGEX = /^\$2[aby]\$\d+\$/;
 
+// Prototype-pollution defence. JSON.parse('{"__proto__": {...}}') creates
+// an own enumerable __proto__ property; a subsequent `out['__proto__'] = X`
+// invokes Object.prototype's __proto__ setter and silently changes the
+// output object's [[Prototype]]. That makes downstream `out.isAdmin`-style
+// reads return injected values. We drop these keys outright — no real
+// tool-input ever names a property "__proto__" or "constructor".
+const PROTOTYPE_POLLUTION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 const MAX_STRING_LEN = 500;
 const MAX_RESULT_LEN = 2000;
 const MAX_RECURSE_DEPTH = 5;
@@ -64,8 +72,13 @@ function sanitizeObject(value: unknown, depth: number): unknown {
   }
 
   if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
+    // Object.create(null) so the output has no prototype chain at all —
+    // even if a malicious caller bypasses the key filter below somehow,
+    // there is no Object.prototype.__proto__ setter to trigger.
+    const out: Record<string, unknown> = Object.create(null);
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      // Skip prototype-pollution keys outright.
+      if (PROTOTYPE_POLLUTION_KEYS.has(k)) continue;
       if (SECRET_KEY_REGEX.test(k)) {
         out[k] = '***';
         continue;

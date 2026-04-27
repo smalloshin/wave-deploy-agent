@@ -243,6 +243,85 @@ function check(name: string, cond: boolean, reason = ''): void {
     out === exact, `len=${out.length}`);
 })();
 
+// ═══ Prototype-pollution defence (round 28 hardening) ═══
+
+// 30. JSON-parsed __proto__ key dropped, output prototype not polluted
+(() => {
+  const malicious = JSON.parse('{"__proto__": {"isAdmin": true}}');
+  const out = sanitizeToolInput(malicious);
+  // Output must not have __proto__ as own key, and out.isAdmin must be undefined
+  // (would be true if Object.prototype.__proto__ setter fired).
+  const ownKeys = Object.keys(out);
+  const polluted = (out as Record<string, unknown>).isAdmin;
+  check('__proto__ key from JSON.parse → dropped, no prototype pollution',
+    ownKeys.length === 0 && polluted === undefined,
+    `keys=${ownKeys.join(',')}, isAdmin=${String(polluted)}`);
+})();
+
+// 31. constructor key dropped (would otherwise replace Object constructor reference)
+(() => {
+  const malicious = JSON.parse('{"constructor": {"prototype": {"isAdmin": true}}}');
+  const out = sanitizeToolInput(malicious);
+  const ownKeys = Object.keys(out);
+  check('constructor key dropped',
+    ownKeys.length === 0, `keys=${ownKeys.join(',')}`);
+})();
+
+// 32. nested __proto__ also dropped at depth 1
+(() => {
+  const malicious = JSON.parse('{"safe": {"__proto__": {"isAdmin": true}}}');
+  const out = sanitizeToolInput(malicious);
+  const safe = (out as { safe: Record<string, unknown> }).safe;
+  const safeKeys = safe ? Object.keys(safe) : [];
+  const nestedPolluted = safe ? (safe as Record<string, unknown>).isAdmin : 'no-safe';
+  check('nested __proto__ at depth 1 → dropped, child clean',
+    safeKeys.length === 0 && nestedPolluted === undefined,
+    `safeKeys=${safeKeys.join(',')}, isAdmin=${String(nestedPolluted)}`);
+})();
+
+// 33. global Object.prototype must not be polluted by any of the above
+(() => {
+  const innocent: Record<string, unknown> = {};
+  const polluted = (innocent as Record<string, unknown>).isAdmin;
+  check('global Object.prototype clean after all attacks',
+    polluted === undefined, `Object.prototype.isAdmin=${String(polluted)}`);
+})();
+
+// 34. legitimate keys around the dropped ones still pass through
+(() => {
+  const mixed = JSON.parse('{"before":1, "__proto__":{"x":2}, "after":3, "constructor":4}');
+  const out = sanitizeToolInput(mixed);
+  const keys = Object.keys(out).sort();
+  check('legitimate keys around prototype-pollution keys survive',
+    keys.length === 2 && keys[0] === 'after' && keys[1] === 'before',
+    `keys=${keys.join(',')}`);
+})();
+
+// 35. prototype key also dropped (defence-in-depth alongside __proto__/constructor)
+(() => {
+  const malicious = JSON.parse('{"prototype": {"isAdmin": true}}');
+  const out = sanitizeToolInput(malicious);
+  check('prototype key dropped', Object.keys(out).length === 0,
+    `keys=${Object.keys(out).join(',')}`);
+})();
+
+// 36. Object.create(null) output: hasOwnProperty must be called via Object.prototype, not as method
+(() => {
+  const out = sanitizeToolInput({ a: 1 });
+  // Direct method call would throw on null-prototype objects; use Object.prototype.hasOwnProperty.call
+  const hasA = Object.prototype.hasOwnProperty.call(out, 'a');
+  check('null-prototype output works with Object.prototype.hasOwnProperty.call',
+    hasA === true, `hasA=${String(hasA)}`);
+})();
+
+// 37. JSON.stringify works on null-prototype output (Postgres JSONB serialization invariant)
+(() => {
+  const out = sanitizeToolInput({ x: 1, y: 'two', z: { nested: true } });
+  const json = JSON.stringify(out);
+  check('JSON.stringify on null-prototype output produces valid JSON',
+    json === '{"x":1,"y":"two","z":{"nested":true}}', `got: ${json}`);
+})();
+
 // Summary
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);
 if (fail > 0) process.exit(1);
