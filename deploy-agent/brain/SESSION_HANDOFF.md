@@ -4,6 +4,61 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~05:30 UTC（autonomous overnight 第三十一段）—— Round 31: GET /api/projects RBAC scope-filter 修 IDOR + 完整 audit 9 個 endpoint**
+
+**狀態：FIX COMMITTED `6c2d9a4`，DEPLOY BLOCKED（行為改變需 boss 授權），AUDIT FILED**
+
+Round 25 的 RBAC Phase 1 把 per-resource owner-or-admin 閘門裝在 **MUTATING** 路由（POST/DELETE）但漏掉 **LIST** endpoint。`GET /api/projects` 對任何 authenticated user 一視同仁返回所有 project metadata（slug, owner, status, config）——OWASP A01:2021 Broken Access Control on a security-positioned product。Round 31 修這個 + audit 還有哪些。
+
+A) NEW `apps/api/src/services/projects-query.ts`（72 LOC pure helpers）：
+- `scopeForRequest(auth, mode) → ListProjectsScope` 三態：`'all'`（admin / 或 anonymous+permissive 的 legacy compat）/ `'owner'`（authenticated non-admin → 自己的 ownerId）/ `'denied'`（anonymous+enforced，defensive — middleware 應已擋）
+- `buildListProjectsSql(scope) → { text, values }`：parameterized SQL（owner 走 `WHERE owner_id = $1`，denied 走 `WHERE FALSE` 零 row）
+- 為什麼三態：defense in depth（middleware regression 不該變資料外洩）+ type safety（route 不用 `if (auth.user)` 分支）+ 不 throw（500 反倒洩漏 endpoint 存在訊號）
+
+B) MODIFIED `apps/api/src/services/orchestrator.ts:178`：`listProjects(scope = { kind: 'all' })`，預設 `'all'` 保留內部 caller（deploy-worker reconciler / infra route / project-groups / mcp）的 backwards-compat。Dynamic import projects-query 避免循環依賴。
+
+C) MODIFIED `apps/api/src/routes/projects.ts:211`：route handler 從 `request.auth` derive scope 並 pass 給 `listProjects(scope)`。
+
+D) NEW `apps/api/src/test-projects-query.ts`（25 PASS）：admin/viewer/reviewer 三 verdict + anonymous permissive/enforced + empty role_name fail-closed + SQL composition + parameterization + security regression（ownerId 不 embed SQL、SQL-injection-shaped ownerId 走 pg parameter）+ IDOR fix verification（viewer scope 只能 query 自己 ownerId）。
+
+Cumulative sweep：**1767 / 1767 PASS across 31 zero-dep test files**（was 1742/30）。tsc clean。
+
+E) ADR `brain/decisions/2026-04-27-rbac-scope-list-pattern.md` 登記 LIST + per-resource 兩種 pattern 標準寫法、為什麼三態而非兩態、為什麼 SQL 層 filter 不在 app code、為什麼不抽象單一 generic helper（每個 resource 的 owner relation 不同——projects 直接有 owner_id；reviews 經 scan_reports → projects；deployments 經 project_id → projects）。
+
+**Audit 結果**（subagent Explore，~600 字 punch list）：
+
+P0（list endpoint 全洩 — 必修）：
+- 🔴 `GET /api/deploys` — `routes/deploys.ts:11` — global list of all deployments, no owner filter
+- 🔴 `GET /api/reviews` — `routes/reviews.ts:31` — all reviews + threat_summary + reviewer_email
+- 🔴 `GET /api/project-groups` — `routes/project-groups.ts:165` — calls `listProjects()` without scope（now broken by round 31 default but should pass scope explicitly）
+
+P1（single-resource fetch 無 owner check）：
+- 🟡 `GET /api/deploys/:id` `routes/deploys.ts:23`
+- 🟡 `GET /api/deploys/:id/ssl-status` `routes/deploys.ts:36`
+- 🟡 `GET /api/deploys/:id/logs` `routes/deploys.ts:369`
+- 🟡 `GET /api/reviews/:id` `routes/reviews.ts:65`
+- 🟡 `GET /api/project-groups/:groupId` `routes/project-groups.ts:173`
+- 🟡 `GET /api/projects/:id/versions` `routes/versioning.ts:34`
+
+✅ OK：`/api/infra/*`（admin via `infra:read`）、`/api/auth/users`（`users:manage`）、`/api/auth/audit-log`（`users:manage`）、`/api/auth/api-keys`（已 filter by `request.auth.user.id`）。
+
+**Deploy 卡關**：跟 round 30 一樣，行為改變（viewer 突然看不到別人的 project）需要 user 醒來明確授權 push prod。Code committed but not shipped。
+
+**沒做的事（持續 deferred 到 round 32+）**：
+- Round 32：3 個 P0 list endpoint 同 pattern 修（deploys / reviews / project-groups）
+- Round 33+：6 個 P1 single-resource per-record check（沿用 `requireOwnerOrAdmin`）
+- Architect 的 webhook payload verdict
+- Eng Lead 的 audit-query-core 抽象化（要 4 caller 才動，現在 4：discord-audit / auth-audit / reviews / projects——可以開始動了！）
+
+**遇到的坑**：
+- 一開始想 inline import projects-query 到 orchestrator 但發現 projects-query import `AuthContext` from middleware，潛在循環依賴；改 dynamic import 規避（runtime cost negligible，loaded once）
+- TS 把 `(v.query as Record<string, unknown>).foo` 看成 type mismatch，要改 `(v.query as unknown as Record<string, unknown>).foo` 雙 cast 才過——這是已知的 zod inferred type 跟 generic record 的橋接問題
+- audit subagent 找到 `project-groups.ts:165` 是 round 31 修法的 silent regression：原本它呼叫 `listProjects()` 拿全部，現在預設 `{ kind: 'all' }` 行為不變，但**邏輯層**仍然該換成 scope-aware 才對——標 P0
+
+**架構決策**：見 `brain/decisions/2026-04-27-rbac-scope-list-pattern.md`，重點是「pure helper + zero-dep test + SQL 層 filter」三件事不能省。
+
+---
+
 **2026-04-27 ~04:40 UTC（autonomous overnight 第三十段）—— Round 30: 緊急 chunked upload 修法仍失敗，調整 default 並重新驗證**
 
 **狀態：FIX COMMITTED, DEPLOY BLOCKED, VERIFICATION IN PROGRESS**
