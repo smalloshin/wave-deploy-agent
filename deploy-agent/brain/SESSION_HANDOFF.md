@@ -4,6 +4,74 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~11:30 UTC（autonomous overnight 第四十一段）—— Round 41: GCP cost estimator wire-contract lock + pricing constants pinned**
+
+**狀態：TESTS COMMITTED（pending），ZERO 行為改動（只新增 test 檔；cost-estimator.ts 不變）**
+
+R40 鎖了 web 端 localStorage 草稿層。回到 API 端找下一個高槓桿但零測試的 pure helper：`apps/api/src/services/cost-estimator.ts`（108 LOC）—— dashboard 上「Estimated monthly cost: $X.XX/month」那個美金數字的源頭，每次 deploy 寫 deployment_event，prod 在 `pipeline-worker.ts:409` 使用。兩個 export，純函式，零 `import type` 以外的依賴。**也是零測試**。
+
+風險很實在：
+1. **GCP pricing 常數**（`perVCPUSecond`, `perGBSecond`, `perMillion`, `perGB`, free tiers）全是 inline 數字 literal。typo 一個（`0.00002400` 打成 `0.0002400`，10× off）→ dashboard 數字錯，沒 exception，沒 log
+2. **Free-tier `Math.max(0, ...)` clamps** 是讓小專案不顯示負成本的關鍵；regression 就是 dashboard 跑出鬼數字
+3. **2-decimal rounding** 在 compute / networking / monthlyTotal 各做一次；很容易疊出 round-round-round bug
+4. **`currency: 'USD' as const`** 是 typed literal contract——有人弱化成 `string` → UI 的 `Intl.NumberFormat(currency)` 沉默壞掉
+
+R37 → R38 → R39 → R40 → **R41**，第五次套同一個 wire-contract lock pattern。
+
+NEW `apps/api/src/test-cost-estimator.ts`（**60 PASS**）：
+- **Defaults applied（8 cases）**：無 input → compute=0（全在 free tier）、storage=0.10 flat、networking 由 30k req × 50 KB egress 算出、ssl=0、currency='USD'、monthlyTotal=sum
+- **CPU paid tier（2 cases）**：重量 workload 推 CPU 過 50 vCPU-hours free；expected compute 在測試裡用 first principles 算（`(cpuSec * cpu - free) * perVCPUSecond + memory + requests`）+ `assertClose` epsilon 0.01
+- **Memory free tier（1 case）**：tiny container + sparse traffic → memory 在 free tier → compute=0
+- **Requests paid tier（1 case）**：100k/day × 30 = 3M req → 1M billable × $0.40/M = $0.40，孤立掉 CPU/memory 貢獻
+- **`minInstances` always-on（2 cases）**：`minInstances=1` 加 30 × 24 × 3600 = 2,592,000 always-on vCPU-seconds；expected compute (~$60) 測試裡算，epsilon 0.02 比對
+- **Networking free tier（1 case）**：< 1 GB egress → 0
+- **Networking paid tier（2 cases）**：~2861 GB egress → ~$343 獨立算 + 完全比對
+- **Storage flat $0.10（3 cases）**：不論 input（zero / max / middle），storage 永遠 = $0.10。釘死常數
+- **SSL = 0 always（1 case）**：managed cert 永遠免費
+- **Currency literal（1 case）**：`'USD' as const` typed contract
+- **Defaults merge with partial input（3 cases）**：no-input === empty-input；partial input merge（heavy workload baseline + cpu=8 vs cpu=1，兩個都過 free tier 才看得出差）
+- **Rounding to cents（5 cases）**：每個 breakdown 欄位 + monthlyTotal 都要能乾淨表示成 integer cents
+- **monthlyTotal = sum of breakdown（1 case）**：算術恆等式釘死
+- **Output shape（10 cases）**：所有 key、所有數值、breakdown 是有四個 documented field 的 object
+- **Zero-everything edge（5 cases）**：所有 input zero → 只剩 storage cost ($0.10)。image 一定存在 → storage 永遠收費
+- **`formatCostEstimate`（10 cases）**：精確 substring 比對 total / compute / storage / networking / SSL 行；pricing note + variance disclaimer；8 行輸出計數；integer 不出 `.00`（`$100/month`, `Compute: $99`）
+- **Purity（3 cases）**：不 mutate input；每次 fresh object；same input → same output
+
+**Pricing constants pinned in test top**：
+```typescript
+const PRICING = {
+  cpu: { perVCPUSecond: 0.000024, freePerMonth: 180_000 },
+  memory: { perGBSecond: 0.0000025, freePerMonth: 360_000 },
+  requests: { perMillion: 0.4, freePerMonth: 2_000_000 },
+  networking: { perGB: 0.12, freePerMonth: 1 },
+  ssl: { managed: 0 },
+};
+const STORAGE_FLAT = 0.10;
+```
+任何 source 改 pricing 沒同步 test 都會 fail by name。**故意的摩擦**——pricing 改動必須在 code review 時被有意識 ack（特別是 GCP shifts pricing tiers 那種）。
+
+NEW ADR `brain/decisions/2026-04-27-cost-estimator-test-lock.md`。
+
+Sweep：**2313 / 39 PASS**（was 2253 / 38 at R40；+60 new tests in 1 new file）。tsc clean **across all four packages**：api / bot / web / shared。
+
+**累積堆積的 commit（DEPLOY BLOCKED 等 boss）**：
+- R30 chunked upload (`7741a35`)
+- R31 RBAC projects (`6c2d9a4`)
+- R32 RBAC project-groups (`637d1d4`)
+- R33 RBAC reviews (`a93169c`)
+- R34 RBAC deploys (`7d9d25e`)
+- R35 RBAC P1 single (`aec31c6`)
+- R36 doc correction (`614c94a`)
+- R37 bot wire contract (`0e3568f`)
+- R38 shared permission predicate (`11a28e0`)
+- R39 web upload-mapper test lock (`00588e1`)
+- R40 web upload-draft-storage test lock (`dc362ea`)
+- R41 api cost-estimator test lock（pending commit）
+
+R37 → R38 → R39 → R40 → R41 是同一個 wire-contract lock pattern 在不同層 helper 上滾。R41 多了一個獨特元素：**pricing constants 同時放在 test 與 source**，故意製造 sync 摩擦——只要 pricing 變動，code review 一定會看到一條失敗測試名字。dashboard 沉默報錯（用戶看到的數字錯但沒 alert）的成本遠高於 30 秒同步成本。
+
+---
+
 **2026-04-27 ~11:00 UTC（autonomous overnight 第四十段）—— Round 40: localStorage 草稿層 wire-contract lock**
 
 **狀態：TESTS COMMITTED（pending），ZERO 行為改動（只新增 test 檔；upload-draft-storage.ts 不變）**
