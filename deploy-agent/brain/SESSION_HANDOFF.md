@@ -4,6 +4,59 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~09:00 UTC（autonomous overnight 第三十七段）—— Round 37: Bot RBAC consumer wiring（contract lock + tests）**
+
+**狀態：FIX COMMITTED（pending），DEPLOY BLOCKED（boss 還沒醒，但這個 round 改動 0 行 production 行為，純加新 helper + 鎖測試）**
+
+R36 把 IDOR audit punch list 收完。現在 RBAC server-side complete。下一步是 consumer side wiring，這樣 `AUTH_MODE=enforced` 切換時 Bot 不會死。R37 4-subagent 辯論一致選 candidate #1：Bot API key wiring。
+
+關鍵發現：`apps/bot/src/api-client.ts` 的 `authHeaders()` + `apps/bot/src/config.ts` 的 `apiKey` 環境變數**Round 25 就 ship 了**。R37 只缺**wire-contract test lock**——確保未來重構不會悄悄改掉「empty key → no header」或「populated → Bearer <raw>」這個對 server middleware 的承諾。
+
+NEW `apps/bot/src/auth-headers.ts`（22 LOC pure helper）：
+- 從 `api-client.ts` 抽出 `buildAuthHeaders(apiKey: string)`
+- 為什麼抽：原本 inline 在 api-client.ts，但 api-client.ts 一 import 就觸發 `config.ts` 的 `process.exit(1)`（`DISCORD_TOKEN` 必須存在）。要 zero-dep 測試就必須抽到 boots 自己的純模組
+- Pass-through whitespace（不 auto-trim）：whitespace key 是 operator env 錯，trim 會 mask key-rotation 失誤；server 401 才是正確錯誤訊號
+
+NEW `apps/bot/src/test-api-client-auth.ts`（18 PASS）：
+- empty / unset key → `{}`（no Authorization）
+- populated key → exact `Bearer <raw>` shape
+- whitespace pass-through（lock current behavior）
+- 特殊字元（`-_.+/=`）verbatim
+- 長 key（512 chars）no truncation
+- fresh object per call（no shared mutable state）
+- 結果絕不含 `Content-Type` 或其他 unintended keys
+- RBAC behavioral contract markers（permissive vs enforced 的 wire 差異）
+
+MODIFIED `apps/bot/src/api-client.ts:4-7`：import `buildAuthHeaders` from `./auth-headers.js`，內部 `authHeaders()` 改成一行 wrapper。
+
+Sweep：**1897 / 34 PASS**（was 1879/33 at R36；+18 新 tests in 1 新檔）。tsc clean both bot + api。
+
+**Boss-gated 下一步**（需 user 醒來決定）：
+1. **Bot user identity 模型**——三選一：
+   - a) 專用 `bot@deploy-agent.local` user，role `reviewer`（least-privilege，可列/批 reviews，不能建 projects）
+   - b) 共用 admin user，bot key 帶 narrow `permissions[]` 蓋掉 role
+   - c) per-operator bot（每 Discord user 一把 key 對應自己的 user，但 bot identity 共用，attribution 不真實）
+   - **default if not chosen**: a, 標準 service-account least-privilege
+2. **發 api_keys row**：`POST /api/auth/api-keys` route Round 25 plan 有提，需驗證
+3. **Cloud Run env var** 設 `DEPLOY_AGENT_API_KEY` on `deploy-agent-bot`
+4. **permissive 模式驗證** Bot 仍 work → 才能 flip `AUTH_MODE=enforced`
+
+NEW ADR `brain/decisions/2026-04-27-bot-api-key-bootstrap.md` 登記設計。Index 同步更新。
+
+**累積堆積的 commit（仍 DEPLOY BLOCKED 待 boss 授權）**：
+- R30 chunked upload（commit 7741a35）
+- R31 RBAC projects scope (`6c2d9a4`)
+- R32 RBAC project-groups (`637d1d4`)
+- R33 RBAC reviews (`a93169c`)
+- R34 RBAC deploys (`7d9d25e`)
+- R35 RBAC P1 single (`aec31c6`)
+- R36 doc correction (`614c94a`)
+- R37 bot wire contract（pending commit）
+
+R37 是堆積中**唯一一個 0 production-behavior 改動**的 commit（純加 helper + 加 test + 加 docs）。技術上可獨立部署。但 8 commits 一起部署比較簡單。
+
+---
+
 **2026-04-27 ~08:15 UTC（autonomous overnight 第三十六段）—— Round 36: POST /api/project-groups/:groupId/actions（已修，doc correction）**
 
 **狀態：NO CODE CHANGE，只 doc 補記，commit pending**

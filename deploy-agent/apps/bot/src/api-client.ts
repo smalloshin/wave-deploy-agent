@@ -2,6 +2,7 @@
 // Uses native fetch (Node 22), zero dependencies
 
 import { config } from './config.js';
+import { buildAuthHeaders } from './auth-headers.js';
 
 const API = config.apiBaseUrl;
 
@@ -51,7 +52,9 @@ export interface Review {
 // ─── API Calls ───
 
 function authHeaders(): Record<string, string> {
-  return config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {};
+  // Round 37: pure logic lives in ./auth-headers.ts so it can be tested
+  // without dragging `config` (which exits on missing required env).
+  return buildAuthHeaders(config.apiKey);
 }
 
 async function get<T>(path: string): Promise<T> {
