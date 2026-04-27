@@ -194,10 +194,10 @@ output groups 就 IDOR-safe。一個 viewer 不可能透過任何 groupId 猜測
 
 **Audit follow-through 進度**：
 - ✅ R31: `GET /api/projects` (commit `6c2d9a4`)
-- ✅ R32: `GET /api/project-groups` LIST + GET-by-id (this round)
-- ⏸️ R33: `GET /api/reviews`（要 join scan_reports → projects 才能拿 owner_id）
-- ⏸️ R34: `GET /api/deploys`（直接 join projects 就行）
-- ⏸️ R35+: 6 個 P1 single-resource endpoint (Pattern B)
+- ✅ R32: `GET /api/project-groups` LIST + GET-by-id (commit `637d1d4`)
+- ✅ R33: `GET /api/reviews` (commit `a93169c`)
+- ✅ R34: `GET /api/deploys` (commit `7d9d25e`) — **P0 list endpoints DONE**
+- ✅ R35: 6 P1 single-resource GETs Pattern B (commit `aec31c6`) — **P1 per-record DONE**
 - ⏸️ R??: `POST /api/project-groups/:groupId/actions` per-target check (mutating, 出 list 範疇)
 
 **5th-caller-trigger for `audit-query-core` abstraction**：目前 4 callers
@@ -205,6 +205,87 @@ output groups 就 IDOR-safe。一個 viewer 不可能透過任何 groupId 猜測
 後仍是「parser + SQL builder + scope」這同樣三件事，且 R34 deploys 也是同樣
 shape，那 R34 就是觸發點，再決定要不要抽 generic `audit-query-core`。在那之前
 deferred。
+
+## Round 33 Follow-Through (2026-04-27)
+
+`GET /api/reviews` 兩個 envelope path（legacy + paged）修完，commit `a93169c`。
+
+**做法**：reviews-query 已經 JOIN `projects p ON sr.project_id = p.id`（R30b 留下的拓撲），
+新增 scope param 是純粹擴張：
+
+1. **`buildWhere(query, scope = { kind: 'all' })` 把 scope 放最前面**
+   - placeholder `$1` 永遠是 ownerId（如果 owner scope）；user filters 順序遞增
+   - test 鎖 placeholder ordering（`assertEq(sql.values, [SAMPLE_USER_ID, 50, 0])`）
+   - 為什麼放最前：auditor 讀 SQL 第一眼看到「先 RBAC 再 user filter」，符合 defense-in-depth 心智模型
+2. **`buildReviewsListSql(q, scope)` + `buildReviewsCountSql(q, scope)`** 兩處 thread through
+3. **route handler 兩條路徑都 wire**（legacy `{ reviews }` + paged `{ reviews, total, ... }`）
+
+**Tests deltas**：
+- `test-reviews-query.ts` 85 → 118 PASS（+33 R33 tests）
+- 涵蓋 scope=all/owner/denied + scope×user-filter 堆疊 + placeholder numbering 鎖死 +
+  security regression（ownerId 不嵌字串、SQL-injection-shaped 也走 pg param）+
+  IDOR contract（alice scope ≠ bob scope）+ JOIN / ORDER BY / LIMIT 保留
+- Sweep 1805 / 32 → 1838 / 32 全綠
+
+**Self-critique**：本來該 TDD red 先 — tests 寫完先跑一次確認失敗，再實作。實際操作
+我兩件事一起寫然後一次跑 green，沒驗 red phase。下次先單獨 commit tests-only
+跑一次失敗，再 commit implementation。
+
+## Round 34 Follow-Through (2026-04-27)
+
+`GET /api/deploys` 修完，commit `7d9d25e`。**P0 list endpoint sweep 完成**。
+
+**做法**：deploys 是 4 個 P0 中拓撲最簡單的——deployments 本來就 JOIN projects，
+加 `WHERE p.owner_id = $1` 完事。
+
+1. **NEW `apps/api/src/services/deploys-query.ts`** — 70 LOC，**只有單一函式
+   `buildListDeploysSql(scope)`**。沒 parser，沒 zod，沒 filter（deploys list 還沒
+   query-string filter）。直接 switch on `scope.kind` 回傳 `{ text, values }`
+2. **Reuse `scopeForRequest`** from projects-query — verdict 三態邏輯不複製
+3. **NEW `test-deploys-query.ts`** — 41 PASS：scope kind × SQL + JOIN/ORDER BY/LIMIT
+   保留 + security regression + IDOR contract + E2E with `scopeForRequest`（含
+   admin/viewer/reviewer/anonymous-permissive/anonymous-enforced/empty-role-name fail-closed）
+4. **MODIFIED `routes/deploys.ts:13`** — 5 行 wire：derive mode → derive scope → build
+   SQL → query → return
+
+**5th-caller-trigger 結論（從 R32 ADR amendment 延伸）**：本來說 R34 決定要不要抽
+`audit-query-core`。Verdict **NO**：deploys-query 太簡單（無 parser、無 zod、
+無 filter），三 line WHERE + 三 line values + switch on `scope.kind`。抽象只會
+藏起明顯的東西，沒移除真實重複。等第 6 個 caller 出現帶 full parser+composer
+shape 再評估。
+
+Sweep 1838 / 32 → 1879 / 33 全綠（+41 R34 tests）。tsc clean。
+
+## Round 35 Follow-Through (2026-04-27) — Pattern B 收尾
+
+整個 round-31 audit punch list **完全結束**，commit `aec31c6`。R35 把 round-25
+就存在的 `requireOwnerOrAdmin` helper 套到 6 個 read-side 單一資源 endpoint：
+
+| Endpoint | Action label | Notes |
+|----------|-------------|-------|
+| `GET /api/projects/:id` | `project_read` | 已有 `getProject()` row，直接 pass |
+| `GET /api/projects/:id/versions` | `versions_read` | 同上 |
+| `GET /api/reviews/:id` | `review_read` | **最敏感** — semgrep + trivy + LLM analysis + threat summary + auto-fix + cost |
+| `GET /api/deploys/:id` | `deployment_read` | SELECT 多取 `p.owner_id as project_owner_id` 省 DB roundtrip |
+| `GET /api/deploys/:id/ssl-status` | `deployment_ssl_status_read` | 同上 |
+| `GET /api/deploys/:id/logs` | `deployment_logs_read` | 改 SELECT 加 JOIN projects + owner_id |
+
+**為什麼沒寫新測試**：`requireOwnerOrAdmin` 的 verdict 邏輯在 round 25 已被
+`test-access-denied-verdict.ts` 完整覆蓋。R35 只是**wiring**，不是新邏輯。沿用
+round-25 同樣的 wiring 沒寫 per-handler test 重複（round 25 wired 16 個 mutating
+handler 也是這樣）。Sweep 1879/33 全綠 + tsc clean = 沒回歸 = OK。
+
+如果未來想加 per-handler integration test，模式是 `test-route-<resource>.ts`
+（needs Fastify + DB），不在「zero-dep tsx test」這條軌道上。本 ADR 範疇外。
+
+**OWASP coverage 狀態**（A01:2021 + API Top 10 #1 BOLA）：
+- ✅ Read-side LIST endpoints（4 P0：projects / project-groups / reviews / deploys）
+- ✅ Read-side single-resource（6 P1）
+- ✅ Mutating routes（round 25 已收，16 個 handler）
+- ⏸️ `POST /api/project-groups/:groupId/actions`（bulk mutating，per-target check
+  pattern 不同，未修）
+
+剩 1 個 mutating bulk action endpoint。整體 RBAC read-path **complete**。
 
 ## References
 

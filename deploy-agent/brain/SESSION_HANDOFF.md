@@ -4,6 +4,77 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~07:30 UTC（autonomous overnight 第三十五段）—— Round 35: P1 single-resource owner checks（IDOR audit punch list **完成**）**
+
+**狀態：FIX COMMITTED `aec31c6`，DEPLOY BLOCKED（同 R31/R32/R33/R34，行為改變需 boss 授權）**
+
+整個 round-31 audit punch list（4 P0 list + 6 P1 single-resource）**全部修完**。R35 是 Pattern B 收尾——把 round-25 已存在的 `requireOwnerOrAdmin` 套到 6 個 read-side 單一資源 endpoint：
+
+- `GET /api/projects/:id` `project_read`（補 R31 LIST 對應的 P1）
+- `GET /api/projects/:id/versions` `versions_read`（versions 洩 cloudRunService/customDomain，等於 deploy list）
+- `GET /api/reviews/:id` `review_read`（**最敏感**——payload 含 semgrep + trivy + LLM analysis + threat summary + auto-fix + cost）
+- `GET /api/deploys/:id` `deployment_read`
+- `GET /api/deploys/:id/ssl-status` `deployment_ssl_status_read`
+- `GET /api/deploys/:id/logs` `deployment_logs_read`
+
+3 個 deploys handler 各 SELECT 多加 `p.owner_id as project_owner_id`，省一次 DB roundtrip（不 call `getProject(projectId)`）。reviews 已經 JOIN projects（R30b shape），加一欄即可。projects + versions 早就 `getProject()` 拿整 row，直接 pass 給 helper。
+
+**為什麼沒寫新測試**：`requireOwnerOrAdmin` 的 verdict 邏輯在 round 25 已被 `test-access-denied-verdict.ts` 完整覆蓋。R35 只是「把 helper 接到 6 個 read handler」——沿用 round 25 同樣的 wiring 不需要 per-handler test 重複（round 25 wired 16 個 mutating handler 也是這樣）。Sweep 1879/33 全綠 + tsc clean = 沒回歸。
+
+**Audit follow-through 進度（COMPLETE）**：
+- ✅ R31: `GET /api/projects` (commit `6c2d9a4`) — Pattern A
+- ✅ R32: `GET /api/project-groups` LIST + GET-by-id (commit `637d1d4`) — Pattern A + extracted pure module
+- ✅ R33: `GET /api/reviews` (commit `a93169c`) — Pattern A，scope param 加在 buildWhere 第一個 placeholder
+- ✅ R34: `GET /api/deploys` (commit `7d9d25e`) — Pattern A，新建 `deploys-query.ts`（minimal，無 parser）
+- ✅ R35: 6 P1 single-resource GETs (commit `aec31c6`) — Pattern B
+- ⏸️ R??: `POST /api/project-groups/:groupId/actions` per-target check（mutating，仍欠）
+
+**OWASP A01:2021 + OWASP API Top 10 #1 (BOLA) 對 read-side surface 已 COMPLETE**。Mutating 在 round 25 收掉。剩 1 個 mutating bulk action（project-groups POST）。
+
+**5th-caller-trigger 結論**：R34 deploys-query 太簡單（無 parser、無 zod、無 filter），三 line WHERE + 三 line values + switch on `scope.kind`。原本 R32 ADR 寫「R34 決定要不要抽 `audit-query-core`」——verdict NO，抽象只會藏起明顯的，等 6th caller 出現帶 full parser+composer shape 再說。
+
+**Production deploy 仍卡關**：4 commits 累積（R30 chunked upload + R31/R32/R33/R34/R35 RBAC）行為改變幅度大（viewer 突然看不到別人的所有資源），需 user 醒來明確授權 `gcloud builds submit`。
+
+**遇到的坑**：
+- R34 test 一開始 tsc fail（fakeUser 缺 `permissions`/`last_login_at`/`created_at`，fakeAuth 寫 `source` 而非 `via`）。runtime 過了因為 test 用 JSON.stringify 比較不在乎 type，但 strict tsc 抓到。補完欄位 + 改 `null` 取代 `undefined`。
+- R35 reviews.ts SELECT 多取 `p.owner_id as project_owner_id` 時要小心 alias collision——已驗 row.project_owner_id 不撞 review schema 的其他欄位。
+
+---
+
+**2026-04-27 ~07:00 UTC（autonomous overnight 第三十四段）—— Round 34: GET /api/deploys RBAC scope-filter（P0 list endpoint 收尾）**
+
+**狀態：FIX COMMITTED `7d9d25e`，DEPLOY BLOCKED**
+
+第 4 也是最後一個 P0 list IDOR。前作（R31/R32/R33）的 SQL JOIN 拓撲都比 deploys 複雜，deploys 反而最簡單——deployments 表本來就 JOIN projects，加個 `WHERE p.owner_id = $1` 完事。
+
+NEW `apps/api/src/services/deploys-query.ts`（70 LOC pure helper，**單一函式 `buildListDeploysSql(scope)`**——沒 parser，沒 zod，沒 filter；deploys list 還沒 query-string filter）。Reuse `scopeForRequest` from projects-query。
+
+NEW `apps/api/src/test-deploys-query.ts`（41 PASS）：3 scope kind × SQL composition + JOIN/ORDER BY/LIMIT 保留 + security regression（ownerId 不嵌字串）+ IDOR contract（alice 不見 bob）+ E2E with `scopeForRequest`（admin/viewer/reviewer/anonymous + empty role_name fail closed）。
+
+MODIFIED `apps/api/src/routes/deploys.ts:13`：route handler derive scope + call `buildListDeploysSql(scope)`。
+
+Sweep：**1879 / 33 PASS**（was 1838/32 at R33）。tsc clean。
+
+---
+
+**2026-04-27 ~06:45 UTC（autonomous overnight 第三十三段）—— Round 33: GET /api/reviews RBAC scope-filter（reviews 是安全閘門，IDOR 等於把所有 threat summary 對全網外洩）**
+
+**狀態：FIX COMMITTED `a93169c`，DEPLOY BLOCKED**
+
+Reviews 是部署 agent 最敏感的 read surface——approver 在這 list 上做 approve/reject 決策。任何 authenticated user 看得到所有 review + threat_summary + reviewer identity = OWASP BOLA on the most sensitive list endpoint.
+
+MODIFIED `apps/api/src/services/reviews-query.ts`：`buildWhere(query, scope = { kind: 'all' })` 把 scope 放在 conds 最前面（owner predicate 是 placeholder $1，後面 user filter 順序遞增）。`buildReviewsListSql(query, scope)` + `buildReviewsCountSql(query, scope)` 對齊。
+
+MODIFIED `apps/api/src/routes/reviews.ts:31`：legacy envelope（無 pagination）+ paged envelope 兩條路徑都 derive scope 並 pass 給 builders。
+
+EXTENDED `apps/api/src/test-reviews-query.ts`：85 → **118 tests PASS**（+33 R33 tests）。覆蓋三 scope kind × SQL/count + scope 與 user filter 堆疊 + placeholder numbering 鎖死 [ownerId, limit, offset] + security regression + IDOR contract + JOIN/ORDER BY/LIMIT 保留。
+
+Sweep：**1838 / 32 PASS**（was 1805/32 at R32）。tsc clean。
+
+**遺憾**：本來該 TDD red 先（測試先跑失敗確認測試會抓 bug），實際上我寫完測試 + 實作後一次跑就 green 了，沒驗 red phase。下次嚴格按 red-green-refactor 來。
+
+---
+
 **2026-04-27 ~06:15 UTC（autonomous overnight 第三十二段）—— Round 32: GET /api/project-groups RBAC scope-filter（IDOR audit follow-through 第 1/3）**
 
 **狀態：FIX COMMITTED `<round-32-sha>`，DEPLOY BLOCKED（同 R31，行為改變需 boss 授權）**
