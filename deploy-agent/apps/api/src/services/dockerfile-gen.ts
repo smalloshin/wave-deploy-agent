@@ -1,4 +1,5 @@
 import type { DetectionResult } from './project-detector';
+import { sanitizeEntrypoint, sanitizePort } from './dockerfile-safe.js';
 
 export function generateDockerfile(detection: DetectionResult): string {
   switch (detection.language) {
@@ -40,6 +41,8 @@ function generateNodeDockerfile(d: DetectionResult): string {
     : 'npm ci';
   const buildCmd = d.framework === 'nextjs' ? 'npm run build' : 'npm run build';
   const baseImage = pm === 'bun' ? 'oven/bun:1' : 'node:22-alpine';
+  const safePort = sanitizePort(d.port);
+  const safeEntrypoint = sanitizeEntrypoint(d.entrypoint, 'dist/index.js');
 
   if (d.framework === 'nextjs') {
     return `# Multi-stage build for Next.js
@@ -57,13 +60,13 @@ RUN ${buildCmd}
 FROM ${baseImage} AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-ENV PORT=${d.port}
+ENV PORT=${safePort}
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 USER nextjs
-EXPOSE ${d.port}
+EXPOSE ${safePort}
 CMD ["node", "server.js"]
 `;
   }
@@ -78,9 +81,9 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build 2>/dev/null || true
-ENV PORT=${d.port}
-EXPOSE ${d.port}
-CMD ["node", "${d.entrypoint ?? 'dist/index.js'}"]
+ENV PORT=${safePort}
+EXPOSE ${safePort}
+CMD ["node", "${safeEntrypoint}"]
 `;
 }
 
@@ -99,18 +102,20 @@ function generatePythonDockerfile(d: DetectionResult): string {
     ? 'gunicorn --bind 0.0.0.0:${PORT:-5000} app:app'
     : 'python main.py';
 
+  const safePort = sanitizePort(d.port);
   return `FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt* pyproject.toml* Pipfile* ./
 RUN ${installCmd}
 COPY . .
-ENV PORT=${d.port}
-EXPOSE ${d.port}
+ENV PORT=${safePort}
+EXPOSE ${safePort}
 CMD ${JSON.stringify(startCmd.split(' '))}
 `;
 }
 
 function generateGoDockerfile(d: DetectionResult): string {
+  const safePort = sanitizePort(d.port);
   return `FROM golang:1.23-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -121,16 +126,17 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /server .
 FROM alpine:3.20
 RUN apk --no-cache add ca-certificates
 COPY --from=builder /server /server
-ENV PORT=${d.port}
-EXPOSE ${d.port}
+ENV PORT=${safePort}
+EXPOSE ${safePort}
 CMD ["/server"]
 `;
 }
 
 function generateStaticDockerfile(d: DetectionResult): string {
+  const safePort = sanitizePort(d.port);
   return `FROM nginx:alpine
 COPY . /usr/share/nginx/html
-EXPOSE ${d.port}
+EXPOSE ${safePort}
 CMD ["nginx", "-g", "daemon off;"]
 `;
 }
