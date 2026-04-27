@@ -4,6 +4,45 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~11:00 UTC（autonomous overnight 第四十段）—— Round 40: localStorage 草稿層 wire-contract lock**
+
+**狀態：TESTS COMMITTED（pending），ZERO 行為改動（只新增 test 檔；upload-draft-storage.ts 不變）**
+
+R39 鎖了 web 端錯誤翻譯層。這層下面是 `apps/web/lib/upload-draft-storage.ts`（127 LOC，5 個 exported helpers），負責「上傳失敗時別讓使用者丟掉 5 分鐘填的表單」——把 form fields 寫到 localStorage，過期清掉，私隱模式 / quota 滿就靜靜失敗。**也是零測試**。silent-failure 設計沒問題（你不希望使用者每次打字都跳「儲存失敗」），但同樣的設計讓 regression 變隱形：如果 `saveDraft` 因為 bug 默默 no-op，使用者照樣有 working form，只是再也存不下任何東西。
+
+NEW `apps/web/lib/test-upload-draft-storage.ts`（**55 PASS**）：
+- **isBrowser 護欄（2 cases）**：`window` 從 globalThis 拿掉，5 個 export 全部都不能 throw、`loadDraft` 回 null。鎖 SSR 安全
+- **saveDraft shape & key（10 cases）**：寫進 `wda:upload:draft:{projectId}`、`v:1` schema、所有 formData / fileMeta 欄位、ISO 8601 savedAt + expiresAt、**`expiresAt = savedAt + 7 days exactly`（604800000 ms 數字釘死）**、`'new'` projectId literal
+- **50 KB cap 降級（4 cases）**：55 KB form → 丟 fileMeta 但保留 formData + schema version；小 draft 保留 fileMeta（cap 是上界不是下界）
+- **saveDraft silent throw（2 cases）**：`setShouldThrow` 模擬 private mode / QuotaExceeded → swallow 不 throw、什麼都沒寫
+- **loadDraft 完整路徑**：round-trip / expired auto-cleanup / **schema version mismatch (v:2 → null + cleanup) migration 安全網** / 壞 JSON / 壞 expiresAt date NaN
+- **clearDraft（3 cases）**：emit removeItem + silent throw
+- **gcExpiredDrafts（5 cases）**：保留 fresh draft、清 expired draft、**不碰 non-prefix 的 key**（不會把別的 app 的 localStorage 砍掉）、清壞 JSON、清壞 expiresAt、`length` getter throw 也吞掉
+- **makeDebouncedSave（10 cases）**：delay 之前不存、delay 之後正好存一次、rapid retrigger → **只一次 setItem op + last value wins**、獨立 closure timer 不共享、default 500ms 契約
+
+`makeFakeStorage()` 是 in-memory shim，記錄所有 set/remove ops。`withStorage()` helper 自動 install/restore `globalThis.window = { localStorage: fake }`。
+
+NEW ADR `brain/decisions/2026-04-27-upload-draft-storage-test-lock.md`。
+
+Sweep：**2253 / 38 PASS**（was 2198 / 37 at R39；+55 new tests in 1 new file）。tsc clean **across all four packages**：api / bot / web / shared。
+
+**累積堆積的 commit（DEPLOY BLOCKED 等 boss）**：
+- R30 chunked upload (`7741a35`)
+- R31 RBAC projects (`6c2d9a4`)
+- R32 RBAC project-groups (`637d1d4`)
+- R33 RBAC reviews (`a93169c`)
+- R34 RBAC deploys (`7d9d25e`)
+- R35 RBAC P1 single (`aec31c6`)
+- R36 doc correction (`614c94a`)
+- R37 bot wire contract (`0e3568f`)
+- R38 shared permission predicate (`11a28e0`)
+- R39 web upload-mapper test lock (`00588e1`)
+- R40 web upload-draft-storage test lock（pending commit）
+
+R37 → R38 → R39 → R40 是同一個 wire-contract lock pattern 一層層往使用者最近那層推。R37/R38 鎖的是 RBAC 邏輯一致性；R39/R40 鎖的是 client-only silent-failure helpers——這層平常 reviewer 不會看，bug 也不會 throw，只能用測試把行為釘死。
+
+---
+
 **2026-04-27 ~10:30 UTC（autonomous overnight 第三十九段）—— Round 39: 上傳錯誤翻譯層 wire-contract lock + sweep 擴張到 apps/web/lib**
 
 **狀態：TESTS COMMITTED（pending），ZERO 行為改動（只新增 test 檔 + sweep 擴張，沒動 source；upload-error-mapper.ts 不變）**
