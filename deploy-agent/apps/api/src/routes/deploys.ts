@@ -5,17 +5,19 @@ import { getStageEvents, summarizeStages } from '../services/stage-events';
 import { replayFrom, subscribe, type DeploymentEventEnvelope } from '../services/deployment-event-stream';
 import { fetchBuildLogOnce } from '../services/build-log-poller';
 import { diagnoseDeployment, type DiagnosticKind } from '../services/deployment-diagnostics';
+import { scopeForRequest, type AuthMode } from '../services/projects-query';
+import { buildListDeploysSql } from '../services/deploys-query';
 
 export async function deployRoutes(app: FastifyInstance) {
   // List deployments
-  app.get('/api/deploys', async () => {
-    const result = await query(
-      `SELECT d.*, p.name as project_name, p.slug as project_slug
-       FROM deployments d
-       JOIN projects p ON d.project_id = p.id
-       ORDER BY d.created_at DESC
-       LIMIT 50`
-    );
+  app.get('/api/deploys', async (request) => {
+    // R34 — RBAC scope filter (closes IDOR on GET /api/deploys).
+    // Admin / anonymous-permissive → all; non-admin → only deploys for
+    // projects they own; anonymous-enforced → zero rows (defensive).
+    const authMode = (process.env.AUTH_MODE === 'enforced' ? 'enforced' : 'permissive') as AuthMode;
+    const scope = scopeForRequest(request.auth, authMode);
+    const sql = buildListDeploysSql(scope);
+    const result = await query(sql.text, sql.values);
     return { deployments: result.rows };
   });
 
