@@ -4,6 +4,53 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~02:00 UTC（autonomous overnight 第二十九段）—— Round 29: dockerfile-gen Dockerfile-injection 防禦**
+
+4 subagent 辯論結論：QA 抓出 dockerfile-gen.ts 的 critical 漏洞當頭條（不是 round 28a 那種 limited blast radius，這是直接踩到產品 raison d'être）。Architect 提的 webhook payload verdict、Eng Lead 提的 audit-query-core 抽象化、Engineer 提的 reviews-query 對稱化都 deferred 到 round 30+。
+
+**漏洞**（commit `fef2d76`）：
+
+`apps/api/src/services/dockerfile-gen.ts` 過去把 `d.entrypoint` 跟 `d.port` 直接 interpolate 進 Dockerfile string，零 validation。`d.entrypoint` 在 `project-detector.ts:56` 來自 `pkg.main`（純 user-controlled `package.json`）。一個 vibe-coded user 上傳的 `package.json` 含：
+
+```json
+{ "main": "x\"]\nUSER root\nCMD [\"/bin/sh" }
+```
+
+生出來的 Dockerfile 會多一行 `USER root` 跟一個 shell CMD，build 階段以 root 跑任意 shell。Cloud Build sandbox 限 blast radius，但這違反 wave-deploy-agent 的 raison d'être——「security gate for vibe-coded projects」如果讓被檢查的 project 改寫檢查它的 deploy pipeline 本身，gate 就破了。
+
+**修法**：
+
+A) `apps/api/src/services/dockerfile-safe.ts`（NEW，~75 LOC）兩個純 helper：
+- `sanitizeEntrypoint(value, fallback)`：allowlist `[A-Za-z0-9_\-./@+]+`，拒絕換行 / `"` / `\\` / `` ` `` / `$` / parens / shell separators（`;|&`） / leading `/`（escape `/app` workdir） / `..` path segment（traversal） / > 200 chars。invalid → silent fallback
+- `sanitizePort(value, fallback=8080)`：wrap 既有 `safeParsePort`，invalid 回 8080（Cloud Run-friendly default）。`safeParsePort` 早就在 utils 寫好了，但 `dockerfile-gen.ts` 之前沒呼叫——現在呼叫了
+
+B) `apps/api/src/services/dockerfile-gen.ts` 4 條路全接上：node（含 nextjs 分支）/ python / go / static，每條算一個 `safePort` 取代 `${d.port}`，node 多算一個 `safeEntrypoint` 取代 `${d.entrypoint ?? 'dist/index.js'}`
+
+C) `apps/api/src/test-dockerfile-gen.ts`（NEW，56 PASS）：
+- `sanitizeEntrypoint` allowlist 邊界：POSIX path / `@scoped` / `.bin/server` / trim whitespace / 200-char cap / 內部 newline reject / 尾端 newline trim 後安全
+- **8 個 SECURITY test**：餵 `'x"]\nUSER root\nCMD ["/bin/sh"'` / 含 `"` / 含 `` ` `` / 含 `$()` / leading `/` / `../` traversal / null / empty 都 fallback；assert 出來的 Dockerfile 「exactly 1 CMD line」「0 個 USER root」「0 個 injected RUN」
+- `sanitizePort`：valid pass-through / 0（Cloud Run reject） / negative / > 65535 / NaN / Infinity / non-numeric / undefined → fallback；自訂 fallback 尊重
+- Per-language structural invariant：每條語言生出的 Dockerfile 都剛好 1 CMD、無 `USER root`（nextjs 用 `USER nextjs` 是合法非 root）、`.env` + `.env.local` 在 dockerignore 裡
+- **Legitimate value preserved**（防 over-sanitization）：合法 entrypoint / port 仍 verbatim 進 Dockerfile
+
+**Cumulative sweep**：949 passed / 0 failed across 27 zero-dep test files（+56 from round 29）。`apps/api` tsc 全綠。
+
+**架構決策**：
+- 為什麼 fallback 而不是 throw？deploy pipeline 中段不該因為 detector 取錯 entrypoint 就整個炸掉——靜默降級到 `dist/index.js` 是相對 forgiving 的 UX，且 review 階段 boss 可以從 generated Dockerfile 看出來「沒按 user 指定走」。throw 反而讓使用者搞不清楚問題出在哪
+- 為什麼 entrypoint 用 allowlist 而不是 blocklist？allowlist 永遠安全（沒列就拒）；blocklist 要追所有 shell metachar，新版 shell 加新 syntax 我們就漏。寧可拒一些罕見的合法字元（`#`、`!`、`'`）也不冒漏掉的險
+- 為什麼 port fallback 是 8080 不是 null？Dockerfile template 需要插一個數字進 `EXPOSE`，`null` 會 render 成字串 `"null"` 直接破。8080 是 Cloud Run 預設，多數 framework 也讀 `$PORT`，所以 EXPOSE 數字主要影響 documentation 跟 health-check probe，安全 fallback
+- 為什麼把 sanitizer 拆獨立 module 不直接寫在 `dockerfile-gen.ts`？兩個原因：(1) 純函式拆出來零 dep 好測 (2) 將來 K8s manifest gen / cloud-run yaml gen 也會有同樣 user-controlled value 要過濾，這個 helper 可以 reuse
+
+**遇到的坑**：
+- 第一版 test 預期 `'a.js\n'` → fallback，但 `.trim()` 把尾端 newline 砍掉後 `'a.js'` 是合法的，sanitizer 回 `'a.js'`。這其實安全（已經沒 newline 了），test 期望太嚴。改成「內部 newline 必拒、尾端 newline trim 後安全」兩個獨立 test 釘清楚 invariant
+- 200-char cap edge case：原本想 build 一個剛好 200 char 的 path 但算錯，`'a/'.repeat(99) + 'x.js'` 是 202——改成 slice(0, 200) bypass
+
+**沒做的事 / 下一步**：
+- Round 30 候選：Engineer 的 reviews-query verdict（GET /api/reviews 還沒 boil，是 forensic + decisioning surface 安全敏感度高）
+- Round 31+ 候選：webhook payload verdict（架構 boil-perimeter）、audit-query-core 抽象化（要 4 caller 才動）、listProjects owner_id filter（user 講過要先 verify 才動）
+
+---
+
 **2026-04-27 ~01:30 UTC（autonomous overnight 第二十八段續）—— Round 28a/b: prototype-pollution defense + auth_audit_log lake completion**
 
 緊急 deploy 完之後接著做兩件事，符合 4-subagent 辯論的結論：QA 抓出來的 discord-audit-mapper prototype-pollution 缺洞當 sidebar，Engineer recommend 的 auth-audit-query 對稱（mirror round 27 discord_audit）當 headline。
