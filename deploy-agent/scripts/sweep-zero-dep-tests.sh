@@ -135,6 +135,22 @@ for f in packages/shared/src/test-*.ts; do
   run_one "src/$base" packages/shared
 done
 
+# Round 39: web-app pure-helper tests under apps/web/lib (test-resumable-upload
+# was previously only run ad-hoc; test-upload-error-mapper is brand new). These
+# are zero-dep because upload-error-mapper.ts and resumable-upload.ts only do
+# `import type` from @deploy-agent/shared — no runtime cross-package value
+# imports to resolve. Cwd = apps/web so the local node_modules / tsconfig
+# apply.
+for f in apps/web/lib/test-*.ts; do
+  [[ -e "$f" ]] || continue   # nothing matched → skip silently
+  base=$(basename "$f")
+  if skip_match "$base"; then
+    echo "−  $base (skipped: needs live infra)"
+    continue
+  fi
+  run_one "lib/$base" apps/web
+done
+
 echo ""
 echo "=== Total: $TOTAL_PASS passed, $TOTAL_FAIL failed across $((FILES_OK + FILES_BAD)) files ==="
 if [[ "$FILES_BAD" -gt 0 ]]; then

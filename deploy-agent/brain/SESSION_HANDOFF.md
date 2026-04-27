@@ -4,6 +4,48 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-27 ~10:30 UTC（autonomous overnight 第三十九段）—— Round 39: 上傳錯誤翻譯層 wire-contract lock + sweep 擴張到 apps/web/lib**
+
+**狀態：TESTS COMMITTED（pending），ZERO 行為改動（只新增 test 檔 + sweep 擴張，沒動 source；upload-error-mapper.ts 不變）**
+
+`apps/web/lib/upload-error-mapper.ts`（242 LOC，4 個 exported pure helpers + 2 internal）是整個上傳流程**使用者看到什麼錯誤訊息**的翻譯層——server envelope → i18n key、client 端錯誤的啟發式分類、LLM fallback fetch、可貼 issue 的錯誤報告。**之前零測試**。silent regression（i18nKey 對錯、recoveryHint 漏、`mapClientError` if/else 順序錯、`fetchDiagnostic` 把 throw 漏掉）會表現為錯誤 UX，而不是 exception——code review / QA 都很難抓到。
+
+R37（bot auth-headers）→ R38（shared permission-check）→ **R39（web upload-mapper）**，同一個 wire-contract lock pattern 又一層。
+
+NEW `apps/web/lib/test-upload-error-mapper.ts`（**172 PASS**）：
+- **Code registry round-trip（84 cases）**：14 個 `UploadFailureCode` 每個都鎖 `code → i18nKey` / `recoveryHintKey` / 預設 retryable / stage 保留 / raw envelope identity 保留。改 registry 漏掉一條 → 對應的測試立刻 fail by name
+- **Retryable override（2 cases）**：envelope.retryable 覆蓋 registry 預設兩個方向
+- **i18nVars extraction（7 cases）**：numeric `fileSize` / `maxSize` 走 `formatBytes`；string 直通；`ext` / `domain` 抽取；空 detail → undefined（UI 跳過內插）；不相關的 detail key (`gcsStatus`) 不洩到 i18nVars
+- **llmDiagnostic passthrough（2 cases）**
+- **未來新 code fallback（2 cases）**：server 送 client 還沒 ship 的新 code → fall back 到 unknown 不 crash
+- **mapClientError 啟發式分發（23 cases）**：`TypeError` + 'fetch'/'Network' → network_error；其他 TypeError 不誤觸；AbortError → gcs_timeout；validate stage + fileSize > maxSize → file_too_large_for_direct（gated to validate stage only，需要兩個都有）；'extension'/'zip' keyword → file_extension_invalid（NOT retryable）；其他 → unknown；non-Error 輸入 (string/null/object) `String()` 強轉
+- **formatBytes 邊界（9 cases）**：0 / 512 / 1023 / 1024 / 1MB-1 / 1MB / **426 MB stress file（`447194585 → "426.5 MB"`）** / 1GB / 2.5GB——R30 那個 `legal_flow_build.zip` 顯示字串被鎖死
+- **buildErrorReport（20 cases）**：每行條件存在性、navigator UA mock、ISO 8601 時間、empty `{}` detail 不出 Detail 區塊、LLM 區塊條件、`Root cause` 缺值要省略
+- **fetchDiagnostic mocked-fetch（12 cases）**：成功路徑 POST /api/upload/diagnose + JSON Content-Type + body shape；**HTTP 503 / fetch throws / response.json throws → 全部不 throw 給 caller，永遠回 mapped failure**——這是 UI 依賴的契約
+- **Purity（3 cases）**：mapEnvelope 不 mutate input；mapClientError 每次回新物件
+
+MODIFIED `scripts/sweep-zero-dep-tests.sh`：加第四條 for-loop 掃 `apps/web/lib/test-*.ts`。順帶把 R27/R30 留下來的孤兒 `test-resumable-upload.ts`（91 PASS，從來沒進過 sweep，只手動跑過）拉進 CI gate。
+
+NEW ADR `brain/decisions/2026-04-27-upload-error-mapper-test-lock.md`。
+
+Sweep：**2198 / 37 PASS**（was 1935 / 35 at R38；+263 new tests in 2 newly-swept files：172 brand new + 91 previously orphaned）。tsc clean **across all four packages**：api / bot / web / shared。
+
+**累積堆積的 commit（DEPLOY BLOCKED 等 boss）**：
+- R30 chunked upload (`7741a35`)
+- R31 RBAC projects (`6c2d9a4`)
+- R32 RBAC project-groups (`637d1d4`)
+- R33 RBAC reviews (`a93169c`)
+- R34 RBAC deploys (`7d9d25e`)
+- R35 RBAC P1 single (`aec31c6`)
+- R36 doc correction (`614c94a`)
+- R37 bot wire contract (`0e3568f`)
+- R38 shared permission predicate (`11a28e0`)
+- R39 web upload-mapper test lock（pending commit）
+
+R39 跟 R37/R38 的差別：R37/R38 都是「server/client 共用同一份判斷邏輯，鎖契約防 drift」；R39 是「**單純把 silent UX bug 變 loud test failure**」——upload-error-mapper.ts 的 source 完全不動，純粹補 test cage。順手把 R27/R30 的孤兒測試也拉進 gate，是 sweep coverage 的 boil-the-lake。
+
+---
+
 **2026-04-27 ~09:45 UTC（autonomous overnight 第三十八段）—— Round 38: RBAC predicate 搬到 shared（消除 server/client drift）**
 
 **狀態：FIX COMMITTED（pending），DEPLOY 行為改動極小（auth-service / auth.tsx 只是換 import 來源，runtime 邏輯完全等價）**
