@@ -49,12 +49,25 @@ R30 部署後使用者重試上傳，回報 `attempts: 16`（= R30 的 `MAX_RETR
 - ✅ 三個 Cloud Run service 切到 `:9ba8dc5`：api-00133-wbb、web-00096-qgs、bot-00044-8hn
 - ✅ Prod smoke test：`POST /api/upload/verify` 用使用者現有 gcsUri 拿到 `{exists:true, complete:true, size:447194585, sizeMatch:true, md5Match:false?, timeCreated:2026-04-28T03:03:22.658Z}`（**證明 R44 可以拯救他這檔**）
 
-**A 部分（已完成 2026-04-28 05:19 UTC）**：`POST /api/projects/submit-gcs` 用現有 gcsUri 直接建立專案 — 跳過上傳。
-- Project ID: `da2e1b1f-356d-4b1f-a7ca-43472b19d4f8`
-- Slug: `legal-flow`，Custom Domain: `legal-flow.punwave.com`
-- GCS Source: `gs://wave-deploy-agent_cloudbuild/uploads/1777344905678-legal_flow_build.zip`
-- Status 起始：`scanning`（後續走 review → build → deploy 標準流程）
-- Dashboard: https://wave-deploy-agent.punwave.com/projects/da2e1b1f-356d-4b1f-a7ca-43472b19d4f8
+**A 部分（首次嘗試失敗 → R44b 修完 → 重 submit）**：
+
+1. **2026-04-28 05:19 UTC** — submit-gcs 建專案 `da2e1b1f-356d-4b1f-a7ca-43472b19d4f8`，**60.3s 後自動 transition 到 `failed`**（updatedAt 05:20:33 - createdAt 05:19:33 = 60.296s，正好 = `uploadSourceToGcs` 寫死的 `timeout: 60_000`）。failedStep `background source upload (single service)`，元兇：`tar -czf` 把解開的 600 MB source 重壓到 GCS 的那一支被 SIGTERM。
+
+2. **R44b commit `7d8ac17`**（`fix(api): bump archive timeouts 60s → 600s for large source uploads`）：
+   - 抽 `ARCHIVE_TIMEOUT_MS = 600_000` + `ARCHIVE_MAX_BUFFER = 100 MiB` 兩個 const
+   - 把 7 處 archive exec 全切到新 const：1× `uploadSourceToGcs` 的 tar -czf、3× submit-gcs path 的 unzip/tar -xzf/tar -xf、3× multipart upload 同樣三支
+   - tsc clean
+   - Cloud Build `ace1ccab-78ca-49f0-a7fe-02ad5907b214` SUCCESS（8M12S），revision `deploy-agent-api-00134-sr7` 帶 `:7d8ac17`
+
+3. **2026-04-28 06:14 UTC** — 刪掉 failed `da2e1b1f-...`（DELETE 200，teardown log: image/Redis/DB row 全清），重新 submit-gcs：
+   - 新 Project ID: `59a976d2-8ea8-4f27-af3e-9109c73e347e`
+   - 同樣 gcsUri / customDomain
+   - Status 起始 `scanning`，等待 R44b timeout 撐過舊 60s 死亡點驗證
+   - Dashboard: https://wave-deploy-agent.punwave.com/projects/59a976d2-8ea8-4f27-af3e-9109c73e347e
+
+**R44c 後續想法（不急）**：
+- node_modules / .git filter — 426 MB zip 多半是塞 node_modules，沒過濾就要重壓 600 MB+，浪費 CPU / 時間 / 儲存
+- 或乾脆 skip re-tar：source 既然已從 GCS 來、就直接重命名指過去，不用 download → extract → re-tar → re-upload 一輪
 
 **R45 跟進（待後續 ADR）**：建 `wave-deploy-agent-uploads-asia` bucket（asia-east1）— bucket 搬地理位置，徹底消除跨太平洋 final-chunk fragility。要 single-tenancy migration 計劃 + 歷史 sources 處理。
 
