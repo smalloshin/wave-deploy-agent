@@ -620,6 +620,22 @@ export async function projectRoutes(app: FastifyInstance) {
       );
     }
 
+    // Round 44d (2026-04-28): normalize Windows backslash paths from zips
+    // built on Windows. Linux/Alpine unzip preserves `legal_flow\package.json`
+    // as a single literal filename; this helper renames it into the proper
+    // `legal_flow/package.json` subdir layout so detector + descend logic
+    // below can find manifest files. No-op when unzip already converted.
+    {
+      const { normalizeExtractedPaths } = await import('../services/archive-normalizer');
+      const normResult = await normalizeExtractedPaths(extractDir);
+      if (normResult.renamed > 0 || normResult.collisions > 0 || normResult.blocked > 0) {
+        request.log.info(
+          { extractDir, ...normResult },
+          'archive-normalizer: rewrote backslash paths (submit-gcs)',
+        );
+      }
+    }
+
     // Cleanup junk
     const { rmSync, existsSync, statSync, readdirSync } = await import('node:fs');
     const junkDirs = ['__MACOSX', '.DS_Store', '__pycache__'];
@@ -1026,6 +1042,19 @@ export async function projectRoutes(app: FastifyInstance) {
           },
         ),
       );
+    }
+
+    // Round 44d (2026-04-28): normalize Windows backslash paths from zips
+    // built on Windows. See archive-normalizer.ts header for full rationale.
+    {
+      const { normalizeExtractedPaths } = await import('../services/archive-normalizer');
+      const normResult = await normalizeExtractedPaths(extractDir);
+      if (normResult.renamed > 0 || normResult.collisions > 0 || normResult.blocked > 0) {
+        request.log.info(
+          { extractDir, ...normResult },
+          'archive-normalizer: rewrote backslash paths (multipart upload)',
+        );
+      }
     }
 
     // ── Defensive cleanup: remove macOS/OS junk directories ──
