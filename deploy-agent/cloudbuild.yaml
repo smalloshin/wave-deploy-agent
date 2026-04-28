@@ -32,6 +32,11 @@ steps:
     args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/deploy-agent/bot:${SHORT_SHA}']
 
   # Deploy API to Cloud Run (public — allUsers invoker preserved via --allow-unauthenticated)
+  # Round 44c (2026-04-28): memory 4Gi → 8Gi. legal-flow (426 MB zip) hit
+  # 4237 MiB peak during background uploadSourceToGcs (Buffer.from + tar +
+  # readFileSync of ~300 MB tarball) and Cloud Run OOM-killed the instance
+  # mid-task. R44c-stream follow-up will refactor to streaming so memory
+  # stops scaling with file size — for now 8Gi covers any reasonable upload.
   - name: 'gcr.io/cloud-builders/gcloud'
     args:
       - 'run'
@@ -44,7 +49,7 @@ steps:
       - '--platform'
       - 'managed'
       - '--memory'
-      - '4Gi'
+      - '8Gi'
       - '--cpu'
       - '2'
       - '--service-account'
