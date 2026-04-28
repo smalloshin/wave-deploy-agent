@@ -131,6 +131,14 @@ function parseEnvVarsText(text: string): Record<string, string> {
   return result;
 }
 
+// Round 44b (2026-04-28): bump archive timeouts from 60s → 600s.
+// legal-flow (426 MB zip → ~600 MB extracted) failed at exactly 60.3s on the
+// background `tar -czf` re-upload step. Single-threaded gzip + Cloud Run tmpfs
+// I/O can need several minutes for hundreds of MB. 10 min covers any
+// reasonable user submission while still bounding runaway processes.
+const ARCHIVE_TIMEOUT_MS = 600_000;
+const ARCHIVE_MAX_BUFFER = 100 * 1024 * 1024;
+
 // Upload source tarball to GCS for durable storage (Cloud Run /tmp is ephemeral)
 async function uploadSourceToGcs(
   projectSlug: string,
@@ -142,7 +150,7 @@ async function uploadSourceToGcs(
   const tarballPath = join(tmpdir(), `${projectSlug}-source-${Date.now()}.tgz`);
 
   // Create tarball from project directory
-  await execFileAsync('tar', ['-czf', tarballPath, '-C', projectDir, '.'], { timeout: 60_000 });
+  await execFileAsync('tar', ['-czf', tarballPath, '-C', projectDir, '.'], { timeout: ARCHIVE_TIMEOUT_MS });
 
   // Upload to GCS
   const { readFileSync, unlinkSync } = await import('node:fs');
@@ -580,11 +588,11 @@ export async function projectRoutes(app: FastifyInstance) {
     const lowerName = body.fileName.toLowerCase();
     try {
       if (lowerName.endsWith('.zip')) {
-        await execFileAsync('unzip', ['-q', '-o', archivePath, '-d', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
+        await execFileAsync('unzip', ['-q', '-o', archivePath, '-d', extractDir], { timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: ARCHIVE_MAX_BUFFER });
       } else if (lowerName.endsWith('.tar.gz') || lowerName.endsWith('.tgz')) {
-        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
+        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: ARCHIVE_MAX_BUFFER });
       } else if (lowerName.endsWith('.tar')) {
-        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
+        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: ARCHIVE_MAX_BUFFER });
       } else {
         const ext = lowerName.includes('.') ? lowerName.slice(lowerName.lastIndexOf('.')) : 'unknown';
         return reply.status(400).send(
@@ -988,11 +996,11 @@ export async function projectRoutes(app: FastifyInstance) {
     const lowerName = fileName.toLowerCase();
     try {
       if (lowerName.endsWith('.zip')) {
-        await execFileAsync('unzip', ['-q', '-o', archivePath, '-d', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
+        await execFileAsync('unzip', ['-q', '-o', archivePath, '-d', extractDir], { timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: ARCHIVE_MAX_BUFFER });
       } else if (lowerName.endsWith('.tar.gz') || lowerName.endsWith('.tgz')) {
-        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
+        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: ARCHIVE_MAX_BUFFER });
       } else if (lowerName.endsWith('.tar')) {
-        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: 60000, maxBuffer: 100 * 1024 * 1024 });
+        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: ARCHIVE_MAX_BUFFER });
       } else {
         const ext = lowerName.includes('.') ? lowerName.slice(lowerName.lastIndexOf('.')) : 'unknown';
         return reply.status(400).send(
