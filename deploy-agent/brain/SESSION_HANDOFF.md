@@ -4,6 +4,88 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-28 02:02 UTC（緊急 prod deploy — R30+ 整個 stack，14 commits ahead）**
+
+**狀態：DEPLOYED + VERIFIED（待使用者重試 426 MB 上傳驗證）**
+
+使用者半夜回來回報 426.5 MB `legal_flow_build.zip` 上傳還是壞掉：
+
+```
+Code: network_error
+Message: Network error during GCS upload (chunk 444596224-447194584, 6 attempts)
+File: legal_flow_build.zip (426.5 MB)
+Detail: { "chunkStart": 444596224, "chunkEnd": 447194584, "attempts": 6, "lastError": "network" }
+User-Agent: Firefox 149/macOS
+```
+
+**根因確認**：prod 跑的是 R27 程式碼（`MAX_RETRIES = 5`）。`attempts: 6` = 5 retries + 1 initial 完全吻合 R27 的 bail-out 行為（`attempt > maxRetries` 才退出，最後 logged 6）。R30 (`7741a35`) 跟之後 13 個 commit 全部從未部署。
+
+上次 prod build：`118f5814` SHORT_SHA `67f2cf0`（2026-04-26 23:58，R27 之後的 doc commit）。`wave-deploy-agent/main` 之前 HEAD 在 `a7b4fb3`，比 R30 還舊。
+
+**Action**：
+- ✅ Push `pr/sync-all` → `wave-deploy-agent/main`（`a7b4fb3..5b84460`）
+- ✅ Cloud Build submitted 並通過：build ID `6a658e37-880d-432d-beb2-d9d253a1599a`，SHORT_SHA `5b84460`，duration **6m34s**，使用者明確授權 production deploy
+- ✅ 三個 Cloud Run service 都切到新 image `:5b84460`：
+  - `deploy-agent-api-00132-g5h`
+  - `deploy-agent-web-00095-6nd` ← R30 fix 在這（`DEFAULT_MAX_RETRIES=15` / `DEFAULT_CHUNK_SIZE=1 MiB` / `MAX_BACKOFF_MS=60_000` / `DEFAULT_CHUNK_TIMEOUT_MS=120_000`）
+  - `deploy-agent-bot-00043-q72`
+- ✅ Health check：API `/health` HTTP 200（76ms）、Web home HTTP 200（753ms）
+
+**這次 deploy 一次帶上 14 commits**：
+- R30 chunked-upload defaults（`7741a35`，**修這次 bug**）
+- R30b reviews list refactor + 85 tests (`2adb9c6`)
+- R31-R35 RBAC IDOR fixes（`6c2d9a4`/`637d1d4`/`a93169c`/`7d9d25e`/`aec31c6`，5 條 list IDOR + 6 條 single-resource owner check，安全修復擱了 1 天）
+- R37 bot wire-contract lock — auth-headers (`0e3568f`)
+- R38 shared permission-check predicate (`11a28e0`)
+- R39 web upload-error-mapper test lock (`00588e1`)
+- R40 web upload-draft-storage test lock (`dc362ea`)
+- R41 api cost-estimator test lock (`6d8781d`)
+- R42 shared state-machine test lock (`e31241d`)
+- R43 bot discord-audit-writer test lock (`5b84460`)
+
+**🟡 待使用者重試 426 MB `legal_flow_build.zip` 上傳，驗證 R30 真的修好。**（如果還壞，下一輪要改追：是不是 chunk 444596224-447194584 那一段檔案 byte-level 異常？是不是 GCS asia-east1 對 client IP 的網路品質？是不是 session URI 過期？）
+
+---
+
+**2026-04-27（深夜 R43 — Round 43: bot Discord NL audit-trail writer wire-contract lock）**
+
+**狀態：TESTS COMMITTED（pending），ZERO 行為改動（只新增 test 檔；discord-audit-writer.ts 不變）**
+
+R42 鎖了 shared state-machine 規則 + 4 個 state-classification predicates。這輪回到 bot 端，鎖 R26 那輪做的 Discord NL audit-trail writer：`apps/bot/src/discord-audit-writer.ts`（101 LOC，2 個 async fetch wrappers）。
+
+兩個 export，async + side-effecting：
+- `logDiscordAuditPending(opts) → Promise<number | null>` — POST /api/discord-audit
+- `logDiscordAuditResult(id, status, resultText?) → Promise<void>` — PATCH /api/discord-audit/:id
+
+設計上**每個錯誤路徑都被吞掉**（network throw、non-200、JSON parse failure 全進 console.warn），讓 audit 永遠不會 block operator。但 silent-failure 設計也讓 regression 完全看不見：URL 路徑 typo / body key rename / `status: 'pending'` literal 漂移 / `id === null` short-circuit 退化 / `typeof json.id === 'number'` 弱化 都會默默壞掉。
+
+R37 → R38 → R39 → R40 → R41 → R42 → **R43**，第七次套同一個 wire-contract lock pattern。
+
+NEW `apps/bot/src/test-discord-audit-writer.ts`（**53 PASS**）：
+- POST happy path（15 cases）：URL 嚴格 = `${API}/api/discord-audit`、method=POST、Content-Type、無 Authorization header（apiKey 未設時）、每個 body field 來回 round-trip + `status: 'pending'` literal 鎖死
+- POST optional fields（4 cases）：messageId / intentText / llmProvider 可 undefined
+- POST silent-failure（8 cases）：HTTP 503 / 500 / 401 / fetch throw / json throw → return null 不 propagate
+- POST id type-check（5 cases）：no id / string id / id=0 / id=-1 / 多餘欄位
+- PATCH happy path（7 cases）：URL 嚴格 = `${API}/api/discord-audit/${id}`、method=PATCH、body round-trip
+- **PATCH `id=null` short-circuit（2 cases）**：id=null 完全 0 fetch calls。鎖死關鍵 guard
+- PATCH 4 個 AuditStatus 全測（success/error/denied/cancelled）
+- PATCH optional resultText（2 cases）
+- PATCH silent-failure（3 cases）：404 / 500 / fetch throw 不 propagate
+- id-in-URL 格式（3 cases）：id=1 / 0 / 2147483647 都進 path 不進 query
+- body 永遠 JSON-serialized（1 case）：nested object 證明 `JSON.stringify` 被呼叫
+
+NEW ADR `brain/decisions/2026-04-27-discord-audit-writer-test-lock.md`。
+
+**首個 bot fetch-mock pattern 建立**：
+- `globalThis.fetch` 換成 recording mock，body 用 JSON.parse 還原 wire shape
+- 必要 env vars（`DISCORD_TOKEN`, `DISCORD_APP_ID`, `API_BASE_URL`）在 dynamic import `./discord-audit-writer.js` 之前 prime，避開 `config.ts` 的 boot-time `process.exit(1)` guard
+- 加 `export {};` 讓 tsc 把檔案當 module（top-level await 條件）
+- **單一 async IIFE 包所有 cases**：首版用平行 IIFE 結果 24/53 PASS，原因是 mock 的 `nextResponse` / `calls` 是共享 module state，平行 IIFE 會 race。改成單一 sequential IIFE 後 53/53 PASS
+
+Sweep：**2466 / 41 PASS**（was 2413 / 40 at R42；+53 new tests in 1 new file）。tsc clean across 4 packages: api / bot / web / shared。
+
+---
+
 **2026-04-27 ~12:00 UTC（autonomous overnight 第四十二段）—— Round 42: shared state-machine 規則 + state-classification predicates wire-contract lock**
 
 **狀態：TESTS COMMITTED（pending），ZERO 行為改動（只新增 test 檔；state-machine.ts 不變）**
