@@ -43,10 +43,18 @@ R30 部署後使用者重試上傳，回報 `attempts: 16`（= R30 的 `MAX_RETR
 6. ✅ **`tsc --noEmit`** clean on web + api
 7. ✅ **ADR**：`brain/decisions/2026-04-28-upload-trans-pacific-rescue.md`（已寫，已 index）
 
-**還沒做的（pending）**：
-- ⏳ commit + push 到 `wave-deploy-agent/main`（pending）
-- ⏳ Cloud Build deploy R44 stack 到 production（**待使用者明確授權**）
-- ⏳ A 部分（`POST /api/projects/submit-gcs` 用現有 gcsUri 跳過 upload）— **等使用者給 `name` + `customDomain` 兩個值**
+**已完成（2026-04-28 05:15 UTC — 使用者授權部署後）**：
+- ✅ commit `9ba8dc5`（9 files / +732 / -3）push 到 `wave-deploy-agent/main`（`30efe44..9ba8dc5`）
+- ✅ Cloud Build `28c790b8-5764-4e05-96a0-fd66e99c9171` SUCCESS（duration 8M22S，第一次因 `${SHORT_SHA}` 空字串 fail，加 `--substitutions=SHORT_SHA=9ba8dc5` 重跑）
+- ✅ 三個 Cloud Run service 切到 `:9ba8dc5`：api-00133-wbb、web-00096-qgs、bot-00044-8hn
+- ✅ Prod smoke test：`POST /api/upload/verify` 用使用者現有 gcsUri 拿到 `{exists:true, complete:true, size:447194585, sizeMatch:true, md5Match:false?, timeCreated:2026-04-28T03:03:22.658Z}`（**證明 R44 可以拯救他這檔**）
+
+**A 部分（已完成 2026-04-28 05:19 UTC）**：`POST /api/projects/submit-gcs` 用現有 gcsUri 直接建立專案 — 跳過上傳。
+- Project ID: `da2e1b1f-356d-4b1f-a7ca-43472b19d4f8`
+- Slug: `legal-flow`，Custom Domain: `legal-flow.punwave.com`
+- GCS Source: `gs://wave-deploy-agent_cloudbuild/uploads/1777344905678-legal_flow_build.zip`
+- Status 起始：`scanning`（後續走 review → build → deploy 標準流程）
+- Dashboard: https://wave-deploy-agent.punwave.com/projects/da2e1b1f-356d-4b1f-a7ca-43472b19d4f8
 
 **R45 跟進（待後續 ADR）**：建 `wave-deploy-agent-uploads-asia` bucket（asia-east1）— bucket 搬地理位置，徹底消除跨太平洋 final-chunk fragility。要 single-tenancy migration 計劃 + 歷史 sources 處理。
 
