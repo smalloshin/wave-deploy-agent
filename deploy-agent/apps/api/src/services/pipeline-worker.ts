@@ -107,7 +107,13 @@ export async function runPipeline(
       const tgzPath = `${projectDir}.tgz`;
       const { writeFileSync: wfs } = await import('node:fs');
       wfs(tgzPath, tgzBuffer);
-      execFileSync('tar', ['xzf', tgzPath, '-C', projectDir], { timeout: 30_000 });
+      // Round 44e (2026-04-28): timeout 30s → 600s. Same root cause as R44b
+      // — large source bundles (legal-flow: 426 MB zip → ~300 MB tgz) take
+      // far longer than 30s to extract on Cloud Run, especially under memory
+      // pressure. R44b only fixed the async (execFileAsync) path in
+      // routes/projects.ts; this is the sync (execFileSync) twin in the
+      // pipeline worker that R44b didn't sweep.
+      execFileSync('tar', ['xzf', tgzPath, '-C', projectDir], { timeout: 600_000, maxBuffer: 100 * 1024 * 1024 });
       console.log(`[Pipeline]   Downloaded and extracted GCS source to ${projectDir}`);
     }
 
@@ -287,8 +293,14 @@ export async function runPipeline(
       const tarballPath = `/tmp/${slug}-fixed-${Date.now()}.tgz`;
 
       // tar (sub-step a)
+      // Round 44e (2026-04-28): timeout 60s → 600s + maxBuffer 100MB. legal-flow
+      // (post-fix projectDir ~300+ MB) hit `spawnSync tar ETIMEDOUT` at exactly
+      // 60s here — fixed-source upload critical, pipeline marked FAILED before
+      // reviewer could approve. R44b fixed the async unzip/tar timeouts in
+      // routes/projects.ts but this sync sibling in the pipeline worker (same
+      // 60s default) was the next to bite. See also extract-side fix above.
       try {
-        execFileSync('tar', ['-czf', tarballPath, '-C', projectDir, '.'], { timeout: 60_000 });
+        execFileSync('tar', ['-czf', tarballPath, '-C', projectDir, '.'], { timeout: 600_000, maxBuffer: 100 * 1024 * 1024 });
       } catch (tarErr) {
         throw new Error(`tar-failed: ${(tarErr as Error).message}`);
       }
