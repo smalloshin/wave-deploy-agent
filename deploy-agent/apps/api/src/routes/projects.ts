@@ -375,6 +375,93 @@ export async function projectRoutes(app: FastifyInstance) {
     };
   });
 
+  // ── Verify a GCS upload completed (round 44 trans-Pacific rescue) ──
+  // The 426 MB legal_flow_build.zip case: bytes reach GCS, GCS finalizes the
+  // object, but the 200/201 response is lost to a trans-Pacific TCP middlebox
+  // cut between GCS US multi-region and the user's Taiwan ISP. Browser fires
+  // `xhr.onerror`, retry loop bails after 16 attempts, file is "lost" from the
+  // user's perspective — even though `gsutil stat` confirms it's committed
+  // and md5-matched.
+  //
+  // Client wires this as the `verifyComplete` callback in resumable-upload.ts:
+  // before bailing out with network_error, ask GCS directly. If the object
+  // exists at the expected size (and optionally matching md5), treat the
+  // upload as successful regardless of what the chunk PUT response said.
+  //
+  // Auth: same as /api/upload/init — caller must be authenticated. Read-only
+  // GCS metadata query, no mutation.
+  app.post('/api/upload/verify', async (request, reply) => {
+    const body = request.body as {
+      gcsUri: string;
+      expectedSize?: number;
+      expectedMd5?: string; // optional base64-encoded GCS md5Hash
+    } | undefined;
+
+    if (!body?.gcsUri) {
+      return reply.status(400).send({ error: 'gcsUri is required' });
+    }
+    const prefix = `gs://${GCS_BUCKET}/`;
+    if (!body.gcsUri.startsWith(prefix)) {
+      return reply.status(400).send({
+        error: 'gcsUri must reference the agent bucket',
+        expectedPrefix: prefix,
+      });
+    }
+    const objectName = body.gcsUri.slice(prefix.length);
+    if (!objectName) {
+      return reply.status(400).send({ error: 'gcsUri must include an object name' });
+    }
+
+    const { getAccessToken } = await import('../services/gcp-auth');
+    let token: string;
+    try {
+      token = await getAccessToken();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(500).send({ error: 'gcs_auth_failed', message: msg });
+    }
+
+    const metaUrl = `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o/${encodeURIComponent(objectName)}`;
+    const metaRes = await fetch(metaUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (metaRes.status === 404) {
+      return { exists: false, complete: false };
+    }
+    if (!metaRes.ok) {
+      const errText = await metaRes.text().catch(() => '');
+      return reply.status(metaRes.status === 401 || metaRes.status === 403 ? metaRes.status : 502).send({
+        error: 'gcs_metadata_failed',
+        gcsStatus: metaRes.status,
+        gcsBody: errText.slice(0, 300),
+      });
+    }
+
+    const meta = (await metaRes.json()) as {
+      size?: string;
+      md5Hash?: string;
+      contentType?: string;
+      timeCreated?: string;
+      generation?: string;
+    };
+    const sizeBytes = meta.size ? Number.parseInt(meta.size, 10) : Number.NaN;
+    const sizeMatch = body.expectedSize == null || sizeBytes === body.expectedSize;
+    const md5Match = body.expectedMd5 == null || meta.md5Hash === body.expectedMd5;
+
+    return {
+      exists: true,
+      complete: sizeMatch && md5Match,
+      size: sizeBytes,
+      md5: meta.md5Hash,
+      contentType: meta.contentType,
+      timeCreated: meta.timeCreated,
+      generation: meta.generation,
+      sizeMatch,
+      md5Match,
+    };
+  });
+
   // ── Diagnose an upload failure with LLM fallback ──
   // Client calls this when it receives an envelope with code === 'unknown'.
   // Returns a UploadLLMDiagnostic that the UI can render directly.

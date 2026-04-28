@@ -1,6 +1,20 @@
 // Round 27 — Chunked GCS resumable uploader.
 // Round 30 — tightened defaults after round-27 fix STILL failed in production
 //            for the same legal_flow_build.zip (426 MB) on Firefox 149/macOS.
+// Round 44 — enriched xhr.onerror diagnostics + optional verifyComplete fallback.
+//            R30 deploy verified: attempts=16 in error report = MAX_RETRIES 15+1.
+//            But server-side gsutil + md5 confirmed the 426 MB file IS in GCS,
+//            full + hash-correct, finalized 15 minutes BEFORE the user's error
+//            report. Root cause: bucket is US multi-region, user is in Taiwan;
+//            final-chunk PUT bytes reach GCS but the 200/201 response is lost
+//            to a trans-Pacific TCP middlebox cut. Original `xhr.onerror = () =>
+//            reject(new Error('network'))` threw away xhr.status / responseURL
+//            / responseText, so we couldn't tell GCS-said-no apart from
+//            connection-was-cut. R44 captures those fields and adds an optional
+//            `verifyComplete` callback the caller can wire to the new
+//            `/api/upload/verify` endpoint, which queries the GCS object
+//            metadata. On bail-out, if verifyComplete reports the object is
+//            committed at the expected size/hash, we return success.
 //
 // Why this exists:
 //   The original uploader did `xhr.send(file)` with the entire file (up to
@@ -81,6 +95,44 @@ export interface ResumableUploadOpts {
   signal?: AbortSignal;
   /** Override sleep for tests (avoid real timer waits). */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Round 44 — optional fallback called BEFORE returning a network_error /
+   * gcs_timeout failure. Caller queries GCS object metadata (size + md5) and
+   * returns true if the object is committed at the expected state. This
+   * rescues the trans-Pacific case where bytes reached GCS but the 200/201
+   * response was lost to a middlebox cut.
+   */
+  verifyComplete?: () => Promise<boolean>;
+}
+
+/**
+ * Round 44 — diagnostic fields surfaced from xhr.onerror. Attached to the
+ * Error instance the chunk-PUT promise rejects with, so the bail-out path
+ * can serialize them into `lastError` for the failure envelope.
+ */
+export interface XhrErrorDiagnostic {
+  xhrStatus: number;
+  xhrStatusText: string;
+  xhrResponseURL: string;
+  xhrResponseText: string;
+}
+
+/** Round 44 — encode diagnostic fields into a single string for `lastError`. */
+export function formatXhrDiagnostic(d: XhrErrorDiagnostic): string {
+  // Keep the leading literal "network " so legacy log greps still match.
+  // Body is truncated + JSON-stringified so multi-line bodies don't break log parsers.
+  const body = JSON.stringify((d.xhrResponseText ?? '').slice(0, 200));
+  return `network status=${d.xhrStatus} statusText="${d.xhrStatusText}" url=${d.xhrResponseURL} body=${body}`;
+}
+
+/** Round 44 — type-guard so the catch path can recognise an enriched onerror. */
+export function isXhrErrorDiagnostic(err: unknown): err is XhrErrorDiagnostic {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    'xhrStatus' in err &&
+    typeof (err as { xhrStatus: unknown }).xhrStatus === 'number'
+  );
 }
 
 export type ResumableUploadFailure =
@@ -201,7 +253,18 @@ function putChunkXhr(opts: {
         body: typeof xhr.responseText === 'string' ? xhr.responseText.slice(0, 500) : '',
       });
     };
-    xhr.onerror = () => reject(new Error('network'));
+    xhr.onerror = () => {
+      // Round 44: capture diagnostic fields BEFORE rejecting so the bail-out
+      // path can serialize them. xhr.status is 0 on TCP-level failure; if it's
+      // non-zero we got an HTTP status the browser hid behind onerror (e.g.
+      // CORS preflight failure, TLS error with status surfaced by some browsers).
+      const err = new Error('network') as Error & XhrErrorDiagnostic;
+      err.xhrStatus = xhr.status;
+      err.xhrStatusText = typeof xhr.statusText === 'string' ? xhr.statusText : '';
+      err.xhrResponseURL = typeof xhr.responseURL === 'string' ? xhr.responseURL : '';
+      err.xhrResponseText = typeof xhr.responseText === 'string' ? xhr.responseText : '';
+      reject(err);
+    };
     xhr.ontimeout = () => reject(new Error('timeout'));
     xhr.onabort = () => reject(new Error('aborted'));
 
@@ -296,7 +359,14 @@ export async function uploadResumable(opts: ResumableUploadOpts): Promise<Resuma
         const msg = err instanceof Error ? err.message : String(err);
         if (msg === 'aborted') return { ok: false, failure: { kind: 'aborted' } };
         putErr = msg;
-        lastErr = msg;
+        // Round 44: when the underlying xhr.onerror enriched the Error with
+        // status/url/body, serialize those into lastErr so the failure envelope
+        // carries actionable diagnostic instead of just the literal "network".
+        if (msg === 'network' && isXhrErrorDiagnostic(err)) {
+          lastErr = formatXhrDiagnostic(err);
+        } else {
+          lastErr = msg;
+        }
       }
 
       // Handle the PUT response (if any).
@@ -331,6 +401,22 @@ export async function uploadResumable(opts: ResumableUploadOpts): Promise<Resuma
       // Either the PUT threw, or it returned a retryable status.
       attempt++;
       if (attempt > maxRetries) {
+        // Round 44: before declaring failure, ask the caller (if it wired
+        // verifyComplete) to query GCS object metadata. The trans-Pacific
+        // case looks exactly like network_error from the browser even when
+        // bytes already landed and GCS finalized the object — verifyComplete
+        // is the only signal that distinguishes the two.
+        if (opts.verifyComplete) {
+          try {
+            const verified = await opts.verifyComplete();
+            if (verified) {
+              opts.onProgress?.(total, total);
+              return { ok: true, bytesUploaded: total };
+            }
+          } catch {
+            // verifyComplete itself failed — fall through to the normal failure path.
+          }
+        }
         if (putErr === 'timeout') {
           return { ok: false, failure: { kind: 'gcs_timeout', chunkStart: start, chunkEnd: end, attempts: attempt } };
         }

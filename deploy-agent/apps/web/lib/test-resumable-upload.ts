@@ -19,6 +19,8 @@ import {
   classifyStatus,
   backoffMs,
   uploadResumable,
+  formatXhrDiagnostic,
+  isXhrErrorDiagnostic,
 } from './resumable-upload.js';
 
 let passed = 0;
@@ -127,7 +129,16 @@ function makeBlob(bytes: number): Blob {
 // responses; the i-th request consumes the i-th entry.
 type FakeResponse =
   | { kind: 'ok'; status: number; rangeHeader?: string; body?: string }
-  | { kind: 'network_error' }
+  | {
+      kind: 'network_error';
+      // Round 44: optional fields the fake xhr surfaces on onerror so the
+      // production diagnostic enrichment (status / responseURL / responseText)
+      // can be exercised end-to-end.
+      xhrStatus?: number;
+      xhrStatusText?: string;
+      xhrResponseURL?: string;
+      xhrResponseText?: string;
+    }
   | { kind: 'timeout' };
 
 interface FakeRequest {
@@ -153,7 +164,9 @@ class FakeXhrHarness {
       ontimeout: (() => void) | null = null;
       onabort: (() => void) | null = null;
       status = 0;
+      statusText = ''; // round 44: surfaced into XhrErrorDiagnostic.xhrStatusText
       responseText = '';
+      responseURL = ''; // round 44: surfaced into XhrErrorDiagnostic.xhrResponseURL
       timeout = 0; // round 30: code may set xhr.timeout
       _url = '';
       _headers: Record<string, string> = {};
@@ -193,6 +206,13 @@ class FakeXhrHarness {
             return;
           }
           if (r.kind === 'network_error') {
+            // Round 44: populate fields that production xhr.onerror reads
+            // before constructing the enriched Error. Defaults preserve the
+            // legacy 0/empty behaviour for older test cases.
+            this.status = r.xhrStatus ?? 0;
+            this.statusText = r.xhrStatusText ?? '';
+            this.responseURL = r.xhrResponseURL ?? '';
+            this.responseText = r.xhrResponseText ?? '';
             this.onerror?.();
             return;
           }
@@ -579,6 +599,273 @@ const noSleep = (_ms: number) => Promise.resolve();
   // Final chunk size
   const finalChunkSize = FILE_SIZE_426 - (expectedChunks - 1) * DEFAULT_CHUNK_1MB;
   assert(finalChunkSize > 0 && finalChunkSize <= DEFAULT_CHUNK_1MB, 'round 30: final chunk size in (0, 1 MiB]');
+}
+
+// ─── Round 44: formatXhrDiagnostic / isXhrErrorDiagnostic / verifyComplete ──
+
+// Pure helpers
+{
+  assertEq(
+    formatXhrDiagnostic({ xhrStatus: 0, xhrStatusText: '', xhrResponseURL: '', xhrResponseText: '' }),
+    'network status=0 statusText="" url= body=""',
+    'round 44: formatXhrDiagnostic — TCP-level cut (all-empty)',
+  );
+  assertEq(
+    formatXhrDiagnostic({
+      xhrStatus: 503,
+      xhrStatusText: 'Service Unavailable',
+      xhrResponseURL: 'https://storage.googleapis.com/upload/x',
+      xhrResponseText: '<error>nope</error>',
+    }),
+    'network status=503 statusText="Service Unavailable" url=https://storage.googleapis.com/upload/x body="<error>nope</error>"',
+    'round 44: formatXhrDiagnostic — 5xx with body',
+  );
+  // Body truncation at 200 chars
+  const longBody = 'x'.repeat(500);
+  const formatted = formatXhrDiagnostic({
+    xhrStatus: 0,
+    xhrStatusText: '',
+    xhrResponseURL: '',
+    xhrResponseText: longBody,
+  });
+  // body is JSON-stringified at ≤200 chars: opening quote + 200 'x' + closing quote = 202 chars
+  const bodyJson = JSON.stringify(longBody.slice(0, 200));
+  assert(
+    formatted.endsWith(`body=${bodyJson}`),
+    'round 44: formatXhrDiagnostic — long body truncated to 200 chars before JSON-stringify',
+  );
+  assert(bodyJson.length === 202, 'round 44: 200-char body → JSON length 202 (sanity check)');
+}
+
+// Type guard
+{
+  assert(isXhrErrorDiagnostic({ xhrStatus: 0 }) === true, 'round 44: isXhrErrorDiagnostic — minimal positive');
+  assert(isXhrErrorDiagnostic(new Error('network')) === false, 'round 44: isXhrErrorDiagnostic — bare Error rejected');
+  assert(isXhrErrorDiagnostic(null) === false, 'round 44: isXhrErrorDiagnostic — null rejected');
+  assert(isXhrErrorDiagnostic('network') === false, 'round 44: isXhrErrorDiagnostic — string rejected');
+  assert(isXhrErrorDiagnostic({ xhrStatus: 'oops' }) === false, 'round 44: isXhrErrorDiagnostic — wrong-type field rejected');
+}
+
+// Integration: enriched onerror surfaces into network_error.lastError
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  // Persistent network_error with rich fields. status query also fails.
+  // 1 KiB file → single chunk → 16 chunk PUT attempts (15 retries + 1 initial)
+  // alternating with 15 status queries between them (no status query before first PUT).
+  // Actual layout: PUT, sq, PUT, sq, ... → ceil/floor — feed plenty so we don't run dry.
+  const enriched = {
+    kind: 'network_error' as const,
+    xhrStatus: 0,
+    xhrStatusText: '',
+    xhrResponseURL: 'https://storage.googleapis.com/upload/storage/v1/b/x/o?...',
+    xhrResponseText: '',
+  };
+  harness.responses = Array(60).fill(enriched);
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    sleep: noSleep,
+  });
+  restore();
+  assert(result.ok === false, 'round 44: persistent network_error → failure');
+  if (!result.ok && result.failure.kind === 'network_error') {
+    assert(
+      result.failure.lastError?.startsWith('network status=0 ') ?? false,
+      'round 44: lastError carries enriched diagnostic (starts with "network status=0 ")',
+      `got ${result.failure.lastError}`,
+    );
+    assert(
+      result.failure.lastError?.includes('url=https://storage.googleapis.com/upload/storage/v1/b/x/o') ?? false,
+      'round 44: lastError carries responseURL',
+      `got ${result.failure.lastError}`,
+    );
+    assert(
+      result.failure.attempts === 16,
+      'round 44: 15 retries + 1 initial = 16 attempts (R30 budget unchanged)',
+      `got ${result.failure.attempts}`,
+    );
+  }
+}
+
+// Integration: enriched onerror surfaces an HTTP-level status (CORS preflight fail)
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  const enriched = {
+    kind: 'network_error' as const,
+    xhrStatus: 503,
+    xhrStatusText: 'Service Unavailable',
+    xhrResponseURL: 'https://storage.googleapis.com/upload/storage/v1/b/x/o?...',
+    xhrResponseText: '<?xml version="1.0"?><Error><Code>503</Code></Error>',
+  };
+  harness.responses = Array(60).fill(enriched);
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    sleep: noSleep,
+  });
+  restore();
+  assert(result.ok === false, 'round 44: persistent http-level error → failure');
+  if (!result.ok && result.failure.kind === 'network_error') {
+    assert(
+      result.failure.lastError?.includes('status=503') ?? false,
+      'round 44: lastError surfaces HTTP status from xhr.status',
+      `got ${result.failure.lastError}`,
+    );
+    assert(
+      result.failure.lastError?.includes('Service Unavailable') ?? false,
+      'round 44: lastError surfaces statusText',
+    );
+    assert(
+      result.failure.lastError?.includes('Error><Code>503') ?? false,
+      'round 44: lastError surfaces responseText body',
+    );
+  }
+}
+
+// Integration: legacy onerror (no enrichment fields) keeps "network" literal
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  // Old-style FakeResponse.network_error without enrichment fields → all defaults
+  // → xhrStatus=0, xhrStatusText='', xhrResponseURL='', xhrResponseText=''
+  // → formatXhrDiagnostic produces 'network status=0 statusText="" url= body=""'
+  // The leading "network " literal is preserved on purpose for back-compat with log greps.
+  harness.responses = Array(60).fill({ kind: 'network_error' });
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    sleep: noSleep,
+  });
+  restore();
+  assert(result.ok === false, 'round 44: legacy network_error → failure');
+  if (!result.ok && result.failure.kind === 'network_error') {
+    assert(
+      result.failure.lastError?.startsWith('network ') ?? false,
+      'round 44: lastError keeps leading "network " literal for log-grep back-compat',
+      `got ${result.failure.lastError}`,
+    );
+  }
+}
+
+// Integration: verifyComplete rescues a bail-out → ok=true
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  // Persistent network_error — would normally bail with network_error after 16 attempts.
+  harness.responses = Array(60).fill({ kind: 'network_error' });
+  let verifyCalls = 0;
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    sleep: noSleep,
+    verifyComplete: async () => {
+      verifyCalls++;
+      return true;
+    },
+  });
+  restore();
+  assert(result.ok === true, 'round 44: verifyComplete=true rescues bail-out → ok');
+  if (result.ok) {
+    assertEq(result.bytesUploaded, 1024, 'round 44: rescue reports full file size');
+  }
+  assertEq(verifyCalls, 1, 'round 44: verifyComplete called exactly once on bail-out');
+}
+
+// Integration: verifyComplete=false lets the failure propagate
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  harness.responses = Array(60).fill({ kind: 'network_error' });
+  let verifyCalls = 0;
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    sleep: noSleep,
+    verifyComplete: async () => {
+      verifyCalls++;
+      return false;
+    },
+  });
+  restore();
+  assert(result.ok === false, 'round 44: verifyComplete=false → failure propagates');
+  if (!result.ok) {
+    assertEq(result.failure.kind, 'network_error', 'round 44: kind=network_error preserved');
+  }
+  assertEq(verifyCalls, 1, 'round 44: verifyComplete called even though it returned false');
+}
+
+// Integration: verifyComplete throwing → failure propagates (graceful degrade)
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  harness.responses = Array(60).fill({ kind: 'network_error' });
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    sleep: noSleep,
+    verifyComplete: async () => {
+      throw new Error('verify endpoint unreachable');
+    },
+  });
+  restore();
+  assert(result.ok === false, 'round 44: verifyComplete throwing → failure propagates');
+  if (!result.ok) {
+    assertEq(result.failure.kind, 'network_error', 'round 44: kind=network_error preserved on verify-throw');
+  }
+}
+
+// Integration: verifyComplete NOT called on the happy path
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  harness.responses = [{ kind: 'ok', status: 200 }];
+  let verifyCalls = 0;
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    sleep: noSleep,
+    verifyComplete: async () => {
+      verifyCalls++;
+      return true;
+    },
+  });
+  restore();
+  assert(result.ok === true, 'round 44: happy path still succeeds with verifyComplete wired');
+  assertEq(verifyCalls, 0, 'round 44: verifyComplete NOT called on happy path');
+}
+
+// Integration: verifyComplete NOT called on aborted
+{
+  const harness = new FakeXhrHarness();
+  const restore = harness.install();
+  harness.responses = [{ kind: 'ok', status: 200 }];
+  const ac = new AbortController();
+  ac.abort();
+  let verifyCalls = 0;
+  const result = await uploadResumable({
+    sessionUri: 'https://upload.example.com/x',
+    file: makeBlob(1024),
+    contentType: 'application/zip',
+    sleep: noSleep,
+    signal: ac.signal,
+    verifyComplete: async () => {
+      verifyCalls++;
+      return true;
+    },
+  });
+  restore();
+  assert(result.ok === false, 'round 44: pre-aborted → failure');
+  if (!result.ok) assertEq(result.failure.kind, 'aborted', 'round 44: aborted kind preserved');
+  assertEq(verifyCalls, 0, 'round 44: verifyComplete NOT called on aborted path');
 }
 
 // ─── Summary ─────────────────────────────────────────────────────────────

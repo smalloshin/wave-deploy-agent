@@ -425,6 +425,8 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
         const { uploadUrl, gcsUri, contentType } = initData;
 
         // Stage: upload (chunked GCS resumable PUT — Round 27 fix for 426 MB Firefox failures)
+        // Round 44: wire verifyComplete so we can rescue the trans-Pacific final-chunk
+        // case where bytes already landed in GCS but the 200/201 was lost on the way back.
         const uploadResult = await uploadResumable({
           sessionUri: uploadUrl,
           file,
@@ -434,6 +436,21 @@ function SubmitModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitte
           },
           onXhrCreated: (xhr) => {
             xhrRef.current = xhr;
+          },
+          verifyComplete: async () => {
+            try {
+              const verifyRes = await fetch(`${API}/api/upload/verify`, {
+                credentials: 'include',
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ gcsUri, expectedSize: file.size }),
+              });
+              if (!verifyRes.ok) return false;
+              const data = (await verifyRes.json()) as { complete?: boolean };
+              return data.complete === true;
+            } catch {
+              return false;
+            }
           },
         });
         xhrRef.current = null;

@@ -23,6 +23,7 @@ export const ROUTE_PERMISSIONS: Array<[string, Permission]> = [
   ['GET:/api/projects/:id/source-download', 'projects:read'],
   ['POST:/api/projects', 'projects:write'],
   ['POST:/api/upload/init', 'projects:write'],
+  ['POST:/api/upload/verify', 'projects:write'], // round 44: trans-Pacific rescue (GCS metadata read)
   ['POST:/api/upload/diagnose', 'projects:write'],
   ['POST:/api/projects/submit-gcs', 'projects:write'],
   // env-vars + webhook URL contain per-project secrets — gate on write, not read

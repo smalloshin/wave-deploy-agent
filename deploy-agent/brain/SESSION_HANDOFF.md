@@ -4,6 +4,60 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-28 04:00 UTC（R30 deploy 後 server-side 診斷 — 426 MB 檔案其實已在 GCS）**
+
+**狀態：DIAGNOSED — 不是 R30 bug，是 trans-Pacific TCP + 沒接住 finalize 訊號**
+
+R30 部署後使用者重試上傳，回報 `attempts: 16`（= R30 的 `MAX_RETRIES=15` + 1 — 證明 R30 確實在 prod）。但這次失敗的真因不是 retry 不夠，是上傳成功但瀏覽器不知道。
+
+**Server-side 證據鏈**：
+- `gsutil ls gs://wave-deploy-agent_cloudbuild/uploads/` → 8 份完整的 `legal_flow_build.zip`，全部 `447,194,585 bytes`（= 本機檔大小完全相符）
+- 最近一份：`gs://wave-deploy-agent_cloudbuild/uploads/1777344905678-legal_flow_build.zip`，`Creation time: 2026-04-28T03:03:22Z`，比使用者錯誤回報時間 `03:18:34Z` 早 15 分鐘
+- `gsutil stat` MD5: `AO1nweEUgJRT/TuqaEBfJQ==` = hex `00ed67c1e114809453fd3baa68405f25`
+- `md5 /Users/smalloshin/Downloads/legal_flow_build.zip` = `00ed67c1e114809453fd3baa68405f25`
+- **完全一致** → 檔案完整、bytes 沒掉、hash 沒錯
+
+**根因**：
+1. **bucket `wave-deploy-agent_cloudbuild` 在 US multi-region**（`gsutil ls -L -b` 確認 `Location constraint: US`），使用者在台灣
+2. 最後一個 chunk（489 KiB partial，`Content-Range: bytes 446693376-447194584/447194585`）的 PUT bytes 抵達 GCS、GCS finalize 完成、但 200/201 response 在跨太平洋回程被 ISP middlebox / TCP idle timeout 砍掉
+3. 瀏覽器收到 `xhr.onerror`，R30 retry 啟動，**對已 finalize 的 session URI 再 PUT 也都被當場切**（GCS 對 closed session 的回應行為 + 同樣 TCP 路徑）
+4. `xhr.onerror = () => reject(new Error('network'))`（`apps/web/lib/resumable-upload.ts:204`）把 `xhr.status` / `responseText` 全丟掉，client 端永遠看不到 server 端的真實訊號
+
+**CORS 已驗證沒問題**：origin 含 `https://wave-deploy-agent.punwave.com`、methods 含 PUT/POST/GET/OPTIONS、responseHeader 含 Range/Content-Range/Content-Length。Cloudbuild 那邊 `protoPayload` audit log 該時段沒任何 ERROR/WARNING（GCS data access 沒開 audit）。
+
+**使用者選了 D**（A + B 都做）。R44 #1 + #2 程式碼已完成（待 deploy 授權），#3 留給 R45。
+
+**R44 已寫完的程式碼（pending commit + push + deploy 授權）**：
+1. ✅ **`apps/web/lib/resumable-upload.ts`** — `xhr.onerror` 升級成 `Error & XhrErrorDiagnostic`（4 欄位：xhrStatus/xhrStatusText/xhrResponseURL/xhrResponseText），bail-out `lastError` 序列化成 `network status=N statusText="..." url=... body="..."` — 保留 `network ` literal 前綴 back-compat
+2. ✅ **`uploadResumable` 加 `verifyComplete?: () => Promise<boolean>` callback** — retry exhaust 前呼叫一次，return true 就 short-circuit ok；happy/aborted path 不呼叫；callback throw graceful degrade
+3. ✅ **新 `POST /api/upload/verify`** in `apps/api/src/routes/projects.ts` — query GCS object metadata（size + md5），bucket prefix guard 防 gcsUri 注入，權限 `projects:write` 已在 `apps/api/src/middleware/auth.ts` 登記
+4. ✅ **`apps/web/app/page.tsx` + `apps/web/app/projects/[id]/page.tsx`** wire `verifyComplete` 接到 `/api/upload/verify`，body `{ gcsUri, expectedSize: file.size }`，failure-tolerant
+5. ✅ **27 新 zero-dep tests** 加進 `apps/web/lib/test-resumable-upload.ts`（96 → 123 PASS）：
+   - `formatXhrDiagnostic` / `isXhrErrorDiagnostic` 純函式
+   - 200-char body truncation 數值釘死
+   - persistent network_error 16 attempts → enriched `lastError`
+   - persistent http-level error 503 → status/statusText/body 全進 `lastError`
+   - 老 mock back-compat（`network ` 前綴維持）
+   - `verifyComplete` true/false/throw 三條 path
+   - happy / aborted path **不呼叫** verifyComplete
+6. ✅ **`tsc --noEmit`** clean on web + api
+7. ✅ **ADR**：`brain/decisions/2026-04-28-upload-trans-pacific-rescue.md`（已寫，已 index）
+
+**還沒做的（pending）**：
+- ⏳ commit + push 到 `wave-deploy-agent/main`（pending）
+- ⏳ Cloud Build deploy R44 stack 到 production（**待使用者明確授權**）
+- ⏳ A 部分（`POST /api/projects/submit-gcs` 用現有 gcsUri 跳過 upload）— **等使用者給 `name` + `customDomain` 兩個值**
+
+**R45 跟進（待後續 ADR）**：建 `wave-deploy-agent-uploads-asia` bucket（asia-east1）— bucket 搬地理位置，徹底消除跨太平洋 final-chunk fragility。要 single-tenancy migration 計劃 + 歷史 sources 處理。
+
+**前一次（2026-04-28 02:02 UTC）的 deploy 細節**（已成功）：
+- Cloud Build `6a658e37-880d-432d-beb2-d9d253a1599a`，SHORT_SHA `5b84460`，duration 6m34s
+- 三個 Cloud Run service 切到 `:5b84460`：api-00132-g5h、web-00095-6nd（R30 fix 在這）、bot-00043-q72
+- 一次帶上 14 commits：R30 / R30b / R31-R35 RBAC IDOR / R37-R43 wire-contract locks
+- Health checks pass
+
+---
+
 **2026-04-28 02:02 UTC（緊急 prod deploy — R30+ 整個 stack，14 commits ahead）**
 
 **狀態：DEPLOYED + VERIFIED（待使用者重試 426 MB 上傳驗證）**

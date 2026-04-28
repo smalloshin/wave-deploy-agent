@@ -364,6 +364,8 @@ export default function ProjectDetailPage() {
     const { uploadUrl, gcsUri, contentType } = initData;
 
     // Stage: upload (chunked GCS resumable PUT — Round 27 fix for large-file network errors)
+    // Round 44: verifyComplete rescues the trans-Pacific case (bytes landed,
+    // 200 response cut on return path → onerror despite GCS-side success).
     const upgradeResult = await uploadResumable({
       sessionUri: uploadUrl,
       file: upgradeFile,
@@ -373,6 +375,21 @@ export default function ProjectDetailPage() {
       },
       onXhrCreated: (xhr) => {
         upgradeXhrRef.current = xhr;
+      },
+      verifyComplete: async () => {
+        try {
+          const verifyRes = await fetch(`${API}/api/upload/verify`, {
+            credentials: 'include',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ gcsUri, expectedSize: upgradeFile.size }),
+          });
+          if (!verifyRes.ok) return false;
+          const data = (await verifyRes.json()) as { complete?: boolean };
+          return data.complete === true;
+        } catch {
+          return false;
+        }
       },
     });
     upgradeXhrRef.current = null;
