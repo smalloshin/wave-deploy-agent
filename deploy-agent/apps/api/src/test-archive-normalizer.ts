@@ -38,7 +38,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { normalizeExtractedPaths } from './services/archive-normalizer.js';
+import {
+  normalizeExtractedPaths,
+  descendIntoWrapperDir,
+  sanitizeRelativePath,
+} from './services/archive-normalizer.js';
 
 let passed = 0;
 let failed = 0;
@@ -356,6 +360,302 @@ function rmTmp(dir: string): void {
   } finally {
     rmTmp(dir);
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Round 44f (2026-04-30): tests for descendIntoWrapperDir + sanitizeRelativePath
+// ════════════════════════════════════════════════════════════════════════
+
+// ─── Test 11: descendIntoWrapperDir — single subdir with marker → descend ─
+{
+  const dir = mkTmp('descend-marker');
+  try {
+    fs.mkdirSync(path.join(dir, 'legal_flow'));
+    fs.writeFileSync(path.join(dir, 'legal_flow', 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'legal_flow', 'next.config.ts'), 'export {};');
+
+    const result = descendIntoWrapperDir(dir);
+    assertEq(
+      result,
+      path.join(dir, 'legal_flow'),
+      'descend-marker: returned wrapper subdir path',
+    );
+  } finally {
+    rmTmp(dir);
+  }
+}
+
+// ─── Test 12: descendIntoWrapperDir — subdir without marker → no descend ──
+{
+  const dir = mkTmp('descend-no-marker');
+  try {
+    fs.mkdirSync(path.join(dir, 'random_folder'));
+    fs.writeFileSync(path.join(dir, 'random_folder', 'README.md'), '# nothing');
+
+    const result = descendIntoWrapperDir(dir);
+    assertEq(
+      result,
+      dir,
+      'descend-no-marker: no marker, returned extractDir unchanged',
+    );
+  } finally {
+    rmTmp(dir);
+  }
+}
+
+// ─── Test 13: descendIntoWrapperDir — multiple children → no descend ──────
+{
+  const dir = mkTmp('descend-multi');
+  try {
+    fs.mkdirSync(path.join(dir, 'legal_flow'));
+    fs.writeFileSync(path.join(dir, 'legal_flow', 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'README.md'), 'extra');
+
+    const result = descendIntoWrapperDir(dir);
+    assertEq(
+      result,
+      dir,
+      'descend-multi: 2+ visible children, no descend',
+    );
+  } finally {
+    rmTmp(dir);
+  }
+}
+
+// ─── Test 14: descendIntoWrapperDir — single FILE child → no descend ──────
+{
+  const dir = mkTmp('descend-file');
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+
+    const result = descendIntoWrapperDir(dir);
+    assertEq(
+      result,
+      dir,
+      'descend-file: single child is a file, not a dir → no descend',
+    );
+  } finally {
+    rmTmp(dir);
+  }
+}
+
+// ─── Test 15: descendIntoWrapperDir — hidden entries ignored ──────────────
+{
+  const dir = mkTmp('descend-hidden');
+  try {
+    fs.mkdirSync(path.join(dir, 'legal_flow'));
+    fs.writeFileSync(path.join(dir, 'legal_flow', 'package.json'), '{}');
+    // OS junk that should be ignored when counting children
+    fs.writeFileSync(path.join(dir, '.DS_Store'), '\0\0\0\0');
+    fs.mkdirSync(path.join(dir, '__MACOSX'));
+    fs.writeFileSync(path.join(dir, '__MACOSX', 'note.txt'), 'osx');
+
+    const result = descendIntoWrapperDir(dir);
+    assertEq(
+      result,
+      path.join(dir, 'legal_flow'),
+      'descend-hidden: .DS_Store and __MACOSX ignored, descended into legal_flow',
+    );
+  } finally {
+    rmTmp(dir);
+  }
+}
+
+// ─── Test 16: descendIntoWrapperDir — empty dir → no descend ──────────────
+{
+  const dir = mkTmp('descend-empty');
+  try {
+    const result = descendIntoWrapperDir(dir);
+    assertEq(result, dir, 'descend-empty: empty dir returned unchanged');
+  } finally {
+    rmTmp(dir);
+  }
+
+  // Nonexistent path — must not throw
+  const ghost = path.join(os.tmpdir(), `descend-ghost-${Date.now()}`);
+  const result = descendIntoWrapperDir(ghost);
+  assertEq(result, ghost, 'descend-ghost: nonexistent path returned unchanged');
+}
+
+// ─── Test 17: descendIntoWrapperDir — tries each marker type ──────────────
+{
+  const markers = [
+    'package.json', 'Dockerfile', 'requirements.txt', 'go.mod',
+    'pom.xml', 'Cargo.toml', 'build.gradle', 'Gemfile', 'composer.json',
+  ];
+  for (const marker of markers) {
+    const dir = mkTmp(`descend-marker-${marker.replace(/[^a-z]/gi, '')}`);
+    try {
+      fs.mkdirSync(path.join(dir, 'wrapper'));
+      fs.writeFileSync(path.join(dir, 'wrapper', marker), 'x');
+
+      const result = descendIntoWrapperDir(dir);
+      assertEq(
+        result,
+        path.join(dir, 'wrapper'),
+        `descend-marker-each: ${marker} triggers descent`,
+      );
+    } finally {
+      rmTmp(dir);
+    }
+  }
+}
+
+// ─── Test 18: sanitizeRelativePath — backslash conversion ─────────────────
+{
+  assertEq(
+    sanitizeRelativePath('legal_flow\\src\\auth.ts'),
+    'legal_flow/src/auth.ts',
+    'sanitize-bs: backslashes converted to forward slashes',
+  );
+  assertEq(
+    sanitizeRelativePath('a\\b\\c\\d.txt'),
+    'a/b/c/d.txt',
+    'sanitize-bs: deep backslash path converted',
+  );
+}
+
+// ─── Test 19: sanitizeRelativePath — leading slash / drive letter ─────────
+{
+  assertEq(
+    sanitizeRelativePath('/etc/passwd'),
+    'etc/passwd',
+    'sanitize-leading: leading / stripped',
+  );
+  assertEq(
+    sanitizeRelativePath('C:/Users/foo/file.txt'),
+    'Users/foo/file.txt',
+    'sanitize-drive: Windows drive letter stripped',
+  );
+  assertEq(
+    sanitizeRelativePath('D:\\project\\file.ts'),
+    'project/file.ts',
+    'sanitize-drive: backslash-form drive letter stripped',
+  );
+  assertEq(
+    sanitizeRelativePath('./src/index.ts'),
+    'src/index.ts',
+    'sanitize-leading: leading ./ stripped',
+  );
+  assertEq(
+    sanitizeRelativePath('././src/index.ts'),
+    'src/index.ts',
+    'sanitize-leading: multiple ./ stripped',
+  );
+}
+
+// ─── Test 20: sanitizeRelativePath — wrapper-dir prefix stripping ─────────
+{
+  assertEq(
+    sanitizeRelativePath('legal_flow/src/auth.ts', { wrapperDirName: 'legal_flow' }),
+    'src/auth.ts',
+    'sanitize-wrapper: wrapper prefix stripped',
+  );
+  assertEq(
+    sanitizeRelativePath('legal_flow\\src\\auth.ts', { wrapperDirName: 'legal_flow' }),
+    'src/auth.ts',
+    'sanitize-wrapper: backslash + wrapper combined',
+  );
+  assertEq(
+    sanitizeRelativePath('src/auth.ts', { wrapperDirName: 'legal_flow' }),
+    'src/auth.ts',
+    'sanitize-wrapper: no wrapper prefix → unchanged',
+  );
+  assertEq(
+    sanitizeRelativePath('other_project/src/auth.ts', { wrapperDirName: 'legal_flow' }),
+    'other_project/src/auth.ts',
+    'sanitize-wrapper: different prefix not stripped',
+  );
+  assertEq(
+    sanitizeRelativePath('legal_flow', { wrapperDirName: 'legal_flow' }),
+    null,
+    'sanitize-wrapper: bare wrapper name → null (nothing to address)',
+  );
+}
+
+// ─── Test 21: sanitizeRelativePath — path traversal rejected ──────────────
+{
+  assertEq(
+    sanitizeRelativePath('../etc/passwd'),
+    null,
+    'sanitize-traverse: ../ rejected',
+  );
+  assertEq(
+    sanitizeRelativePath('..\\..\\windows\\system32'),
+    null,
+    'sanitize-traverse: backslash ..\\ rejected',
+  );
+  assertEq(
+    sanitizeRelativePath('src/../../../etc/passwd'),
+    null,
+    'sanitize-traverse: mid-path .. rejected',
+  );
+  assertEq(
+    sanitizeRelativePath('src/./auth.ts'),
+    null,
+    'sanitize-traverse: mid-path . rejected',
+  );
+  assertEq(
+    sanitizeRelativePath('src//auth.ts'),
+    null,
+    'sanitize-traverse: empty segment (//) rejected',
+  );
+}
+
+// ─── Test 22: sanitizeRelativePath — empty / invalid input ────────────────
+{
+  assertEq(sanitizeRelativePath(''), null, 'sanitize-empty: empty string → null');
+  assertEq(sanitizeRelativePath('   '), null, 'sanitize-empty: whitespace → null');
+  assertEq(sanitizeRelativePath('/'), null, 'sanitize-empty: bare slash → null');
+  assertEq(sanitizeRelativePath('./'), null, 'sanitize-empty: ./ alone → null');
+  assertEq(sanitizeRelativePath(null as unknown as string), null, 'sanitize-empty: null → null');
+  assertEq(sanitizeRelativePath(undefined as unknown as string), null, 'sanitize-empty: undefined → null');
+}
+
+// ─── Test 23: sanitizeRelativePath — happy paths preserved ────────────────
+{
+  assertEq(
+    sanitizeRelativePath('src/index.ts'),
+    'src/index.ts',
+    'sanitize-happy: clean relative path unchanged',
+  );
+  assertEq(
+    sanitizeRelativePath('a/b/c/d/e.txt'),
+    'a/b/c/d/e.txt',
+    'sanitize-happy: deep clean path unchanged',
+  );
+  assertEq(
+    sanitizeRelativePath('package.json'),
+    'package.json',
+    'sanitize-happy: single filename unchanged',
+  );
+  assertEq(
+    sanitizeRelativePath('file.with.dots.ts'),
+    'file.with.dots.ts',
+    'sanitize-happy: dots in filename preserved (not segments)',
+  );
+}
+
+// ─── Test 24: sanitizeRelativePath — combined transformations ─────────────
+{
+  // The full LLM regression case: backslash + drive + wrapper + leading ./
+  assertEq(
+    sanitizeRelativePath('C:\\projects\\legal_flow\\src\\auth.ts', { wrapperDirName: 'legal_flow' }),
+    'projects/legal_flow/src/auth.ts',
+    'sanitize-combo: drive stripped but wrapper-strip is prefix-anchored (drive sat above wrapper)',
+  );
+  // Leading ./legal_flow/ → after ./ strip, we have legal_flow/... → strip wrapper
+  assertEq(
+    sanitizeRelativePath('./legal_flow/src/auth.ts', { wrapperDirName: 'legal_flow' }),
+    'src/auth.ts',
+    'sanitize-combo: ./ then wrapper stripped',
+  );
+  // Leading / + wrapper
+  assertEq(
+    sanitizeRelativePath('/legal_flow/src/auth.ts', { wrapperDirName: 'legal_flow' }),
+    'src/auth.ts',
+    'sanitize-combo: leading / then wrapper stripped',
+  );
 }
 
 // ─── Summary ─────────────────────────────────────────────────────────────

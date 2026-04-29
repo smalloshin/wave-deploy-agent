@@ -34,6 +34,26 @@
  *     skip the rename, log to result.collisions, leave source in place
  *   - Path traversal guard: rejects normalized paths that escape extractDir
  *     after `path.resolve` (defense against `..\..\etc\passwd` filenames)
+ *
+ * Round 44f (2026-04-30): adds two extra helpers used by pipeline-worker
+ * after the GCS-source re-extract path (which previously skipped the
+ * normalize + wrapper-dir descent entirely on Cloud Run revision change,
+ * leaving fixed.tgz with both backslash root entries AND a `legal_flow/`
+ * subdir). The two new helpers are:
+ *
+ *   - descendIntoWrapperDir(extractDir): if the directory contains exactly
+ *     one subdirectory AND that subdir has a project marker
+ *     (package.json / Dockerfile / requirements.txt / go.mod / pom.xml /
+ *     Cargo.toml / build.gradle / Gemfile / composer.json), return the
+ *     subdir path. Otherwise return extractDir. Mirrors the inline logic
+ *     at routes/projects.ts:647-654 and routes/versioning.ts:213.
+ *
+ *   - sanitizeRelativePath(input, opts): pure-string helper for sanitizing
+ *     LLM-emitted file paths before `path.join(projectDir, ...)`. Converts
+ *     backslashes to forward slashes, strips leading slashes / drive letters
+ *     / `./`, and rejects any path segment matching `..`. Optional
+ *     `wrapperDirName` option strips a leading `<wrapper>/` prefix when the
+ *     LLM echoes the wrapper-dir back at us.
  */
 
 import fs from 'node:fs';
@@ -128,4 +148,129 @@ export async function normalizeExtractedPaths(extractDir: string): Promise<Norma
   }
 
   return result;
+}
+
+/**
+ * Project markers used to detect a real project root vs a generic directory.
+ * If a single subdir contains any of these, it's almost certainly the
+ * intended project root and we should descend into it.
+ */
+const PROJECT_MARKERS = [
+  'package.json',
+  'Dockerfile',
+  'requirements.txt',
+  'go.mod',
+  'pom.xml',
+  'Cargo.toml',
+  'build.gradle',
+  'Gemfile',
+  'composer.json',
+];
+
+/**
+ * If `extractDir` contains exactly one (visible) subdirectory AND that subdir
+ * has a project marker, return the subdir's path. Otherwise return
+ * `extractDir` unchanged.
+ *
+ * Mirrors the inline logic that already exists at:
+ *   - apps/api/src/routes/projects.ts:647-654 (submit-gcs path)
+ *   - apps/api/src/routes/versioning.ts:213    (new-version path)
+ *
+ * Hidden entries (`.git`, `.DS_Store`, `__MACOSX`) are ignored when counting
+ * children — these don't disqualify the wrapper-dir heuristic.
+ *
+ * The function is a pure path resolver: it does not move or rename anything.
+ * Caller decides what to do with the returned path (typically: reassign
+ * `projectDir = descendIntoWrapperDir(projectDir)` after extraction).
+ */
+export function descendIntoWrapperDir(extractDir: string): string {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(extractDir, { withFileTypes: true });
+  } catch {
+    return extractDir;
+  }
+
+  // Filter out hidden entries and OS junk that don't affect wrapper-detection
+  const visible = entries.filter(
+    (e) => !e.name.startsWith('.') && e.name !== '__MACOSX',
+  );
+
+  if (visible.length !== 1) return extractDir;
+  if (!visible[0].isDirectory()) return extractDir;
+
+  const candidate = path.join(extractDir, visible[0].name);
+  const hasMarker = PROJECT_MARKERS.some((m) =>
+    fs.existsSync(path.join(candidate, m)),
+  );
+
+  return hasMarker ? candidate : extractDir;
+}
+
+/**
+ * Sanitize a relative path emitted by an LLM (or any untrusted source) before
+ * `path.join(projectDir, ...)`. Pure-string, no filesystem access.
+ *
+ * Transforms applied (in order):
+ *   1. Backslashes → forward slashes (handles `legal_flow\src\app.ts`)
+ *   2. Strip Windows drive letter prefix (`C:/...` → `...`)
+ *   3. Strip leading `/` (turn absolute paths into relative)
+ *   4. Strip leading `./` repetitions
+ *   5. If `options.wrapperDirName` is set, strip that prefix when present
+ *      (handles the case where the LLM echoes the wrapper-dir back at us:
+ *      e.g. emits `legal_flow/src/app.ts` when we want `src/app.ts`)
+ *
+ * Rejects (returns `null`) if the resulting path:
+ *   - Is empty
+ *   - Contains any `..` segment (path traversal attempt)
+ *   - Contains any `.` segment (suspicious)
+ *   - Contains any empty segment (e.g. `a//b`)
+ *
+ * Returns the sanitized path string on success, or `null` on rejection.
+ * Callers should treat `null` as "skip this fix entirely; don't fall back
+ * to using the raw input".
+ */
+export function sanitizeRelativePath(
+  input: string,
+  options?: { wrapperDirName?: string },
+): string | null {
+  if (!input || typeof input !== 'string') return null;
+
+  let s = input.trim();
+  if (!s) return null;
+
+  // 1. Backslash → forward slash
+  s = s.replace(/\\/g, '/');
+
+  // 2. Strip Windows drive letter (C:/, D:/, etc.)
+  s = s.replace(/^[a-zA-Z]:\//, '');
+
+  // 3. Strip leading slashes
+  s = s.replace(/^\/+/, '');
+
+  // 4. Strip leading `./` repetitions
+  while (s.startsWith('./')) {
+    s = s.slice(2);
+  }
+
+  // 5. Strip wrapper-dir prefix if requested
+  if (options?.wrapperDirName) {
+    const prefix = options.wrapperDirName + '/';
+    if (s.startsWith(prefix)) {
+      s = s.slice(prefix.length);
+    } else if (s === options.wrapperDirName) {
+      // Path is *exactly* the wrapper-dir name — nothing left to address
+      return null;
+    }
+  }
+
+  if (!s) return null;
+
+  // Validate every segment
+  const segments = s.split('/');
+  for (const seg of segments) {
+    if (seg === '' || seg === '.' || seg === '..') return null;
+  }
+
+  return s;
 }

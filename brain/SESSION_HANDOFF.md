@@ -4,6 +4,67 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-28 08:23 UTC — Round 44 saga 完整收尾，legal-flow project 進 `review_pending`**
+
+**狀態：R44b/R44c/R44d/R44e 全鏈路成功，project `4a20b5f0-a9e3-49bf-a7ac-d1320867112c` 在等人工審核**
+
+**最終 pipeline 走完**（08:13:46 → 08:22:52，總計 ~9 分鐘）：
+- 08:13:46 GCS Submit OK
+- 08:14:?? Detector 過 ✅（normalizer 把反斜線路徑 rename 完，detect typescript）
+- 08:15:12 Source uploaded to GCS（R44e sync tar 600s timeout 撐住）
+- 08:15:12 Pipeline Step 1-3 跑（Semgrep 180s / Trivy 35s）
+- 08:18:48 Step 4 LLM Threat Analysis：Claude API 餘額沒了 → fallback GPT-5.4 ✅
+- 08:?? AI 修補 + 重新打包 → `gcsFixedSourceUri` 寫好
+- 08:22:52 status → `review_pending`，等 boss approve/reject
+
+**ADRs 已寫**：
+- `brain/decisions/2026-04-28-archive-normalizer.md`（R44d）
+- `brain/decisions/2026-04-28-pipeline-worker-tar-timeout.md`（R44e）
+- 兩份都 Active，已登記在 `decisions/index.md`
+
+**legal-flow project ID 演進**：
+- 初版（R44 之前）: `8eecb...` 卡在 GCS upload timeout
+- R44b 後: `cdd5c...` 過 upload 卡在 detector
+- R44c 後: `493dacee` Step 2 detector 回 `Unsupported language: unknown`
+- R44d 後: `ddf2d9e9` 過 detector（語言 typescript），卡在 fixed-source upload `spawnSync tar ETIMEDOUT`
+- R44e 後: `4a20b5f0-a9e3-49bf-a7ac-d1320867112c`（**目前 in flight**），過 tar+upload 進 Pipeline
+
+**R44d（2026-04-28 ~07:30 UTC）— Windows backslash zip path 修正**
+- 失敗：`legal-flow.zip` 用 Windows 7-Zip 打包，內含 `legal_flow\package.json` 用反斜線
+- Alpine BusyBox unzip 把反斜線當合法檔名字元保留，Linux `path.basename('legal_flow\\package.json')` 不認反斜線當分隔符 → 整個字串當 basename，detector `fileNames.has('package.json')` false → `Unsupported language: unknown`
+- 修法：新增 `apps/api/src/services/archive-normalizer.ts`（~110 LOC，純 fs/promises）
+  - `normalizeExtractedPaths(extractDir)` 掃 root，遇到含 `\` 的檔案就 mkdir 父層 + rename
+  - 安全 guard：path traversal reject、collision skip、idempotent
+- 50 個 zero-dep 測試 in `apps/api/src/test-archive-normalizer.ts`（用 `os.tmpdir()` 真 fs）
+- 接線：`apps/api/src/routes/projects.ts` 兩個 unzip 點都呼叫一次（submit-gcs flow + multipart upload flow）
+- Cloud Build deploy 成功，後續 project ddf2d9e9 確認 `detectedLanguage: typescript` ✅
+
+**R44e（2026-04-28 08:14 UTC）— sync tar timeout 30s/60s → 600s**
+- 失敗：project ddf2d9e9 過了 detector，卡在 fixed-source upload `tar-failed: spawnSync tar ETIMEDOUT`
+- R44b 只修了 `routes/projects.ts` 的 `execFileAsync` 兩個 site，**漏掉 `pipeline-worker.ts` 的兩個 `execFileSync` site**
+  - Line 110 extract GCS source bundle: timeout 30_000 ms
+  - Line 291 pack mutated projectDir for fixed-source GCS: timeout 60_000 ms
+  - legal-flow projectDir AI fixes 後 ~300+ MB，60s 不夠 tar
+- 修法：兩 site 都改 `timeout: 600_000, maxBuffer: 100 * 1024 * 1024`
+- Cloud Build `80c5b662-e6ba-45ec-9b51-21b73db6b6e8` SUCCESS（8m46s）
+
+**R44e 驗證（08:18 UTC）**
+- project `4a20b5f0` 已過：detector ✅、normalizer ✅、tar+upload ✅、Semgrep 180s/Trivy 35s 都過 ✅
+- Cloud Run log 路徑：`08:15:12 [Upload] Source uploaded ...` → `08:15:12 [Pipeline] Starting` → `08:18:48 Step 4: LLM Threat Analysis` → `08:18:48 Claude API failed: 400 credit balance too low ... Falling back to GPT-5.4`
+- **新卡關（不在 R44 saga 內）**：Anthropic API 額度沒了，pipeline 嘗試 fallback GPT-5.4
+- 已 schedule 270s wakeup 確認 GPT-5.4 路徑能否完成 LLM threat analysis（95 個 source files）
+
+**清掉的失敗 project**（teardown logs OK）
+- `8eecb...`, `cdd5c...`, `493dacee`, `ddf2d9e9`：DELETE + Cloud Run + AR teardown 都跑過
+
+**已知 follow-up（不阻塞 legal-flow，但要補）**
+- R44c-stream：把 `submit-gcs` 改成 streaming download/upload，避免 memory 跟檔案大小同比
+- R45：bucket 從 US multi-region 搬到 asia-east1（解決台灣 user trans-Pacific TCP 抖動的根因）
+- ADR：R44d archive-normalizer + R44e pipeline-worker sync tar timeout（這份 handoff 之後寫）
+- Anthropic API 餘額：使用者得自己加值或設別的 LLM key（`OPENAI_API_KEY` / `GEMINI_API_KEY` 看 fallback 鏈）
+
+---
+
 **2026-04-27（Round 26 — Discord NL bot security hardening，engineer subagent）**
 
 - ✅ **8 個項目全部 ship，tsc 全綠（API + bot + web 三個 package）**

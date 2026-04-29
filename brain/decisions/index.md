@@ -31,3 +31,6 @@
 | 2026-04-05 | [artifact-registry-cleanup](./2026-04-05-artifact-registry-cleanup.md) | Active | AR repo keep last 5 tagged + 清 7d untagged / 30d tagged |
 | 2026-04-05 | [terraform-disaster-recovery](./2026-04-05-terraform-disaster-recovery.md) | Active | 用 Terraform + bootstrap.sh 實現 agent 一指令重建；secrets 搬到 Secret Manager |
 | 2026-04-17 | [rbac-auth-system](./2026-04-17-rbac-auth-system.md) | Active | RBAC 權限系統 Phase 1 permissive：5 張 DB 表、bcrypt + session cookie、3 角色 |
+| 2026-04-28 | [archive-normalizer](./2026-04-28-archive-normalizer.md) | Active | R44d：unzip 後修 Windows zip 反斜線路徑（`legal_flow\package.json` → 正常 subdir），50 個 zero-dep 測試 |
+| 2026-04-28 | [pipeline-worker-tar-timeout](./2026-04-28-pipeline-worker-tar-timeout.md) | Active | R44e：pipeline-worker.ts 兩個 sync `execFileSync` tar timeout 30s/60s → 600s + maxBuffer 100MB（R44b 漏掉的 sync sites）|
+| 2026-04-30 | [r44f-pipeline-worker-normalize](./2026-04-30-r44f-pipeline-worker-normalize.md) | Active | R44f：pipeline-worker GCS 重抓路徑加 `normalizeExtractedPaths` + `descendIntoWrapperDir`；AI fix step `fix.filePath` 用新 `sanitizeRelativePath`（反斜線→正斜線 / 剝 drive letter / 剝 wrapper prefix / 拒 `..`）；archive-normalizer 從 1 export 擴成 3 export；測試 50 → 96 zero-dep 全綠 |

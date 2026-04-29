@@ -2,7 +2,7 @@
 // Triggered when a project is submitted. Runs asynchronously (non-blocking).
 
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { join, extname, basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   getProject,
@@ -18,6 +18,11 @@ import { runSemgrep, runTrivy } from './scanner';
 import { analyzeThreatModel, generateReviewReport } from './llm-analyzer';
 import { analyzeResources } from './resource-analyzer';
 import { estimateMonthlyCost, formatCostEstimate } from './cost-estimator';
+import {
+  normalizeExtractedPaths,
+  descendIntoWrapperDir,
+  sanitizeRelativePath,
+} from './archive-normalizer';
 import type { ScanFinding, AutoFixResult } from '@deploy-agent/shared';
 
 // Timeout utility — prevents pipeline from hanging indefinitely
@@ -65,6 +70,12 @@ export async function runPipeline(
 
   let currentStep = '';
   const stopKeepAlive = startKeepAlive();
+
+  // Round 44f (2026-04-30): track wrapper-dir name so the AI fix step can
+  // strip it when the LLM echoes it back in fix.filePath. Set during the
+  // GCS-source re-extract path below; remains undefined on the warm path
+  // (where submit-gcs / new-version already descended before extracting).
+  let wrapperDirName: string | undefined;
 
   try {
     // ─── Step 0: Ensure source files are available ───
@@ -115,6 +126,30 @@ export async function runPipeline(
       // pipeline worker that R44b didn't sweep.
       execFileSync('tar', ['xzf', tgzPath, '-C', projectDir], { timeout: 600_000, maxBuffer: 100 * 1024 * 1024 });
       console.log(`[Pipeline]   Downloaded and extracted GCS source to ${projectDir}`);
+
+      // Round 44f (2026-04-30): replicate the normalize + wrapper-dir descent
+      // that submit-gcs / new-version do inline. Without this, the GCS re-
+      // extract path leaves backslash-laden filenames AND a `legal_flow/`
+      // wrapper subdir, both of which break downstream detection.
+      try {
+        const normResult = await normalizeExtractedPaths(projectDir);
+        if (normResult.renamed > 0) {
+          console.log(
+            `[Pipeline]   Normalized ${normResult.renamed} backslash filenames` +
+            (normResult.collisions ? ` (${normResult.collisions} collisions)` : '') +
+            (normResult.blocked ? ` (${normResult.blocked} blocked)` : ''),
+          );
+        }
+      } catch (err) {
+        console.warn(`[Pipeline]   normalizeExtractedPaths failed (non-fatal): ${(err as Error).message}`);
+      }
+
+      const descended = descendIntoWrapperDir(projectDir);
+      if (descended !== projectDir) {
+        wrapperDirName = basename(descended);
+        console.log(`[Pipeline]   Detected wrapper dir '${wrapperDirName}', descending`);
+        projectDir = descended;
+      }
     }
 
     // ─── Step 1: Project Detection ───
@@ -204,7 +239,25 @@ export async function runPipeline(
 
     for (const fix of threatAnalysis.autoFixes) {
       try {
-        const filePath = join(projectDir, fix.filePath);
+        // Round 44f (2026-04-30): sanitize LLM-emitted file path before join.
+        // GPT-5.5 / Claude can echo back Windows-style backslashes
+        // (`legal_flow\src\auth.ts`) or the wrapper-dir prefix
+        // (`legal_flow/src/auth.ts` after we already descended into it).
+        // Without this, `join(projectDir, raw)` either creates a literal-
+        // backslash file at projectDir root (POSIX doesn't recognize `\` as
+        // separator) or path-traverses out of projectDir.
+        const sanitized = sanitizeRelativePath(fix.filePath, { wrapperDirName });
+        if (!sanitized) {
+          autoFixResults.push({
+            applied: false,
+            diff: '',
+            explanation: `Rejected unsafe filePath: ${fix.filePath}`,
+            verificationPassed: null,
+          });
+          console.warn(`[Pipeline]   Rejected unsafe filePath: ${fix.filePath}`);
+          continue;
+        }
+        const filePath = join(projectDir, sanitized);
         const original = readFileSync(filePath, 'utf8');
 
         if (original.includes(fix.originalCode)) {
@@ -213,16 +266,16 @@ export async function runPipeline(
           wfs(filePath, fixed);
           autoFixResults.push({
             applied: true,
-            diff: `--- ${fix.filePath}\n+++ ${fix.filePath}\n-${fix.originalCode}\n+${fix.fixedCode}`,
+            diff: `--- ${sanitized}\n+++ ${sanitized}\n-${fix.originalCode}\n+${fix.fixedCode}`,
             explanation: fix.explanation,
             verificationPassed: null, // will be set after re-scan
           });
-          console.log(`[Pipeline]   Fixed: ${fix.filePath} — ${fix.explanation}`);
+          console.log(`[Pipeline]   Fixed: ${sanitized} — ${fix.explanation}`);
         } else {
           autoFixResults.push({
             applied: false,
             diff: '',
-            explanation: `Could not find original code in ${fix.filePath}`,
+            explanation: `Could not find original code in ${sanitized}`,
             verificationPassed: null,
           });
         }

@@ -4,6 +4,115 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-30 02:30 UTC（R44f：pipeline-worker 在 GCS 重抓路徑也做 normalize + descend；AI fix path 淨化）**
+
+**狀態：CODE + TESTS + ADR 全做完，未部署**
+
+R44 saga 收尾。前面 R44b/c/d/e 都收得差不多，但 legal-flow 跑到 LLM Threat Analysis 之後下一輪 build 還是會炸。元兇是 `apps/api/src/services/pipeline-worker.ts` 自己有兩個漏洞：
+
+1. **Step 0 GCS 重抓 source 沒 normalize、沒 descend**（Cloud Run 換 revision 後會重抓）。`submit-gcs` 和 `new-version` 各自 inline 做了這兩件事，但這條重抓路徑是空的——所以 `fixed.tgz` 重打包時連 `legal_flow/` wrapper 一起進去，BusyBox 解壓又留反斜線檔名混在 root，project-detector 看不到 `package.json`，Step 1 死掉。
+2. **Step 5 AI fix loop `join(projectDir, fix.filePath)` 沒淨化**。LLM（GPT-5.5 或 Claude）有時吐 `legal_flow\src\auth.ts`（POSIX `path.join` 不認 `\`）或 `legal_flow/src/auth.ts`（已經 descend 進去後又被回吐 wrapper 名）。也沒任何 path traversal 守衛。
+
+**改動**：
+
+- `apps/api/src/services/archive-normalizer.ts` — 從 1 export 擴成 3 export：
+  - 既有 `normalizeExtractedPaths(extractDir)` 不動
+  - 新增 `descendIntoWrapperDir(extractDir): string` — 純 path resolver；單一 visible subdir + 含 PROJECT_MARKERS 任一個就回該 subdir，否則原樣回
+  - 新增 `sanitizeRelativePath(input, opts?)` — 純 string；反斜線→正斜線 / 剝 drive letter / 剝 leading `/` 和 `./` / 選擇性剝 wrapperDirName prefix / 拒 `..`/`./`/empty segment（回 `null`）
+- `apps/api/src/services/pipeline-worker.ts` — Step 0 extract 完後加 `normalizeExtractedPaths` + `descendIntoWrapperDir`（記錄 `wrapperDirName`）；Step 5 AI fix loop 用 `sanitizeRelativePath(fix.filePath, { wrapperDirName })`，被拒就標 `applied: false` 跳過
+- `apps/api/src/test-archive-normalizer.ts` — 50 → **96 zero-dep 測試**全綠（新加 14 個 block 涵蓋 descend / sanitize 各種 case 含 path traversal）
+- ADR `brain/decisions/2026-04-30-r44f-pipeline-worker-normalize.md` + 兩份 index.md（top-level + deploy-agent）已登記
+
+**驗證**：`npx tsx src/test-archive-normalizer.ts` → `=== 96 passed, 0 failed ===`；`tsc --noEmit` 無錯。
+
+**待辦**：
+- 把 R44f + 04-30 LLM swap 一起 commit + push + 觸發 Cloud Build 重 deploy `deploy-agent-api`
+- 開 `da-legal-flow` `--allow-unauthenticated`（使用者已授權）
+- 重新試跑 legal-flow（用 dashboard 或 MCP 重抓同一份 GCS source 跑 pipeline）
+
+---
+
+**2026-04-30 00:05 UTC（LLM provider 改為 GPT-5.5 為主、Claude 為備）**
+
+**狀態：CODE CHANGES DONE，未部署**
+
+使用者要求把主要 LLM model 改成 GPT-5.5。背景：R44 saga 期間 Claude API balance 用完，pipeline 自動 fallback 到 GPT-5.4 還是跑完了，使用者決定直接把 GPT 提主、Claude 降備。
+
+**改動**（5 個檔案）：
+- `apps/api/src/services/llm-analyzer.ts` — `callLLM` 順序翻轉：先 OpenAI（`gpt-5.5`）→ Claude fallback；註解、log 訊息、預設 model 全更新
+- `apps/api/src/services/resource-analyzer.ts` — 同樣翻轉，`gpt-5.5` 為主
+- `apps/bot/src/nl-handler.ts` — 翻轉，並把 fallback 條件 `credit/billing/balance` 加入 `quota`（Anthropic 用 quota 字眼比較少，但 OpenAI 用得多，預備 GPT-5.5 quota 滿時 fallback Claude）
+- `.env.example` 兩份（root + `deploy-agent/`）— 註解改 "GPT-5.5 primary, Claude fallback"，`OPENAI_MODEL=gpt-5.5`
+
+**待辦**：
+- 部署：`cloudbuild.yaml` 沒動（不需要），但需要 push commit + 觸發 Cloud Build → revision 更新後新流量會走 GPT-5.5
+- 確認 Secret Manager / Cloud Run env 的 `OPENAI_MODEL` 是否要顯式設 `gpt-5.5`（目前 fallback 預設值已改，Cloud Run 沒覆寫的話會自動 pick up；若有覆寫成 `gpt-5.4` 需更新）
+- ADR 已寫：`brain/decisions/2026-04-30-llm-primary-gpt55.md`，index 已登
+
+---
+
+**2026-04-29 16:22 UTC（legal-flow 手動繞過 wave-deploy-agent，直接部上 Cloud Run）**
+
+**狀態：DEPLOYED — `da-legal-flow` revision `00001-5sw` Ready**
+
+R44 saga 走完後 legal-flow project（4a20b5f0）卡在 `failed`。Cloud Build error 是 `Step 3/12: COPY package*.json ./ — no source files were specified`，元兇是 fixed-source tarball 有 wrapper-dir：root 是 auto-Dockerfile + `legal_flow/` 子資料夾，且還夾了一堆反斜線檔名（AI fix step 寫檔時用 `path.join(projectDir, fix.filePath)`，當 LLM 給出 `legal_flow\xxx` 路徑就在 root 創出反斜線檔名，把 R44d 修好的東西又弄壞）。
+
+繞過：
+1. 從 GCS 撈 fixed-source `legal-flow-1777364418378.tgz`（gcloud storage cp，gsutil 那次寫出 sparse 全 0 檔不能信）
+2. 解壓後只取 `legal_flow/` 子目錄內容，丟掉 root 的反斜線 entries
+3. 砍 `node_modules` / `.next` / `.git` / `.vercel` / `prisma/dev.db`，留 `.env` / `.env.local`（user 已包進去了，去掉會壞）
+4. 寫新 Dockerfile（multi-stage：deps → builder（含 `ENV DATABASE_URL=file:/tmp/build-placeholder.db` 給 prisma generate 用，否則 prisma.config.ts 的 `env("DATABASE_URL")` 會 throw）→ runner（`prisma db push --accept-data-loss --skip-generate && next start`））
+5. 寫 cloudbuild.yaml（docker build → docker push → gcloud run deploy `da-legal-flow`，`--no-allow-unauthenticated`，`--port=3000`，`--memory=1Gi`，`--max-instances=3`）
+6. `gcloud builds submit` Cloud Build `a020dcdf-49b5-4f11-ae86-8f579f876bf3` SUCCESS（6M10S）
+7. Cloud Run service `da-legal-flow` Ready：`https://da-legal-flow-zdjl362voq-de.a.run.app`
+
+**待辦**：
+- 服務目前 `--no-allow-unauthenticated`，使用者要 demo 必須加 `--allow-unauthenticated` 或 IAM invoker，由使用者決定
+- SQLite 在 Cloud Run 是 ephemeral，instance 重啟資料會掉，使用者要長期用要切外部 DB（Cloud SQL Postgres 或 Turso/PlanetScale）
+- 長期 fix R44f 程式碼（normalizer 的 wrapper-dir unwrap + AI fix step 反斜線淨化），不然下個 Windows zip user 還會踩
+
+**重要關注**：
+- legal-flow 的 `.env` / `.env.local` 包含 real secrets（CRON_SECRET、Google service account email 等），這次直接打進 Docker image 上傳到 Artifact Registry。**極不安全**，但這是 vibe-coded user 原本上傳行為，wave-deploy-agent 也沒做更好。R45 之後規劃應該抽 secrets → Secret Manager + 啟動時 inject env
+
+---
+
+**2026-04-28 08:14 UTC（R44d/R44e 連修兩關，legal-flow project 4a20b5f0 在 scanning 中）**
+
+**狀態：R44e DEPLOYED + LEGAL-FLOW POLLING（背景輪詢中）**
+
+R44 的修法接連被新關卡擋下，這個 session 從 R44b → R44c → R44d → R44e 連修四發。每一次都是 legal-flow 426 MB Windows zip 把現有實作的 edge case 打出來：
+
+**R44b（2026-04-28 06:00 UTC）— async tar timeout 60s → 600s**
+- 失敗：project `da2e1b1f` 在 60.296s 自動 transition `failed`，正好等於 `uploadSourceToGcs` 的 `timeout: 60_000`
+- 修：`apps/api/src/routes/projects.ts` 抽 `ARCHIVE_TIMEOUT_MS = 600_000` + `ARCHIVE_MAX_BUFFER = 100 MiB`，7 處 archive exec 全切到新 const
+- Cloud Build `ace1ccab-78ca-49f0-a7fe-02ad5907b214` SUCCESS（8M12S），revision `deploy-agent-api-00134-sr7` 帶 `:7d8ac17`
+
+**R44c（2026-04-28 06:30 UTC）— Cloud Run memory 4Gi → 8Gi**
+- 失敗：project `59a976d2` 在 R44b 後重 submit，卡在 `scanning` 永遠不動。Cloud Run log: `Memory limit of 4096 MiB exceeded with 4237 MiB used` at `06:15:50.020512Z` — OOM kill 把 catch handler 一起帶走，狀態欄寫不下去 `failed`
+- 元兇：`uploadSourceToGcs` 同時 hold `Buffer.from(zip)` (~426 MB) + `readFileSync(tarball)` (~300 MB) + tar child process，peak 4237 MiB > 4096 MiB
+- 修：`deploy-agent/cloudbuild.yaml` 把 `deploy-agent-api` `--memory 4Gi` → `--memory 8Gi`
+- commit `dfcf390`，Cloud Build SUCCESS
+
+**R44d（2026-04-28 07:30 UTC）— Windows backslash zip 解壓正規化**
+- 失敗：project `493dacee` 過了 R44c 的 OOM（Step 1 OK），卡在 Step 2 `Dockerfile Generation: Unsupported language: unknown`。`detectedLanguage: "unknown"`
+- 元兇：使用者 zip 是 Windows 打包（`legal_flow\package.json` 反斜線路徑）。Cloud Run Alpine 的 unzip 把整段當 literal 檔名（沒轉斜線）。Linux `path.basename('legal_flow\\package.json')` 回整串 → `fileNames.has('package.json')` false → detector 回 unknown → dockerfile-gen throw
+- 修：新 service `apps/api/src/services/archive-normalizer.ts`（~110 LOC，0 deps）— 解壓後掃 root，把含 `\` 的檔名 rename 成正確子目錄結構，含 path traversal guard（`..\..\etc\passwd` 拒絕）+ collision guard（不 clobber existing target）+ idempotent
+- 在 `routes/projects.ts` 兩個 unzip 點 wire 進去（submit-gcs flow + multipart upload flow）
+- 50 zero-dep tests 鎖死 wire contract（backslash rename / no-op clean / traversal block / collision skip / idempotent / samples cap / shape）
+- commit `fd33cd1`，Cloud Build `885ba4c6-04f3-45f1-97e3-b841422a07b8` SUCCESS（7M49S）
+- **驗證：project `ddf2d9e9` 重 submit 後 `detectedLanguage: typescript` ✅ R44d 修對了**
+
+**R44e（2026-04-28 08:14 UTC）— sync tar timeout 30s/60s → 600s**
+- 失敗：project `ddf2d9e9` 過了 detector，卡在 fixed-source upload。Cloud Run log: `[CRITICAL] Fixed-source upload for "legal-flow" FAILED: tar-failed: spawnSync tar ETIMEDOUT`
+- 元兇：R44b 只掃了 `routes/projects.ts` 的 async (`execFileAsync`) 段，沒掃 `services/pipeline-worker.ts` 的 sync (`execFileSync`) 段。兩處 sync tar：L110 `tar xzf` (timeout 30s) + L291 `tar -czf` (timeout 60s)。legal-flow projectDir 經 AI fixes 後 ~300+ MB，60s 不夠
+- 修：把兩處 timeout 都 → 600s + `maxBuffer: 100 * 1024 * 1024`
+- commit `c1b6753`，Cloud Build `80c5b662-e6ba-45ec-9b51-21b73db6b6e8` SUCCESS（8M46S）
+- **新 project `4a20b5f0-a9e3-49bf-a7ac-d1320867112c`** 已 submit-gcs，狀態 `scanning`，背景 polling task `bx1474abe`
+
+**Sweep 維持 2548/0 across 42 files**（含 R44d 新增 50 tests）。tsc clean。
+
+---
+
 **2026-04-28 04:00 UTC（R30 deploy 後 server-side 診斷 — 426 MB 檔案其實已在 GCS）**
 
 **狀態：DIAGNOSED — 不是 R30 bug，是 trans-Pacific TCP + 沒接住 finalize 訊號**
