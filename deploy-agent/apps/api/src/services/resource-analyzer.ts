@@ -143,33 +143,33 @@ Respond with JSON only:
   };
 }
 
-// ─── LLM call (Claude primary, OpenAI fallback) ───
+// ─── LLM call (GPT-5.5 primary, Claude fallback) ───
 
 async function callLLM(system: string, user: string, maxTokens: number): Promise<{ text: string; provider: 'claude' | 'openai' }> {
-  if (anthropic) {
+  if (openai) {
     try {
-      const resp = await anthropic.messages.create({
-        model: process.env.LLM_MODEL ?? 'claude-sonnet-4-20250514',
-        max_tokens: maxTokens,
-        system,
-        messages: [{ role: 'user', content: user }],
+      const resp = await openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL ?? 'gpt-5.5',
+        max_completion_tokens: maxTokens,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
       });
-      const text = resp.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
-      return { text, provider: 'claude' };
+      return { text: resp.choices[0]?.message?.content ?? '', provider: 'openai' };
     } catch (err) {
-      console.warn('[ResourceAnalyzer] Claude failed, trying OpenAI:', (err as Error).message.slice(0, 150));
+      console.warn('[ResourceAnalyzer] GPT-5.5 failed, trying Claude:', (err as Error).message.slice(0, 150));
     }
   }
-  if (openai) {
-    const resp = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL ?? 'gpt-5.4',
-      max_completion_tokens: maxTokens,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
+  if (anthropic) {
+    const resp = await anthropic.messages.create({
+      model: process.env.LLM_MODEL ?? 'claude-sonnet-4-20250514',
+      max_tokens: maxTokens,
+      system,
+      messages: [{ role: 'user', content: user }],
     });
-    return { text: resp.choices[0]?.message?.content ?? '', provider: 'openai' };
+    const text = resp.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+    return { text, provider: 'claude' };
   }
   throw new Error('No LLM providers available');
 }

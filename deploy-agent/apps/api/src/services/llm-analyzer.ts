@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import type { ScanFinding, AutoFixResult, EnvVarVerdict, EnvClassificationResult } from '@deploy-agent/shared';
 import { type SourceContext, formatSourceContextForPrompt } from './source-reader';
 
-// Primary: Claude | Fallback: GPT-5.4
+// Primary: GPT-5.5 | Fallback: Claude
 const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
 const openai = process.env.OPENAI_API_KEY ? new OpenAI() : null;
 
@@ -37,7 +37,28 @@ export interface AutoFixAttempt {
 // ─── Unified LLM call with automatic fallback ───
 
 export async function callLLM(system: string, userMessage: string, maxTokens: number): Promise<{ text: string; provider: 'claude' | 'gpt' }> {
-  // Try Claude first
+  // Try GPT-5.5 first
+  if (openai) {
+    try {
+      const response = await openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL ?? 'gpt-5.5',
+        max_completion_tokens: maxTokens,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userMessage },
+        ],
+      });
+      const text = response.choices[0]?.message?.content ?? '';
+      console.log('  LLM provider: GPT-5.5 ✓');
+      return { text, provider: 'gpt' };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`  GPT-5.5 API failed: ${msg.slice(0, 150)}`);
+      console.warn('  Falling back to Claude...');
+    }
+  }
+
+  // Fallback: Claude
   if (anthropic) {
     try {
       const response = await anthropic.messages.create({
@@ -54,28 +75,7 @@ export async function callLLM(system: string, userMessage: string, maxTokens: nu
       return { text, provider: 'claude' };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`  Claude API failed: ${msg.slice(0, 150)}`);
-      console.warn('  Falling back to GPT-5.4...');
-    }
-  }
-
-  // Fallback: GPT-5.4
-  if (openai) {
-    try {
-      const response = await openai.chat.completions.create({
-        model: process.env.OPENAI_MODEL ?? 'gpt-5.4',
-        max_completion_tokens: maxTokens,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: userMessage },
-        ],
-      });
-      const text = response.choices[0]?.message?.content ?? '';
-      console.log('  LLM provider: GPT-5.4 ✓');
-      return { text, provider: 'gpt' };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`  GPT-5.4 API failed: ${msg.slice(0, 150)}`);
+      console.error(`  Claude API failed: ${msg.slice(0, 150)}`);
     }
   }
 

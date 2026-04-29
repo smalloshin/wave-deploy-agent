@@ -213,62 +213,62 @@ interface LLMResult {
 async function callLLM(
   messages: { role: 'user' | 'assistant'; content: string }[],
 ): Promise<LLMResult> {
-  // Try Claude first
-  if (anthropic) {
+  // Try GPT-5.5 first
+  if (openai) {
     try {
-      const response = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        tools: TOOLS,
-        messages: messages.map(m => ({ role: m.role, content: m.content })),
+      const response = await openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL ?? 'gpt-5.5',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          ...messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+        ],
+        tools: OPENAI_TOOLS,
+        tool_choice: 'auto',
       });
 
-      const toolUseBlocks = response.content.filter(
-        (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
-      );
-      const textBlocks = response.content.filter(
-        (block): block is Anthropic.TextBlock => block.type === 'text',
-      );
+      const choice = response.choices[0];
+      const toolCalls: LLMToolCall[] = (choice.message.tool_calls ?? []).map(tc => ({
+        name: tc.function.name,
+        input: JSON.parse(tc.function.arguments) as Record<string, unknown>,
+      }));
 
       return {
-        toolCalls: toolUseBlocks.map(b => ({ name: b.name, input: b.input as Record<string, unknown> })),
-        textReply: textBlocks.map(b => b.text).join('\n') || null,
-        provider: 'claude',
+        toolCalls,
+        textReply: choice.message.content,
+        provider: 'gpt',
       };
     } catch (err) {
       const msg = (err as Error).message;
       // Only fallback on billing/auth errors, not on transient errors
-      if (!openai || (!msg.includes('credit') && !msg.includes('billing') && !msg.includes('balance'))) {
+      if (!anthropic || (!msg.includes('credit') && !msg.includes('billing') && !msg.includes('balance') && !msg.includes('quota'))) {
         throw err;
       }
-      console.warn('[NL] Claude failed, falling back to GPT:', msg);
+      console.warn('[NL] GPT-5.5 failed, falling back to Claude:', msg);
     }
   }
 
-  // Fallback to OpenAI
-  if (!openai) throw new Error('沒有可用的 LLM API key');
+  // Fallback to Claude
+  if (!anthropic) throw new Error('沒有可用的 LLM API key');
 
-  const response = await openai.chat.completions.create({
-    model: process.env.OPENAI_MODEL ?? 'gpt-5.4',
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      ...messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    ],
-    tools: OPENAI_TOOLS,
-    tool_choice: 'auto',
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    system: SYSTEM_PROMPT,
+    tools: TOOLS,
+    messages: messages.map(m => ({ role: m.role, content: m.content })),
   });
 
-  const choice = response.choices[0];
-  const toolCalls: LLMToolCall[] = (choice.message.tool_calls ?? []).map(tc => ({
-    name: tc.function.name,
-    input: JSON.parse(tc.function.arguments) as Record<string, unknown>,
-  }));
+  const toolUseBlocks = response.content.filter(
+    (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
+  );
+  const textBlocks = response.content.filter(
+    (block): block is Anthropic.TextBlock => block.type === 'text',
+  );
 
   return {
-    toolCalls,
-    textReply: choice.message.content,
-    provider: 'gpt',
+    toolCalls: toolUseBlocks.map(b => ({ name: b.name, input: b.input as Record<string, unknown> })),
+    textReply: textBlocks.map(b => b.text).join('\n') || null,
+    provider: 'claude',
   };
 }
 
