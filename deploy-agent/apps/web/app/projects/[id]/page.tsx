@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '../../../lib/auth';
 import type { UploadErrorEnvelope, UploadFailure } from '@deploy-agent/shared';
@@ -142,6 +142,7 @@ interface ProjectDetail {
 
 export default function ProjectDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const id = params.id as string;
   const { user: currentUser } = useAuth();
   const isAdmin = (currentUser?.role_name === 'admin') || (currentUser?.permissions?.includes('*') ?? false);
@@ -178,9 +179,14 @@ export default function ProjectDetailPage() {
   const [webhookSaving, setWebhookSaving] = useState(false);
   const [webhookNewSecret, setWebhookNewSecret] = useState<string | null>(null);
   const [webhookCopied, setWebhookCopied] = useState<string | null>(null);
+  // Delete project state — mirrors apps/web/app/page.tsx DeleteModal pattern
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteLog, setDeleteLog] = useState<{ step: string; status: string; error?: string }[] | null>(null);
 
   const t = useTranslations('projectDetail');
   const tc = useTranslations('common');
+  const tDel = useTranslations('projects.deleteModal');
 
   const loadDetail = (silent = false) => {
     if (!silent) setLoading(true);
@@ -609,6 +615,17 @@ export default function ProjectDetailPage() {
               {retrying ? t('retrying') : t('retryPipeline')}
             </button>
           )}
+          {/* Delete button — visible for all statuses, including failed/needs_revision.
+              Mirrors apps/web/app/page.tsx ServiceRow delete button (also unconditional).
+              Failed projects need a delete affordance from the detail page so users
+              don't have to navigate back to dashboard + expand the group card. */}
+          <button
+            className="btn btn-delete"
+            onClick={() => { setShowDeleteModal(true); setDeleteLog(null); }}
+            style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+          >
+            {tc('delete')}
+          </button>
         </div>
       </div>
 
@@ -1284,6 +1301,108 @@ export default function ProjectDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Delete Modal — mirrors apps/web/app/page.tsx DeleteModal.
+          Same teardown-log streaming UI, same DELETE /api/projects/:id endpoint,
+          same i18n strings (projects.deleteModal). On success, navigates back to /. */}
+      {showDeleteModal && (() => {
+        const done = deleteLog && deleteLog.length > 0 && !deleting;
+        const allOk = done && deleteLog!.every((l) => l.status === 'ok');
+        return (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(11,14,20,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+          }} onClick={() => { if (!deleting) { setShowDeleteModal(false); setDeleteLog(null); } }}>
+            <div style={{
+              background: 'var(--surface-1)', borderRadius: 'var(--r-lg)', padding: 'var(--sp-6)',
+              width: 560, maxWidth: '90vw', border: '1px solid var(--border)',
+              boxShadow: 'var(--shadow-md)',
+            }} onClick={(e) => e.stopPropagation()}>
+              <h3 style={{
+                fontSize: 'var(--fs-lg)', fontWeight: 600, marginBottom: 'var(--sp-2)',
+                color: 'var(--danger)', letterSpacing: '-0.01em',
+              }}>
+                {tDel('title')}
+              </h3>
+              <p style={{ color: 'var(--ink-700)', marginBottom: 'var(--sp-4)', fontSize: 'var(--fs-md)', lineHeight: 'var(--lh-normal)' }}>
+                {tDel('confirmMessage', { name: project.name })}
+                {' '}{tDel('resourceWarning')}
+              </p>
+              <ul style={{ color: 'var(--ink-500)', fontSize: 'var(--fs-sm)', marginBottom: 'var(--sp-4)', paddingLeft: 20, lineHeight: 1.8 }}>
+                <li>{tDel('cloudRunService')}</li>
+                <li>{tDel('domainAndSsl')}</li>
+                <li>{tDel('cloudflareDns')}</li>
+                <li>{tDel('containerImages')}</li>
+                <li>{tDel('allDbRecords')}</li>
+              </ul>
+              {(deleting || deleteLog) && (
+                <div style={{
+                  background: 'var(--ink-50)', borderRadius: 'var(--r-md)', padding: 'var(--sp-3)',
+                  marginBottom: 'var(--sp-4)', maxHeight: 200, overflowY: 'auto', fontSize: 'var(--fs-sm)',
+                  fontFamily: 'var(--font-mono, monospace)', border: '1px solid var(--ink-100)',
+                }}>
+                  {deleting && !deleteLog && (
+                    <div style={{ color: 'var(--ink-500)' }}>{tDel('cleaningResources')}</div>
+                  )}
+                  {deleteLog?.map((log, i) => (
+                    <div key={i} style={{ marginBottom: 4, display: 'flex', gap: 8 }}>
+                      <span>{log.status === 'ok' ? '\u2705' : '\u274c'}</span>
+                      <span style={{ color: log.status === 'ok' ? 'var(--ok)' : 'var(--danger)' }}>
+                        {log.step}
+                        {log.error && <span style={{ color: 'var(--danger)', marginLeft: 8 }}>({log.error})</span>}
+                      </span>
+                    </div>
+                  ))}
+                  {allOk && (
+                    <div style={{ marginTop: 8, color: 'var(--ok)', fontWeight: 600 }}>
+                      {tDel('allResourcesCleaned')}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end' }}>
+                <button
+                  className="btn"
+                  onClick={() => { setShowDeleteModal(false); setDeleteLog(null); }}
+                  disabled={deleting}
+                >{tc('cancel')}</button>
+                {!done && (
+                  <button
+                    className="btn btn-danger"
+                    disabled={deleting}
+                    style={{ opacity: deleting ? 0.6 : 1 }}
+                    onClick={async () => {
+                      setDeleting(true);
+                      setDeleteLog(null);
+                      try {
+                        const res = await fetch(`${API}/api/projects/${id}`, {
+                          credentials: 'include',
+                          method: 'DELETE',
+                        });
+                        const body = await res.json();
+                        if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+                        setDeleteLog(body.teardownLog ?? []);
+                        // Brief pause so the user sees the "all cleaned" state, then navigate home.
+                        setTimeout(() => {
+                          setShowDeleteModal(false);
+                          setDeleteLog(null);
+                          setDeleting(false);
+                          router.push('/');
+                        }, 2000);
+                      } catch (err) {
+                        setDeleteLog([{ step: 'Request failed', status: 'error', error: (err as Error).message }]);
+                        setDeleting(false);
+                      }
+                    }}
+                  >
+                    {deleting ? tDel('deleting') : tDel('deleteAndClean')}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Environment Variables */}
       {deployments.length > 0 && (

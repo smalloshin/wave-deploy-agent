@@ -4,6 +4,30 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-30 04:50 UTC（UI：專案 detail 頁加 Delete 按鈕，失敗專案也能從 detail 頁刪）**
+
+**狀態：CODE DONE，tsc clean，未部署**
+
+使用者反映：「UI 上專案刪除的按鈕，在失敗部署的專案也要有」。檢查後發現 dashboard `apps/web/app/page.tsx` 的 `ServiceRow` delete button 是無條件 render（line 1405-1409），但 `apps/web/app/projects/[id]/page.tsx` 的 action bar 完全沒有 project-level delete button——使用者進到 detail 頁看 failed reason 後，要刪只能跳回 dashboard 展開 group card 才看得到刪除鈕。R44f legal-flow 失敗時就是這個體驗。
+
+**改動**（1 個檔案）：
+- `apps/web/app/projects/[id]/page.tsx`：
+  - import `useRouter` from `next/navigation`
+  - 加 3 個 state：`showDeleteModal`、`deleting`、`deleteLog`，加 `useTranslations('projects.deleteModal')` instance `tDel`
+  - Hero 區 action bar（既有 Upgrade Version + Retry Pipeline 旁）加 Delete 按鈕，**無條件 render**（mirror dashboard ServiceRow），紅色邊框 + `var(--danger)` 色
+  - Upgrade Modal 後面接 Delete Modal（inline JSX，pattern mirror `page.tsx` 的 `DeleteModal` component）：confirmation copy + 5 條清理項目清單 + teardown-log 串流 UI（即時顯示每個資源的 ✅/❌ 狀態與 error 訊息）+ Cancel / Delete & Clean buttons
+  - DELETE 流程：`fetch(\`${API}/api/projects/${id}\`, { method: 'DELETE', credentials: 'include' })` → 成功 setDeleteLog → 2 秒後 `router.push('/')` 回首頁
+  - i18n 全部用既有 `projects.deleteModal.*` keys（zh-TW + en 都已存在），不用加翻譯字典
+
+**驗證**：`npx tsc --noEmit` EXIT 0（無 type error）。功能等部署後測。
+
+**待辦**：
+- commit + push（一起 R44f 還沒 push 也會帶上去）+ Cloud Build 重 deploy `deploy-agent-web`（dashboard）
+- 部署後在 detail 頁 hero 區應看到紅色 Delete 鈕，所有 status（含 `failed` / `needs_revision`）都能用
+- 使用者重跑 legal-flow pipeline 即可即時驗證
+
+---
+
 **2026-04-30 02:30 UTC（R44f：pipeline-worker 在 GCS 重抓路徑也做 normalize + descend；AI fix path 淨化）**
 
 **狀態：CODE + TESTS + ADR 全做完，未部署**

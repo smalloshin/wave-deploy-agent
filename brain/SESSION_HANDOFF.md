@@ -4,6 +4,16 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-30 04:50 UTC — UI：專案 detail 頁加 Delete 按鈕（失敗專案也能從 detail 頁刪）**
+
+使用者反映 detail 頁缺 delete 按鈕——失敗專案進到 `/projects/[id]` 看 fail reason 後，要刪只能跳回 dashboard 展開 group card 才看得到刪除鈕。改動只動 `apps/web/app/projects/[id]/page.tsx`：import `useRouter`、加 3 個 state（`showDeleteModal` / `deleting` / `deleteLog`）、Hero action bar 加紅色 Delete 按鈕（**無條件 render**，mirror dashboard `ServiceRow`）、Upgrade Modal 後接 inline Delete Modal（teardown-log 串流 UI）、`fetch DELETE /api/projects/:id` 成功後 `router.push('/')`。i18n 全用既有 `projects.deleteModal.*` keys。`tsc --noEmit` EXIT 0。**未部署**。
+
+**2026-04-30 02:30 UTC — R44f：pipeline-worker GCS 重抓也做 normalize + descend；AI fix path 淨化**
+
+R44 saga 收尾。R44b/c/d/e 後 legal-flow 跑到 LLM Threat Analysis 之後下一輪 build 還是會炸。元兇是 `pipeline-worker.ts` 兩個漏洞：(1) Step 0 GCS 重抓 source 沒 normalize 沒 descend；(2) Step 5 AI fix loop `join(projectDir, fix.filePath)` 沒淨化（POSIX `path.join` 不認 `\`，也沒 path traversal 守衛）。修法：`archive-normalizer.ts` 從 1 export 擴成 3 export（既有 `normalizeExtractedPaths` + 新增 `descendIntoWrapperDir` + `sanitizeRelativePath`），pipeline-worker 兩處接線。測試 50 → 96 zero-dep 全綠。詳見 `brain/decisions/2026-04-30-r44f-pipeline-worker-normalize.md`。**已部署**（revision `00138-rpj`）。
+
+---
+
 **2026-04-28 08:23 UTC — Round 44 saga 完整收尾，legal-flow project 進 `review_pending`**
 
 **狀態：R44b/R44c/R44d/R44e 全鏈路成功，project `4a20b5f0-a9e3-49bf-a7ac-d1320867112c` 在等人工審核**
