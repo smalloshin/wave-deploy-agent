@@ -4,6 +4,14 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-30 06:30 UTC — R44g：偵測 Prisma 專案 + 自動注入 `prisma generate` 到 Dockerfile**
+
+使用者透過 UI 重跑 legal-flow 還是失敗。診斷：R44f 路徑問題已修光（fixed-source clean），但使用者 Dockerfile 缺 `prisma generate`，`next build` 收 page data 時 import `@prisma/client` 直接炸 `did not initialize yet`。pipeline-worker Step 2 對使用者 Dockerfile 是 preserve 模式，bug 永遠重現。R44g 是新 bug class（不是 path normalization 範疇）。
+
+新增 `apps/api/src/services/prisma-fixer.ts`（167 LOC，3 export：`detectPrismaSignals` / `isPrismaProject` / `patchDockerfileForPrisma`），偵測 `@prisma/client` deps / `schema.prisma` / `prisma.config.*` 任一即視為 Prisma 專案。`patchDockerfileForPrisma` 純函式：找首個 build line（npm/yarn/pnpm/bun/next build，case-insensitive，保留 leading whitespace）→ 注入 `RUN DATABASE_URL="file:/tmp/prisma-build-placeholder.db" npx prisma generate`；idempotent（已有 `prisma generate` 直接 skip）；拒 unsafe placeholder（`\n`/`\r`/`"` 注入防護）。`DetectionResult` 加 `hasPrisma` 欄位；`dockerfile-gen.ts` Next.js auto-gen 路徑也加同樣注入；pipeline-worker Step 2 在 `hasDockerfile && hasPrisma` 時 patch user Dockerfile（non-fatal try/catch）。
+
+**驗證**：56 個新 zero-dep 測試（test-prisma-fixer）+ 6 個新 dockerfile-gen 測試 + archive-normalizer 96 個全綠 + tsc 0 error。ADR 已寫：`brain/decisions/2026-04-30-r44g-prisma-auto-fix.md`。**未部署**。
+
 **2026-04-30 04:50 UTC — UI：專案 detail 頁加 Delete 按鈕（失敗專案也能從 detail 頁刪）**
 
 使用者反映 detail 頁缺 delete 按鈕——失敗專案進到 `/projects/[id]` 看 fail reason 後，要刪只能跳回 dashboard 展開 group card 才看得到刪除鈕。改動只動 `apps/web/app/projects/[id]/page.tsx`：import `useRouter`、加 3 個 state（`showDeleteModal` / `deleting` / `deleteLog`）、Hero action bar 加紅色 Delete 按鈕（**無條件 render**，mirror dashboard `ServiceRow`）、Upgrade Modal 後接 inline Delete Modal（teardown-log 串流 UI）、`fetch DELETE /api/projects/:id` 成功後 `router.push('/')`。i18n 全用既有 `projects.deleteModal.*` keys。`tsc --noEmit` EXIT 0。**未部署**。

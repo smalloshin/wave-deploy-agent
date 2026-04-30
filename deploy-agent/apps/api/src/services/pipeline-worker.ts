@@ -13,6 +13,7 @@ import {
 } from './orchestrator';
 import { detectProject } from './project-detector';
 import { generateDockerfile } from './dockerfile-gen';
+import { patchDockerfileForPrisma } from './prisma-fixer';
 import { notifyReviewNeeded } from './discord-notifier';
 import { runSemgrep, runTrivy } from './scanner';
 import { analyzeThreatModel, generateReviewReport } from './llm-analyzer';
@@ -173,9 +174,31 @@ export async function runPipeline(
       const dockerfile = generateDockerfile(detection);
       const { writeFileSync: wfs } = await import('node:fs');
       wfs(join(projectDir, 'Dockerfile'), dockerfile);
-      console.log('[Pipeline]   Generated Dockerfile');
+      console.log(
+        `[Pipeline]   Generated Dockerfile${detection.hasPrisma ? ' (with prisma generate)' : ''}`,
+      );
     } else {
       console.log('[Pipeline]   Existing Dockerfile found');
+      // R44g: Prisma projects fail at `next build` if `prisma generate` hasn't run.
+      // User Dockerfiles routinely miss this. Patch in builder stage before build.
+      if (detection.hasPrisma) {
+        try {
+          const dockerfilePath = join(projectDir, 'Dockerfile');
+          const original = readFileSync(dockerfilePath, 'utf-8');
+          const result = patchDockerfileForPrisma(original);
+          if (result.changed) {
+            const { writeFileSync: wfs } = await import('node:fs');
+            wfs(dockerfilePath, result.next);
+            console.log(`[Pipeline]   R44g: patched user Dockerfile — ${result.reason}`);
+          } else {
+            console.log(`[Pipeline]   R44g: Prisma detected, skipped patch — ${result.reason}`);
+          }
+        } catch (err) {
+          console.warn(
+            `[Pipeline]   R44g: Prisma patch failed (non-fatal): ${(err as Error).message}`,
+          );
+        }
+      }
     }
 
     // ─── Step 3: Security Scanning (Semgrep + Trivy) ───

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { safeParsePort } from '../utils/safe-number.js';
+import { detectPrismaSignals, isPrismaProject } from './prisma-fixer.js';
 
 export interface DetectionResult {
   language: string;
@@ -11,6 +12,14 @@ export interface DetectionResult {
   hasDockerCompose: boolean;
   port: number;
   envVars: string[];
+  /**
+   * R44g: Project uses Prisma. When true, the deploy pipeline must inject
+   * `prisma generate` into the Dockerfile (auto-gen path) or patch the
+   * user-supplied Dockerfile (preserve path) before `next build` /
+   * `npm run build`, otherwise the build fails with
+   * "PrismaClient did not initialize yet."
+   */
+  hasPrisma: boolean;
 }
 
 export function detectProject(projectDir: string): DetectionResult {
@@ -25,6 +34,7 @@ export function detectProject(projectDir: string): DetectionResult {
     hasDockerCompose: fileNames.has('docker-compose.yml') || fileNames.has('docker-compose.yaml'),
     port: 3000,
     envVars: [],
+    hasPrisma: isPrismaProject(detectPrismaSignals(projectDir)),
   };
 
   // Node.js / TypeScript

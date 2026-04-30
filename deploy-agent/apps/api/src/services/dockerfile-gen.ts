@@ -43,6 +43,14 @@ function generateNodeDockerfile(d: DetectionResult): string {
   const baseImage = pm === 'bun' ? 'oven/bun:1' : 'node:22-alpine';
   const safePort = sanitizePort(d.port);
   const safeEntrypoint = sanitizeEntrypoint(d.entrypoint, 'dist/index.js');
+  // R44g: when project uses Prisma, inject `prisma generate` in the builder
+  // stage right before `next build` / `npm run build`. Without this, the
+  // build collects page data → imports `@prisma/client` → fails. We pass a
+  // SQLite placeholder for DATABASE_URL because most schemas reference
+  // `env("DATABASE_URL")`; the real URL is set at runtime by Cloud Run.
+  const prismaGenerateLine = d.hasPrisma
+    ? 'RUN DATABASE_URL="file:/tmp/prisma-build-placeholder.db" npx prisma generate\n'
+    : '';
 
   if (d.framework === 'nextjs') {
     return `# Multi-stage build for Next.js
@@ -55,7 +63,7 @@ FROM ${baseImage} AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN ${buildCmd}
+${prismaGenerateLine}RUN ${buildCmd}
 
 FROM ${baseImage} AS runner
 WORKDIR /app

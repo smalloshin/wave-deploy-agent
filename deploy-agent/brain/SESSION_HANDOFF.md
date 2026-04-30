@@ -4,6 +4,51 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-30 06:30 UTC（R44g：Prisma 自動偵測 + Dockerfile 注入 prisma generate）**
+
+**狀態：CODE + TESTS + ADR 全做完，tsc clean，未部署**
+
+使用者透過 UI 重跑 legal-flow 還是失敗。診斷：R44f 修的 Windows-zip 路徑問題已經完全解決（fixed-source tarball clean、無反斜線、無 wrapper），但使用者 Dockerfile 缺 `prisma generate`，`next build` 收 page data 時 import `@prisma/client` 直接炸 `did not initialize yet`。因為 `pipeline-worker.ts` Step 2 在 `detection.hasDockerfile` 為真時保留使用者 Dockerfile 不動，bug 永遠重現。
+
+R44g 是新 bug class（不是 R44a–f 的 path normalization 範疇）：偵測 Prisma 專案 + 自動注入 build step。
+
+**改動**（6 個檔案，3 新 / 3 改）：
+
+- **新增** `apps/api/src/services/prisma-fixer.ts`（167 LOC，3 個 export）：
+  - `detectPrismaSignals(projectDir)` — 純 fs read：`@prisma/client` 或 `prisma` 在 deps/devDeps / `prisma/schema.prisma` 或 `schema.prisma` exists / `prisma.config.{ts,js,mjs}` exists
+  - `isPrismaProject(signals)` — 任一 signal 為真 → true
+  - `patchDockerfileForPrisma(content, options?)` — 純函式：
+    - idempotent（已有 `prisma generate` 直接 skip）
+    - 找首個 build line（regex 涵蓋 `npm run build` / `yarn build` / `yarn run build` / `pnpm build` / `pnpm run build` / `bun run build` / `next build` / `npx next build`，case-insensitive、保留 leading whitespace）
+    - 注入 `RUN DATABASE_URL="file:/tmp/prisma-build-placeholder.db" npx prisma generate`
+    - 拒 unsafe placeholder（`\n` / `\r` / `"` 任一進來就不動）
+    - 回傳 `{ changed, next, reason }`
+- **新增** `apps/api/src/test-prisma-fixer.ts`（**56 個 zero-dep 測試**，全綠）：detect / isPrismaProject / patch happy paths / idempotency / no-build / 多 builder 只改第一個 / custom placeholder / injection guards / line preservation / CRLF
+- **修改** `apps/api/src/services/project-detector.ts`：`DetectionResult` 加 `hasPrisma: boolean`，初始化時呼叫 `isPrismaProject(detectPrismaSignals(projectDir))` 填入
+- **修改** `apps/api/src/services/dockerfile-gen.ts`：Next.js 分支 `d.hasPrisma === true` 時在 `COPY . .` 與 `RUN ${buildCmd}` 之間插一行 `RUN DATABASE_URL=... npx prisma generate`
+- **修改** `apps/api/src/services/pipeline-worker.ts` Step 2：`hasDockerfile && hasPrisma` 時讀 user Dockerfile → `patchDockerfileForPrisma` → 寫回；non-fatal try/catch
+- **修改** `apps/api/src/test-dockerfile-gen.ts`：加 6 個 R44g 測試（`hasPrisma` 開/關、undefined 預設關、prisma generate 在 COPY 與 build 之間、CMD 還是 1 行、非 nextjs 不注入）
+
+**驗證**：
+- `npx tsx src/test-prisma-fixer.ts` → `=== 56 passed, 0 failed ===`
+- `npx tsx src/test-dockerfile-gen.ts` → `=== 62 passed, 0 failed ===`（+6 R44g）
+- `npx tsx src/test-archive-normalizer.ts` → `=== 96 passed, 0 failed ===`（無 R44f 回歸）
+- `npx tsc --noEmit` EXIT 0
+
+**ADR**：`brain/decisions/2026-04-30-r44g-prisma-auto-fix.md`（兩份：deploy-agent + top-level brain），index.md 已登記。
+
+**待辦**：
+- commit + push（會把 R44g 跟前面 R44f / GPT-5.5 / UI delete button 全部一起帶上）
+- 等使用者授權 Cloud Build 重 deploy `deploy-agent-api` + `deploy-agent-web`
+- 部署後請使用者重跑 legal-flow（同份 GCS source 即可，不用重上傳）→ pipeline 應該 Step 2 log 出 `R44g: patched user Dockerfile`，build 一路走完
+
+**重要關注**：
+- DATABASE_URL placeholder 是 SQLite path。Postgres-only schema 若 startup-time 嚴格 validate URL 可能還會炸——legal-flow 是 SQLite 所以這次 OK，未來遇 Postgres-only 案例需要把 placeholder 改成 `postgresql://placeholder@localhost:5432/x`。
+- patcher 只改第一個 build line。複雜 multi-stage（多個 builder + 各自 build）只第一個會先 prisma generate；目前合理，極端情況可重新審視。
+- patcher 用 regex heuristic，custom build commands（`RUN make build` / `RUN ./scripts/build.sh`）不會被識別 → returns `changed: false`，user 自己加 prisma generate。
+
+---
+
 **2026-04-30 04:50 UTC（UI：專案 detail 頁加 Delete 按鈕，失敗專案也能從 detail 頁刪）**
 
 **狀態：CODE DONE，tsc clean，未部署**

@@ -414,6 +414,46 @@ test('generateDockerfile throws on unsupported language', () => {
   );
 });
 
+// ─── R44g: Prisma generate injection ─────────────────────────
+
+test('R44g: nextjs + hasPrisma=true → injects RUN prisma generate before npm run build', () => {
+  const out = generateDockerfile(baseDetection({ framework: 'nextjs', hasPrisma: true }));
+  assert.match(out, /RUN DATABASE_URL="file:\/tmp\/prisma-build-placeholder\.db" npx prisma generate\nRUN npm run build/);
+});
+
+test('R44g: nextjs + hasPrisma=false → no prisma generate line', () => {
+  const out = generateDockerfile(baseDetection({ framework: 'nextjs', hasPrisma: false }));
+  assert.ok(!out.includes('prisma generate'), 'no prisma generate when hasPrisma=false');
+});
+
+test('R44g: nextjs + hasPrisma undefined → no prisma generate line (default off)', () => {
+  // Cast factory does not set hasPrisma; should default to falsy → no injection
+  const out = generateDockerfile(baseDetection({ framework: 'nextjs' }));
+  assert.ok(!out.includes('prisma generate'));
+});
+
+test('R44g: prisma generate appears AFTER COPY . . in builder stage', () => {
+  const out = generateDockerfile(baseDetection({ framework: 'nextjs', hasPrisma: true }));
+  const copyIdx = out.indexOf('COPY . .');
+  const prismaIdx = out.indexOf('prisma generate');
+  const buildIdx = out.indexOf('RUN npm run build');
+  assert.ok(copyIdx !== -1 && prismaIdx !== -1 && buildIdx !== -1);
+  assert.ok(copyIdx < prismaIdx, 'prisma generate must come after COPY . .');
+  assert.ok(prismaIdx < buildIdx, 'prisma generate must come before npm run build');
+});
+
+test('R44g: still exactly 1 CMD line when hasPrisma=true (no Dockerfile bloat)', () => {
+  const out = generateDockerfile(baseDetection({ framework: 'nextjs', hasPrisma: true }));
+  assert.equal(countLines(out, 'CMD '), 1);
+});
+
+test('R44g: non-nextjs Node project + hasPrisma=true → no prisma injection (only nextjs path patches)', () => {
+  // Current scope: only the nextjs branch injects. Non-nextjs Node Dockerfile uses
+  // `npm run build 2>/dev/null || true` which won't fail-stop on Prisma errors anyway.
+  const out = generateDockerfile(baseDetection({ framework: null, hasPrisma: true }));
+  assert.ok(!out.includes('prisma generate'));
+});
+
 // ─── done ──────────────────────────────────────────────────
 
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
