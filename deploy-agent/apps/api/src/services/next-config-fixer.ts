@@ -26,36 +26,40 @@ import path from 'node:path';
 
 // ───────────────────── R44h-1: Strictness flip guard ─────────────────────
 
+export const STRICTNESS_KEYS = ['ignoreBuildErrors', 'ignoreDuringBuilds'] as const;
+export type StrictnessKey = typeof STRICTNESS_KEYS[number];
+
 export interface StrictnessFlipResult {
-  /** True if the AI fix flips a true→false strictness flag we want to keep ON */
   isFlip: boolean;
-  /** Which key triggered the flag (`ignoreBuildErrors` / `ignoreDuringBuilds`) */
-  key?: 'ignoreBuildErrors' | 'ignoreDuringBuilds';
+  key?: StrictnessKey;
 }
 
-const STRICTNESS_KEYS: ReadonlyArray<'ignoreBuildErrors' | 'ignoreDuringBuilds'> = [
-  'ignoreBuildErrors',
-  'ignoreDuringBuilds',
-];
+/**
+ * Patterns precompiled at module load — `isStrictnessFlip` runs once per LLM
+ * auto-fix in the deploy hot path (~20×/run). Avoids re-compiling 4 regexes
+ * per call.
+ */
+const STRICTNESS_PATTERNS: ReadonlyArray<{
+  key: StrictnessKey;
+  truePat: RegExp;
+  falsePat: RegExp;
+}> = STRICTNESS_KEYS.map((key) => ({
+  key,
+  truePat: new RegExp(`\\b${key}\\s*:\\s*true\\b`),
+  falsePat: new RegExp(`\\b${key}\\s*:\\s*false\\b`),
+}));
 
 /**
- * Detect whether an AI auto-fix is trying to flip a "skip checks" flag from
- * true to false. Pure function: input → output, no I/O.
+ * Why we block these flips: the user's project compiles only because
+ * `ignoreBuildErrors: true` hides genuine type errors (or `ignoreDuringBuilds:
+ * true` hides genuine eslint errors). The LLM sees the flags as "best
+ * practice = false" but doesn't have the full type-check output — flipping
+ * exposes the latent errors and kills the build. On vibe-coded projects
+ * these flags are intentional.
  *
- * Why we block this:
- *   - The user's project compiles only because `ignoreBuildErrors: true`
- *     hides genuine type errors, or `ignoreDuringBuilds: true` hides genuine
- *     eslint errors. The LLM sees these flags and thinks "best practice = false".
- *   - Flipping to false without ALSO fixing every underlying error kills the
- *     build. The LLM's threat-model context doesn't include the full type-check
- *     output, so it cannot fix the real errors.
- *   - On a vibe-coded project these flags are intentional. Treat the flip as
- *     a warning, not an auto-apply.
- *
- * Detection is conservative — both halves must match in the same fix:
- *   - originalCode contains `<key>: true` (any whitespace)
- *   - fixedCode    contains `<key>: false` (any whitespace)
- * If either side is missing the key, we don't classify as a flip.
+ * Detection is conservative — both halves must match: originalCode contains
+ * `<key>: true`, fixedCode contains `<key>: false`. Either missing → not a
+ * flip.
  */
 export function isStrictnessFlip(
   originalCode: string,
@@ -64,10 +68,8 @@ export function isStrictnessFlip(
   if (typeof originalCode !== 'string' || typeof fixedCode !== 'string') {
     return { isFlip: false };
   }
-  for (const key of STRICTNESS_KEYS) {
-    const truePattern = new RegExp(`\\b${key}\\s*:\\s*true\\b`);
-    const falsePattern = new RegExp(`\\b${key}\\s*:\\s*false\\b`);
-    if (truePattern.test(originalCode) && falsePattern.test(fixedCode)) {
+  for (const { key, truePat, falsePat } of STRICTNESS_PATTERNS) {
+    if (truePat.test(originalCode) && falsePat.test(fixedCode)) {
       return { isFlip: true, key };
     }
   }
@@ -77,27 +79,20 @@ export function isStrictnessFlip(
 // ───────────────────── R44h-2: Next major version detection ─────────────────
 
 /**
+ * Candidate config filenames Next looks for, in resolution order. Exported so
+ * other steps can iterate without redeclaring the triplet (already open-coded
+ * in `routes/projects.ts` and `source-reader.ts`).
+ */
+export const NEXT_CONFIG_FILES = ['next.config.ts', 'next.config.js', 'next.config.mjs'] as const;
+
+/**
  * Read `package.json#dependencies.next` (or devDependencies), parse the major
- * version. Returns null if package.json missing, malformed, or `next` not
- * present.
- *
- * Examples:
- *   "^16.0.0"   → 16
- *   "~15.4.2"   → 15
- *   "16"        → 16
- *   "latest"    → null
- *   undefined   → null
- *
- * I/O: reads one file. Errors swallowed; null on any failure.
+ * version. Returns null on missing / malformed / no `next` dep / tag-only
+ * version (`latest`, `canary`).
  */
 export function detectNextMajorVersion(projectDir: string): number | null {
-  const pkgPath = path.join(projectDir, 'package.json');
-  let pkg: Record<string, unknown>;
-  try {
-    pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+  const pkg = safeReadJson(path.join(projectDir, 'package.json'));
+  if (!pkg) return null;
   const deps = (pkg.dependencies ?? {}) as Record<string, unknown>;
   const devDeps = (pkg.devDependencies ?? {}) as Record<string, unknown>;
   const raw = (deps['next'] ?? devDeps['next']) as string | undefined;
@@ -107,23 +102,13 @@ export function detectNextMajorVersion(projectDir: string): number | null {
 
 /**
  * Parse a semver-ish range string and return the major number, or null.
- * Pure helper, exported for tests.
- *
- * Handles: ^16.0.0, ~15.4.2, 16.0.0, 16, >=15.0.0, 15.x, 15 || 16
- *   - Picks the FIRST integer it can find
- *   - Strips leading non-digit prefix (^, ~, >=, =, v)
- *   - Stops at first non-digit
- *   - Returns null on tags ("latest", "canary", "next"), empty, or no digits
+ * Picks the first integer in the spec, stripping leading operators/prefixes
+ * (`^`, `~`, `>=`, `v`). Returns null on tags ("latest", "canary"), empty,
+ * or no digits.
  */
 export function parseMajorVersion(spec: string): number | null {
   if (typeof spec !== 'string') return null;
-  // Strip leading whitespace + range operators
-  const trimmed = spec.trim();
-  if (!trimmed) return null;
-  // Reject pure-tag versions (no digits at all)
-  if (!/\d/.test(trimmed)) return null;
-  // Find first run of digits
-  const m = trimmed.match(/(\d+)/);
+  const m = spec.trim().match(/(\d+)/);
   if (!m) return null;
   const n = Number.parseInt(m[1], 10);
   if (!Number.isFinite(n) || n < 0) return null;
@@ -133,11 +118,8 @@ export function parseMajorVersion(spec: string): number | null {
 // ───────────────────── R44h-2: Strip deprecated `eslint` field ──────────────
 
 export interface StripEslintResult {
-  /** Whether content changed */
   changed: boolean;
-  /** New file content (== input if unchanged) */
   next: string;
-  /** Human-readable reason */
   reason: string;
 }
 
@@ -145,43 +127,26 @@ export interface StripEslintResult {
  * Strip the deprecated top-level `eslint: { … }` block from a Next.js config
  * file (next.config.ts / .js / .mjs).
  *
- * Pure function: string in, string out. Idempotent — re-running on stripped
- * content returns changed=false. If no eslint key found, changed=false.
- *
- * Approach: find `eslint` key at object-property position, find the colon,
- * find the opening brace `{`, walk balanced braces (respecting strings and
- * comments) to find the matching close, then consume optional trailing comma
- * and the line's terminating newline.
- *
- * Conservative: only strips when value starts with `{` (object literal).
- * Won't touch `eslint: someExternalConst` or `eslint,` (shorthand). Won't
- * touch `eslint` keys nested inside other objects (e.g. inside an
- * `experimental: { eslint: ... }` — though Next never had such a thing).
+ * Pure + idempotent. Conservative: only strips when value starts with `{`,
+ * so `eslint: someExternalConst` and `eslint,` shorthand are left alone.
+ * Iterates regex matches because the first hit might be a non-object value;
+ * realistically configs have at most one eslint key.
  */
 export function stripEslintFromNextConfig(content: string): StripEslintResult {
   if (typeof content !== 'string') {
     return { changed: false, next: '', reason: 'invalid input' };
   }
 
-  // Find `eslint` followed by `:` at top level of an object literal.
-  // We look for the LAST occurrence in case the file has multiple — but
-  // realistically there's only one. Top-level detection: the char before
-  // the key (skipping whitespace/newlines) should be `{` or `,` or
-  // start-of-line at file root.
+  // Top-level detection: char before the key must be `{`, `,`, or whitespace.
   const keyPattern = /(^|[\s,{])eslint(\s*):/gm;
 
   let match: RegExpExecArray | null;
-  // Iterate matches; first one whose value is `{ … }` wins.
   while ((match = keyPattern.exec(content)) !== null) {
     const colonEnd = match.index + match[0].length;
-    // Skip whitespace after the colon
     let i = colonEnd;
     while (i < content.length && /\s/.test(content[i])) i++;
-    if (content[i] !== '{') {
-      // Not an object literal — could be `eslint: someVar`. Don't touch.
-      continue;
-    }
-    // Walk balanced braces from i, respecting strings + line comments.
+    if (content[i] !== '{') continue; // `eslint: someVar` — leave it.
+
     const closeIdx = findMatchingBrace(content, i);
     if (closeIdx === -1) {
       return {
@@ -191,33 +156,23 @@ export function stripEslintFromNextConfig(content: string): StripEslintResult {
       };
     }
 
-    // Determine the start of the property — back up to include the leading
-    // whitespace/indent on the same line, so we delete the entire line(s)
-    // cleanly without leaving stray indent.
-    // Find the start of `eslint`:
+    // Back up over leading indent so we delete the whole line cleanly.
     const eslintKeyStart = match.index + (match[1] ? match[1].length : 0);
-    // Walk back from eslintKeyStart over spaces/tabs to the line start.
     let lineStart = eslintKeyStart;
     while (lineStart > 0 && (content[lineStart - 1] === ' ' || content[lineStart - 1] === '\t')) {
       lineStart--;
     }
 
-    // After the closing brace, consume optional `,` and trailing whitespace
-    // up to and including the newline.
+    // Consume trailing `,`, spaces/tabs, and one newline (CRLF or LF).
     let after = closeIdx + 1;
     if (content[after] === ',') after++;
-    // Consume spaces/tabs after the comma
     while (after < content.length && (content[after] === ' ' || content[after] === '\t')) after++;
-    // Consume one newline (CRLF or LF) so we don't leave a blank line behind
     if (content[after] === '\r') after++;
     if (content[after] === '\n') after++;
 
-    const before = content.slice(0, lineStart);
-    const rest = content.slice(after);
-    const next = before + rest;
     return {
       changed: true,
-      next,
+      next: content.slice(0, lineStart) + content.slice(after),
       reason: `stripped deprecated eslint block (${closeIdx - eslintKeyStart + 1} chars)`,
     };
   }
@@ -259,7 +214,10 @@ export function findMatchingBrace(content: string, openIdx: number): number {
       i += 2;
       continue;
     }
-    // Strings
+    // Strings — skip `{`/`}` inside since this loop only counts unquoted braces.
+    // Template-literal `${...}` interpolation isn't unwound; next.config files
+    // don't put braces in template strings, and a real one would also need
+    // matched braces to compile, so the count stays balanced either way.
     if (ch === '"' || ch === "'" || ch === '`') {
       const quote = ch;
       i++;
@@ -271,19 +229,6 @@ export function findMatchingBrace(content: string, openIdx: number): number {
         if (content[i] === quote) {
           i++;
           break;
-        }
-        // Template literal `${...}` interpolation — skip naively by tracking
-        // braces inside (good enough for next.config.ts which won't have
-        // weird template literals at top level).
-        if (quote === '`' && content[i] === '$' && content[i + 1] === '{') {
-          let interpDepth = 1;
-          i += 2;
-          while (i < content.length && interpDepth > 0) {
-            if (content[i] === '{') interpDepth++;
-            else if (content[i] === '}') interpDepth--;
-            i++;
-          }
-          continue;
         }
         i++;
       }
@@ -304,4 +249,16 @@ export function findMatchingBrace(content: string, openIdx: number): number {
     i++;
   }
   return -1;
+}
+
+/**
+ * Read + parse JSON, swallowing any error. Mirrors `prisma-fixer.ts` so the
+ * two services have a consistent shape for tolerant config reads.
+ */
+function safeReadJson(filePath: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }

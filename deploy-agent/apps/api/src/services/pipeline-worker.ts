@@ -1,7 +1,7 @@
 // Pipeline Worker — runs the full scan → analyze → auto-fix → review pipeline
 // Triggered when a project is submitted. Runs asynchronously (non-blocking).
 
-import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, extname, basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
@@ -18,6 +18,7 @@ import {
   isStrictnessFlip,
   detectNextMajorVersion,
   stripEslintFromNextConfig,
+  NEXT_CONFIG_FILES,
 } from './next-config-fixer';
 import { notifyReviewNeeded } from './discord-notifier';
 import { runSemgrep, runTrivy } from './scanner';
@@ -215,18 +216,17 @@ export async function runPipeline(
     try {
       const nextMajor = detectNextMajorVersion(projectDir);
       if (nextMajor !== null && nextMajor >= 16) {
-        const cfgCandidates = ['next.config.ts', 'next.config.js', 'next.config.mjs'];
-        for (const name of cfgCandidates) {
+        for (const name of NEXT_CONFIG_FILES) {
           const cfgPath = join(projectDir, name);
           if (!existsSync(cfgPath)) continue;
           const original = readFileSync(cfgPath, 'utf-8');
           const result = stripEslintFromNextConfig(original);
           if (result.changed) {
-            const { writeFileSync: wfs } = await import('node:fs');
-            wfs(cfgPath, result.next);
+            writeFileSync(cfgPath, result.next);
             console.log(
               `[Pipeline]   R44h: stripped deprecated eslint{} from ${name} (Next ${nextMajor}) — ${result.reason}`,
             );
+            break; // Next resolves only the first match; no point checking the rest.
           }
         }
       }
@@ -294,6 +294,10 @@ export async function runPipeline(
     currentStep = 'Step 5: Auto-Fix Application';
     console.log(`[Pipeline] ${currentStep}...`);
     const autoFixResults: AutoFixResult[] = [];
+    const pushSkipped = (reason: string, logMsg?: string): void => {
+      autoFixResults.push({ applied: false, diff: '', explanation: reason, verificationPassed: null });
+      if (logMsg) console.warn(`[Pipeline]   ${logMsg}`);
+    };
 
     for (const fix of threatAnalysis.autoFixes) {
       try {
@@ -306,64 +310,46 @@ export async function runPipeline(
         // separator) or path-traverses out of projectDir.
         const sanitized = sanitizeRelativePath(fix.filePath, { wrapperDirName });
         if (!sanitized) {
-          autoFixResults.push({
-            applied: false,
-            diff: '',
-            explanation: `Rejected unsafe filePath: ${fix.filePath}`,
-            verificationPassed: null,
-          });
-          console.warn(`[Pipeline]   Rejected unsafe filePath: ${fix.filePath}`);
+          pushSkipped(
+            `Rejected unsafe filePath: ${fix.filePath}`,
+            `Rejected unsafe filePath: ${fix.filePath}`,
+          );
           continue;
         }
         const filePath = join(projectDir, sanitized);
         const original = readFileSync(filePath, 'utf8');
 
-        if (original.includes(fix.originalCode)) {
-          // R44h (2026-04-30): Block AI auto-fixes that flip
-          // ignoreBuildErrors / ignoreDuringBuilds from true → false. The LLM
-          // doesn't have full type-check context — flipping these flags
-          // exposes latent type/eslint errors that were intentionally hidden
-          // on a vibe-coded project. legal-flow's redeploy after R44g died
-          // exactly this way.
-          const flip = isStrictnessFlip(fix.originalCode, fix.fixedCode);
-          if (flip.isFlip) {
-            autoFixResults.push({
-              applied: false,
-              diff: '',
-              explanation: `Skipped (R44h): refused to flip ${flip.key} true→false — would expose latent errors not covered by this fix. Original explanation: ${fix.explanation}`,
-              verificationPassed: null,
-            });
-            console.warn(
-              `[Pipeline]   R44h: skipped strictness flip on ${sanitized} (${flip.key} true→false)`,
-            );
-            continue;
-          }
-
-          const fixed = original.replace(fix.originalCode, fix.fixedCode);
-          const { writeFileSync: wfs } = await import('node:fs');
-          wfs(filePath, fixed);
-          autoFixResults.push({
-            applied: true,
-            diff: `--- ${sanitized}\n+++ ${sanitized}\n-${fix.originalCode}\n+${fix.fixedCode}`,
-            explanation: fix.explanation,
-            verificationPassed: null, // will be set after re-scan
-          });
-          console.log(`[Pipeline]   Fixed: ${sanitized} — ${fix.explanation}`);
-        } else {
-          autoFixResults.push({
-            applied: false,
-            diff: '',
-            explanation: `Could not find original code in ${sanitized}`,
-            verificationPassed: null,
-          });
+        if (!original.includes(fix.originalCode)) {
+          pushSkipped(`Could not find original code in ${sanitized}`);
+          continue;
         }
-      } catch (err) {
+
+        // R44h (2026-04-30): Block AI auto-fixes that flip
+        // ignoreBuildErrors / ignoreDuringBuilds from true → false. The LLM
+        // doesn't have full type-check context — flipping these flags
+        // exposes latent type/eslint errors that were intentionally hidden
+        // on a vibe-coded project. legal-flow's redeploy after R44g died
+        // exactly this way.
+        const flip = isStrictnessFlip(fix.originalCode, fix.fixedCode);
+        if (flip.isFlip) {
+          pushSkipped(
+            `Skipped (R44h): refused to flip ${flip.key} true→false — would expose latent errors not covered by this fix. Original explanation: ${fix.explanation}`,
+            `R44h: skipped strictness flip on ${sanitized} (${flip.key} true→false)`,
+          );
+          continue;
+        }
+
+        const fixed = original.replace(fix.originalCode, fix.fixedCode);
+        writeFileSync(filePath, fixed);
         autoFixResults.push({
-          applied: false,
-          diff: '',
-          explanation: `Error applying fix: ${(err as Error).message}`,
-          verificationPassed: null,
+          applied: true,
+          diff: `--- ${sanitized}\n+++ ${sanitized}\n-${fix.originalCode}\n+${fix.fixedCode}`,
+          explanation: fix.explanation,
+          verificationPassed: null, // will be set after re-scan
         });
+        console.log(`[Pipeline]   Fixed: ${sanitized} — ${fix.explanation}`);
+      } catch (err) {
+        pushSkipped(`Error applying fix: ${(err as Error).message}`);
       }
     }
 

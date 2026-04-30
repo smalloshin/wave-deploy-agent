@@ -56,8 +56,6 @@ function rm(dir: string): void {
 
 console.log('\n=== next-config-fixer unit tests ===\n');
 
-// ─── isStrictnessFlip: ignoreBuildErrors ──────────────────────
-
 test('flip: ignoreBuildErrors true → false detected', () => {
   const r = isStrictnessFlip(
     'typescript: { ignoreBuildErrors: true }',
@@ -100,8 +98,6 @@ test('no flip: ignoreBuildErrors not present', () => {
   assert.equal(r.isFlip, false);
 });
 
-// ─── isStrictnessFlip: ignoreDuringBuilds ─────────────────────
-
 test('flip: ignoreDuringBuilds true → false detected', () => {
   const r = isStrictnessFlip(
     'eslint: { ignoreDuringBuilds: true }',
@@ -127,8 +123,6 @@ test('no flip: ignoreDuringBuilds false → true (reverse direction)', () => {
   );
   assert.equal(r.isFlip, false);
 });
-
-// ─── isStrictnessFlip: input validation ───────────────────────
 
 test('isStrictnessFlip: non-string original returns false', () => {
   const r = isStrictnessFlip(undefined as unknown as string, 'ignoreBuildErrors: false');
@@ -170,8 +164,6 @@ test('isStrictnessFlip: only matches whole word (ignoreBuildErrorsExtra not flag
   assert.equal(r.isFlip, false);
 });
 
-// ─── isStrictnessFlip: precedence + multiple matches ──────────
-
 test('flip: ignoreBuildErrors flagged before ignoreDuringBuilds when both flip', () => {
   // STRICTNESS_KEYS iterates ignoreBuildErrors first.
   const r = isStrictnessFlip(
@@ -181,8 +173,6 @@ test('flip: ignoreBuildErrors flagged before ignoreDuringBuilds when both flip',
   assert.equal(r.isFlip, true);
   assert.equal(r.key, 'ignoreBuildErrors');
 });
-
-// ─── parseMajorVersion ────────────────────────────────────────
 
 test('parseMajorVersion: "^16.0.0" → 16', () => {
   assert.equal(parseMajorVersion('^16.0.0'), 16);
@@ -235,8 +225,6 @@ test('parseMajorVersion: non-string → null', () => {
 test('parseMajorVersion: "0" → 0 (still parses as zero)', () => {
   assert.equal(parseMajorVersion('0'), 0);
 });
-
-// ─── detectNextMajorVersion: I/O integration ──────────────────
 
 test('detectNextMajorVersion: reads from dependencies', () => {
   const dir = makeTempProject();
@@ -310,8 +298,6 @@ test('detectNextMajorVersion: tag version "next: latest" → null', () => {
     assert.equal(detectNextMajorVersion(dir), null);
   } finally { rm(dir); }
 });
-
-// ─── stripEslintFromNextConfig: legal-flow canonical case ─────
 
 test('strip: legal-flow shape (eslint block at end with trailing comma)', () => {
   const input = `import type { NextConfig } from "next";
@@ -514,8 +500,6 @@ test('strip: reason field describes the action', () => {
   assert.match(r.reason, /stripped/i);
 });
 
-// ─── findMatchingBrace: low-level invariants ──────────────────
-
 test('findMatchingBrace: simple {}', () => {
   const s = '{}';
   assert.equal(findMatchingBrace(s, 0), 1);
@@ -562,8 +546,6 @@ test('findMatchingBrace: template literal interpolation respected', () => {
   assert.equal(findMatchingBrace(s, 0), 22);
 });
 
-// ─── output content verification ──────────────────────────────
-
 test('strip output: stripped content does not contain literal "eslint"', () => {
   const input = `const nextConfig = {
   eslint: {
@@ -609,8 +591,6 @@ test('strip output: result is valid JS object syntax (no double commas, no orpha
   assert.match(r.next, /output:\s*'standalone'/);
   assert.match(r.next, /reactStrictMode:\s*true/);
 });
-
-// ─── final report ─────────────────────────────────────────────
 
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 if (failed > 0) process.exit(1);
