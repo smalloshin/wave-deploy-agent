@@ -14,6 +14,11 @@ import {
 import { detectProject } from './project-detector';
 import { generateDockerfile } from './dockerfile-gen';
 import { patchDockerfileForPrisma } from './prisma-fixer';
+import {
+  isStrictnessFlip,
+  detectNextMajorVersion,
+  stripEslintFromNextConfig,
+} from './next-config-fixer';
 import { notifyReviewNeeded } from './discord-notifier';
 import { runSemgrep, runTrivy } from './scanner';
 import { analyzeThreatModel, generateReviewReport } from './llm-analyzer';
@@ -201,6 +206,36 @@ export async function runPipeline(
       }
     }
 
+    // R44h-2 (2026-04-30): Next.js 16 dropped the `eslint` key from NextConfig.
+    // Vibe-coded projects (legal-flow being canonical) still ship a stale
+    // `eslint: { ignoreDuringBuilds: true }` block. With strict type-check,
+    // tsc errors on `'eslint' does not exist in type 'NextConfig'`. Auto-strip
+    // when Next major ≥ 16. Defense-in-depth — also helps when AI fix step
+    // already flipped some other strictness flag exposing the latent error.
+    try {
+      const nextMajor = detectNextMajorVersion(projectDir);
+      if (nextMajor !== null && nextMajor >= 16) {
+        const cfgCandidates = ['next.config.ts', 'next.config.js', 'next.config.mjs'];
+        for (const name of cfgCandidates) {
+          const cfgPath = join(projectDir, name);
+          if (!existsSync(cfgPath)) continue;
+          const original = readFileSync(cfgPath, 'utf-8');
+          const result = stripEslintFromNextConfig(original);
+          if (result.changed) {
+            const { writeFileSync: wfs } = await import('node:fs');
+            wfs(cfgPath, result.next);
+            console.log(
+              `[Pipeline]   R44h: stripped deprecated eslint{} from ${name} (Next ${nextMajor}) — ${result.reason}`,
+            );
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline]   R44h: next.config eslint-strip failed (non-fatal): ${(err as Error).message}`,
+      );
+    }
+
     // ─── Step 3: Security Scanning (Semgrep + Trivy) ───
     currentStep = 'Step 3: Security Scanning (Semgrep + Trivy)';
     console.log(`[Pipeline] ${currentStep}...`);
@@ -284,6 +319,26 @@ export async function runPipeline(
         const original = readFileSync(filePath, 'utf8');
 
         if (original.includes(fix.originalCode)) {
+          // R44h (2026-04-30): Block AI auto-fixes that flip
+          // ignoreBuildErrors / ignoreDuringBuilds from true → false. The LLM
+          // doesn't have full type-check context — flipping these flags
+          // exposes latent type/eslint errors that were intentionally hidden
+          // on a vibe-coded project. legal-flow's redeploy after R44g died
+          // exactly this way.
+          const flip = isStrictnessFlip(fix.originalCode, fix.fixedCode);
+          if (flip.isFlip) {
+            autoFixResults.push({
+              applied: false,
+              diff: '',
+              explanation: `Skipped (R44h): refused to flip ${flip.key} true→false — would expose latent errors not covered by this fix. Original explanation: ${fix.explanation}`,
+              verificationPassed: null,
+            });
+            console.warn(
+              `[Pipeline]   R44h: skipped strictness flip on ${sanitized} (${flip.key} true→false)`,
+            );
+            continue;
+          }
+
           const fixed = original.replace(fix.originalCode, fix.fixedCode);
           const { writeFileSync: wfs } = await import('node:fs');
           wfs(filePath, fixed);

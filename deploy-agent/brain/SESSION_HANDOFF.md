@@ -4,6 +4,63 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-30 09:00 UTC（R44h：strictness flip guard + Next 16 eslint strip）**
+
+**狀態：CODE + TESTS + ADR 全做完，tsc clean，63 zero-dep 測試全綠，未部署**
+
+R44g 部署成功後（Cloud Build `8a749cf7-49c0-45e5-918a-f5b88ba1757d`），使用者透過 UI 重 deploy legal-flow 還是失敗。從 LLM diagnostic 截圖看：
+```
+./next.config.ts:9:3
+Type error: 'eslint' does not exist in type 'NextConfig'.
+```
+
+診斷 Cloud Build log（pipeline run）發現兩個疊加的 bug：
+
+1. **R44g 確實 work**：`Step 11/25 RUN ... npx prisma generate` 已成功跑過，沒再炸 PrismaClient init。
+2. **AI fix step 把使用者旗標翻了**：LLM threat-analysis 看到 `ignoreBuildErrors: true` 與 `ignoreDuringBuilds: true`，覺得「skip safety check 不好」，emit 了把兩個都從 `true → false` 的 auto-fix。pipeline Step 5 照單全收。
+3. **Next.js 16 移除了 `eslint` config key**：legal-flow 的 `next.config.ts` 還有 `eslint: { ignoreDuringBuilds: true }` block，Next 16 type 系統根本不接受這個 key 存在。即使 R44h-1 擋下 LLM 翻轉，這個欄位本身在 Next 16 還是 type error。
+
+**改動**（4 個檔案，2 新 / 2 改）：
+
+- **新增** `apps/api/src/services/next-config-fixer.ts`（~280 LOC，5 個 export）：
+  - `isStrictnessFlip(originalCode, fixedCode)` — 純函式，regex 檢測 `\\b(ignoreBuildErrors|ignoreDuringBuilds)\\s*:\\s*true\\b` in original AND `:\\s*false\\b` in fixed → `{ isFlip: true, key }`
+  - `detectNextMajorVersion(projectDir)` — 讀 package.json，dependencies 優先 devDependencies；返回 major number 或 null
+  - `parseMajorVersion(spec)` — 純函式，semver-ish 解析（`^16.0.0` → 16，`latest` → null）
+  - `stripEslintFromNextConfig(content)` — 純函式，找 top-level `eslint:` key + `findMatchingBrace` 走 balanced braces（string-aware + comment-aware）→ 砍整個 block + trailing comma + newline；idempotent
+  - `findMatchingBrace(content, openIdx)` — 純函式，導出供測試
+- **新增** `apps/api/src/test-next-config-fixer.ts`（**63 個 zero-dep 測試**，全綠）：
+  - 14 個 `isStrictnessFlip`（雙 key、word-boundary、multi-line、input validation）
+  - 13 個 `parseMajorVersion` + `detectNextMajorVersion`（semver shapes、tag versions、deps vs devDeps、missing/malformed）
+  - 19 個 `stripEslintFromNextConfig`（legal-flow shape、idempotency、non-object value、nested、CRLF、strings/comments inside、unbalanced 防禦）
+  - 9 個 `findMatchingBrace`（nested、string-aware、comment-aware、escape）
+  - 8 個 output content shape（無 orphan brace、無 double comma）
+- **修改** `apps/api/src/services/pipeline-worker.ts`：
+  - import 三個 R44h export
+  - **Step 5（Auto-Fix Application）**：在 `original.replace` 之前呼叫 `isStrictnessFlip(fix.originalCode, fix.fixedCode)`。`isFlip: true` 時 push `{ applied: false, explanation: 'Skipped (R44h): refused to flip <key> true→false ...' }` + warn log + `continue`，不寫檔案
+  - **Step 2（Dockerfile Generation）**：在 R44g 的 prisma patch 之後（不論 hasDockerfile 與否）統一檢查：`detectNextMajorVersion(projectDir) >= 16` → 對 `next.config.{ts,js,mjs}` 三個候選逐一 `existsSync` + `stripEslintFromNextConfig`；non-fatal try/catch
+
+**驗證**：
+- `npx tsx src/test-next-config-fixer.ts` → `=== 63 passed, 0 failed ===`
+- `npx tsx src/test-prisma-fixer.ts` → `=== 56 passed, 0 failed ===`（無 R44g 回歸）
+- `npx tsx src/test-dockerfile-gen.ts` → `=== 62 passed, 0 failed ===`
+- `npx tsc --noEmit` EXIT 0
+
+**ADR**：`brain/decisions/2026-04-30-r44h-strictness-flip-guard.md`（兩份），兩個 index.md 都登記。
+
+**待辦**：
+- commit + push R44h
+- 觸發 Cloud Build 重 deploy `deploy-agent-api`（pipeline-worker 改動）+ web 不需重 deploy
+- 部署後請使用者重 deploy legal-flow → pipeline log 應出現 `R44h: stripped deprecated eslint{} from next.config.ts (Next 16)` 或 `R44h: skipped strictness flip on next.config.ts`，build 一路走完
+
+**告知使用者（Path C）**：可以先手動編輯 legal-flow `next.config.ts` 移除 `eslint: { ignoreDuringBuilds: true }` 那段（line 9-11），保留 `typescript: { ignoreBuildErrors: true }`，然後重 deploy。R44h-2 上線後平台會自動處理同樣問題。
+
+**重要關注**：
+- `stripEslintFromNextConfig` 是字串 heuristic 不是 AST。極端寫法（`eslint: ...spreadCfg`、`['eslint']: {...}`）不會被觸碰，logged but non-fatal。
+- R44h-1 只擋 `true → false` 翻轉。如果 LLM 改成更複雜重寫（整個刪 `typescript:{}` block）我們不偵測。可接受，這是目前唯一觀察到的 failure mode。
+- R44h 兩個防禦故意一起出：只有 R44h-1 不夠（legal-flow 的 deprecated 欄位本身就 type error）；只有 R44h-2 不夠（其他專案的 `ignoreBuildErrors` 還是會被 LLM 翻）。
+
+---
+
 **2026-04-30 06:30 UTC（R44g：Prisma 自動偵測 + Dockerfile 注入 prisma generate）**
 
 **狀態：CODE + TESTS + ADR 全做完，tsc clean，未部署**

@@ -4,6 +4,20 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-30 09:00 UTC — R44h：strictness flip guard + Next 16 eslint 自動砍**
+
+R44g 部署成功後（Cloud Build `8a749cf7`），使用者透過 UI 重 deploy legal-flow 還是失敗：`./next.config.ts:9:3 Type error: 'eslint' does not exist in type 'NextConfig'`。Cloud Build log 顯示兩個疊加 bug：(1) R44g 的 `npx prisma generate` 已成功，(2) AI fix step 把 `ignoreBuildErrors: true → false` 跟 `ignoreDuringBuilds: true → false` 同時翻了，曝光使用者藏起來的型別錯誤；(3) 即使 R44h-1 擋下翻轉，Next.js 16 把 `eslint` 從 `NextConfig` type 移除，殘留欄位本身就是 type error。
+
+新增 `apps/api/src/services/next-config-fixer.ts`（~280 LOC，5 export）：`isStrictnessFlip` 純 regex 檢測 `\b<key>\s*:\s*true\b` in original 同時 `\bfalse\b` in fixed → block；`detectNextMajorVersion` 讀 package.json `next` dep 取 major（`^16.0.0` → 16，`latest` → null）；`stripEslintFromNextConfig` 用 `findMatchingBrace`（string-aware + comment-aware + escape-aware + template-literal-interpolation-aware）走平衡括號砍整個 `eslint: {...}` block + 後面選用的 comma + 換行 + 前面同行 indent；idempotent。pipeline-worker Step 5 在 `original.replace` 之前先 `isStrictnessFlip` guard，命中就 push `applied: false` + warn + continue；Step 2 在 R44g prisma patch 之後檢查 `detectNextMajorVersion >= 16` 對 `next.config.{ts,js,mjs}` 三個候選逐一 `stripEslintFromNextConfig`（non-fatal）。
+
+驗證：`npx tsx src/test-next-config-fixer.ts` → 63 passed；`prisma-fixer` 56 / `dockerfile-gen` 62 無回歸；`tsc --noEmit` exit 0。ADR：`brain/decisions/2026-04-30-r44h-strictness-flip-guard.md`（兩份），index.md 都已登記。
+
+待辦：commit + push → 觸發 Cloud Build 重 deploy `deploy-agent-api` → 通知使用者可以同份 GCS source 重跑 legal-flow（R44h log 應出現 `R44h: stripped deprecated eslint{}` 或 `R44h: skipped strictness flip`）。Path C 給使用者：可以先手動把 `eslint: { ignoreDuringBuilds: true }` 從 `next.config.ts` 拿掉，留 `typescript:` block，平台升級後也會自動處理。
+
+風險：strictness flip guard 只擋 `true → false`，更複雜 LLM 重寫（整 block 刪除）不偵測，目前唯一觀察到的 failure mode 就是這個 flip；`stripEslintFromNextConfig` 是字串 heuristic（不是 AST），極端寫法（spread / computed key）不會被觸碰，logged but non-fatal。
+
+---
+
 **2026-04-30 06:30 UTC — R44g：偵測 Prisma 專案 + 自動注入 `prisma generate` 到 Dockerfile**
 
 使用者透過 UI 重跑 legal-flow 還是失敗。診斷：R44f 路徑問題已修光（fixed-source clean），但使用者 Dockerfile 缺 `prisma generate`，`next build` 收 page data 時 import `@prisma/client` 直接炸 `did not initialize yet`。pipeline-worker Step 2 對使用者 Dockerfile 是 preserve 模式，bug 永遠重現。R44g 是新 bug class（不是 path normalization 範疇）。
