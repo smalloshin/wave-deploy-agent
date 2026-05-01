@@ -4,6 +4,60 @@
 
 ## 上次進度（Last Progress）
 
+**2026-04-30 ~16:00 UTC（`/wave-deploy` skill v0.1：marker-file 智慧路由）**
+
+**狀態：SKILL + DETECT SCRIPT + ADR 全做完，4 個 match level smoke test 全綠，未做 end-to-end 真實部署**
+
+接續 R44h /simplify cleanup 完成後，使用者問可不可以把「版本更新」做成 skill。對話釐清後決定走 marker-file 路線（不是每次問 user 打字）。完整討論見 ADR `2026-04-30-wave-deploy-skill-marker-routing.md`。
+
+**改動**（3 新檔，0 改 deploy-agent 程式碼）：
+
+- **新增** `~/.claude/skills/wave-deploy/SKILL.md` — skill 主檔
+  - frontmatter 列 allowed-tools（Bash/Read/Write/Edit/Glob/Grep/AskUserQuestion）
+  - 預備偵測 → setup-if-needed → 智慧路由 → upload + submit/new-version → polling → write marker
+  - 4 個 match level case：high / stale / medium / none，每個給 AskUserQuestion 一次到位
+  - Update flow：`POST /api/upload/init` → PUT GCS → `POST /api/projects/:id/new-version`
+  - New flow：同 upload + `POST /api/projects/submit-gcs`（帶 name + customDomain）
+  - 不主動 approve 安全審查（人工閘門）
+  - v0.2 deferred：`/wave-deploy status` / `logs` / `approve` / monorepo / chunked upload / `--json-only`
+- **新增** `~/.claude/skills/wave-deploy/bin/wave-deploy-detect`（177 行 bash + jq）
+  - 讀 `~/.deploy-agent/config.json`（缺 → `configMissing: true`）
+  - 讀 `./.deploy-agent.json` marker、`./package.json#name`、`git remote get-url origin`
+  - `GET /api/projects` 拿伺服器清單
+  - jq 算 match：marker 對 server projectId → high；marker 但 server 404 → stale；name 對到伺服器 → medium；都沒 → none
+  - **bug fix during smoke test**：jq 的 `select(. != "")` 在 object constructor 裡 empty input 會吞掉**整個物件**（zero-stream）。改用 `def nz: if . == "" then null else . end;` helper，empty 變 null
+  - 4 個 smoke test 全綠：configMissing、none、medium（package.json `legal-flow-builder`）、high（marker → real id）、stale（marker → ghost id）
+- **新增** `brain/decisions/2026-04-30-wave-deploy-skill-marker-routing.md`（ADR）+ index.md 登記
+
+**驗證**：
+
+- `bash bin/wave-deploy-detect` 在 5 種狀態都輸出正確 JSON（包含 `match` / `projectId` / `candidates`）
+- 對 live API `https://wave-deploy-agent-api.punwave.com/api/projects` 已驗證連通性
+- `/api/projects/:id/detail` shape 確認 `deployments[0].customDomain` 是 hostname（無 scheme），`cloudRunUrl` 是完整 https URL — SKILL.md 的 marker write 邏輯正確優先 customDomain 加 `https://` prefix
+
+**待辦**：
+
+1. **End-to-end 真實部署測試**：要使用者提供真的 API key（現在 `~/.deploy-agent/config.json` 是 fake key `da_k_fake_for_smoke_test`）
+2. **第一次跑 setup flow**：使用者要去 dashboard `https://wave-deploy-agent.punwave.com/settings/api-keys` 建一把
+3. **commit skill 改動**：skill 是 `~/.claude/skills/wave-deploy/`（global），不在 repo 裡。要不要鏡像到 repo 還沒決定
+4. **R44h 那條線（前一個任務）**：`598ead6 refactor(api): /simplify pass on R44h` 已 push 到 `pr/sync-all`，未部署
+
+**重要關注**：
+
+- **AUTH_MODE permissive 的副作用**：anonymous（fake key）也能 `GET /api/projects` 拿全部專案清單（含 owner email、env vars 等）。RBAC ADR (`2026-04-25-rbac-system-permissive-then-enforced`) 已預期這個情況；enforced 切換時 detect 會自動 fall back 到 401，user 會被引導去 setup
+- **jq 陷阱要記得**：未來寫類似 detect script 時，object constructor 裡欄位用 stream 過濾要特別小心。`select(. != "")` 對 input == "" 不是「給 null」而是「empty stream」→ 整個物件消失，exit 0 沒任何提示
+- **skill 是全域的**：`~/.claude/skills/wave-deploy/` 不在 worktree 裡，不會跟著 git 一起 ship。team 共用要 vendoring 或另寫 setup script
+- **下次測試流程**：
+  1. 先在 deploy-agent dashboard 用 boss 帳號建 API key（permissions 至少 projects:write + projects:deploy + projects:read）
+  2. `chmod 600 ~/.deploy-agent/config.json` 確認權限
+  3. 找個小專案（建議新建測試 nextjs hello world）`cd` 進去
+  4. 執行 `~/.claude/skills/wave-deploy/bin/wave-deploy-detect` 確認 match 為 none
+  5. 觸發 `/wave-deploy` 走完整 new project flow
+  6. 等部署完，確認 marker 有寫、`.gitignore` 有加
+  7. 重 cd 進來再跑一次 `/wave-deploy` 確認走 high match → A → update flow
+
+---
+
 **2026-04-30 09:00 UTC（R44h：strictness flip guard + Next 16 eslint strip）**
 
 **狀態：CODE + TESTS + ADR 全做完，tsc clean，63 zero-dep 測試全綠，未部署**
