@@ -4,6 +4,43 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-01（R45：review gate UI toggle — 程式碼完成，等部署）**
+
+**狀態：CODE + TESTS + ADR 全做完，2729/0 zero-dep 全綠，tsc clean，未 commit / 未部署**
+
+延續 R44h 部署成功後（revision 00141-4z5 跑 7d27463 上線、smoke test 健康），使用者要求把「審查」做成 settings 頁面的開關：開 = 原邏輯停在 review_pending、關 = 自動 approve 直接 dispatch deploy。
+
+**改動**（2 新 / 5 改）：
+
+- **新增** `apps/api/src/services/settings-service.ts`（48 LOC）— `parseRuntimeSettings` 純函式 + `getRuntimeSettings()` async wrapper；safe defaults `{ requireReview: true }`；JSON string / object / null / 壞 JSON 都容錯
+- **新增** `apps/api/src/test-settings-service.ts`（86 LOC）— 10 個 zero-dep 測試鎖 parser edge case，全 PASS
+- **改** `apps/api/src/services/pipeline-worker.ts` Step 9 — 新增 `getRuntimeSettings()` 讀 + 分支：`requireReview=true` 走原 Discord 通知路徑、`=false` 直接 `submitReview(reviewId, 'approved', 'system', ...)` + `transitionProject('approved')` + `runDeployPipeline.catch(...)`。state machine 沒改（`review_pending → approved` 本來合法）。
+- **改** `apps/api/src/routes/settings.ts` — schema 加 `requireReview: z.boolean().optional()`；DEFAULTS 加 `requireReview: true`；GET/PUT merge loop 重寫成 type-aware（舊 `if (value && ...)` 會把 `false` 過濾掉）；新增 `SECRET_KEYS` Set 把 `'••••••••'` 邏輯收斂
+- **改** `apps/web/app/settings/page.tsx` — Settings interface 加 `requireReview: boolean`；新 `<Toggle>` component（`<button role="switch" aria-checked>` + 滑動小白圓）；新 Section `reviewGate` 放在 GCP 之上；`update<K>` 變 generic 接受 `boolean | string`
+- **改** `apps/web/messages/en.json` + `zh-TW.json` — 加 3 keys：`reviewGate` / `requireReview` / `requireReviewHint`
+- **新增** `brain/decisions/2026-05-01-review-gate-toggle.md` ADR + index.md 登記
+
+**驗證**：
+
+- `tsc --noEmit` 兩個 workspace 全綠
+- `./scripts/sweep-zero-dep-tests.sh` → 2729 passed / 0 failed across 45 files（含新 test-settings-service.ts 10/10）
+- 還沒做 e2e（要等部署 + UI 操作）
+
+**待辦**：
+
+1. **commit + push + Cloud Build 部署**（需要 boss 授權 `gcloud builds submit`）
+2. **e2e 測試開關**：開關關掉後 trigger 一次部署，確認 pipeline 沒停在 review_pending
+3. 開關 OFF 時 Slack 通知 hook（目前只有 review-needed 發訊息）— defer
+
+**重要關注**：
+
+- **boolean 過濾陷阱**：`if (value && ...)` 在 settings merge 是 trap，必須檢查 `=== undefined` 然後 type-branch。R45 重寫的 GET/PUT 邏輯把這個鎖死了
+- **Audit trail 不變**：開關關掉時 scanReport + reviewRecord 還是會建，只是 reviewer 變成 `'system'`、reason 變成 `'auto-approved (review disabled)'`。合規需要的 row 全在
+- **State machine 不動**：R42 鎖死的 PINNED_TRANSITIONS 不需要改（review_pending → approved 本來就合法）
+- **預設安全方向**：`RUNTIME_DEFAULTS.requireReview = true`，新裝 / settings row 沒建 / parsing 失敗都倒回 ON
+
+---
+
 **2026-04-30 ~16:00 UTC（`/wave-deploy` skill v0.1：marker-file 智慧路由）**
 
 **狀態：SKILL + DETECT SCRIPT + ADR 全做完，4 個 match level smoke test 全綠，未做 end-to-end 真實部署**

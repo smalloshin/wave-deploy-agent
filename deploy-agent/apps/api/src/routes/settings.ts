@@ -16,6 +16,7 @@ const settingsSchema = z.object({
   slackWebhookUrl: z.string().optional(),
   anthropicApiKey: z.string().optional(),
   githubToken: z.string().optional(),
+  requireReview: z.boolean().optional(),
 });
 
 type Settings = z.infer<typeof settingsSchema>;
@@ -31,7 +32,16 @@ const DEFAULTS: Settings = {
   slackWebhookUrl: process.env.SLACK_WEBHOOK_URL ?? '',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ? '••••••••' : '',
   githubToken: process.env.GITHUB_TOKEN ? '••••••••' : '',
+  requireReview: true,
 };
+
+// Fields that should be masked when echoed back from GET. Booleans and
+// non-secret strings round-trip as-is.
+const SECRET_KEYS = new Set<keyof Settings>([
+  'cloudflareToken',
+  'anthropicApiKey',
+  'githubToken',
+]);
 
 async function ensureSettingsTable(): Promise<void> {
   await query(`
@@ -57,15 +67,19 @@ export async function settingsRoutes(app: FastifyInstance) {
       const stored = result.rows[0]?.data ?? {};
       const data = typeof stored === 'string' ? JSON.parse(stored) : stored;
 
-      // Merge stored with defaults (stored takes priority, but mask secrets)
+      // Merge stored with defaults (stored takes priority, but mask secrets).
+      // Booleans (e.g. requireReview = false) must not be filtered by truthiness.
       const settings: Settings = { ...DEFAULTS };
-      for (const [key, value] of Object.entries(data as Record<string, string>)) {
-        if (value && key in settings) {
-          // Mask secret fields when returning
-          if (key.includes('Token') || key.includes('Key') || key.includes('apiKey')) {
-            (settings as Record<string, string>)[key] = value ? '••••••••' : '';
+      for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+        if (value === undefined || !(key in settings)) continue;
+        const k = key as keyof Settings;
+        if (typeof value === 'boolean') {
+          (settings as Record<string, unknown>)[k] = value;
+        } else if (typeof value === 'string') {
+          if (SECRET_KEYS.has(k)) {
+            (settings as Record<string, unknown>)[k] = value ? '••••••••' : '';
           } else {
-            (settings as Record<string, string>)[key] = value;
+            (settings as Record<string, unknown>)[k] = value;
           }
         }
       }
@@ -89,11 +103,16 @@ export async function settingsRoutes(app: FastifyInstance) {
       const existingData = existing.rows[0]?.data ?? {};
       const parsed = typeof existingData === 'string' ? JSON.parse(existingData) : existingData;
 
-      // Merge: if the new value is masked (••••••••), keep the old value
-      const merged: Record<string, string> = { ...parsed as Record<string, string> };
+      // Merge: if the new value is masked (••••••••), keep the old value.
+      // Booleans (e.g. requireReview=false) MUST be persisted; treat undefined
+      // as "not provided this PUT", but accept false as a real write.
+      const merged: Record<string, unknown> = { ...parsed as Record<string, unknown> };
       for (const [key, value] of Object.entries(body)) {
-        if (value === undefined || value === '') continue;
-        if (value === '••••••••') continue; // Don't overwrite with mask
+        if (value === undefined) continue;
+        if (typeof value === 'string') {
+          if (value === '') continue;
+          if (value === '••••••••') continue; // Don't overwrite with mask
+        }
         merged[key] = value;
       }
 

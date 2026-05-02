@@ -416,6 +416,9 @@
   "settings": {
     "title": "Settings",
     "loadingSettings": "Loading settings...",
+    "reviewGate": "Review Gate",
+    "requireReview": "Require human review before deploy",
+    "requireReviewHint": "When on, every deploy stops at review_pending until a human approves it. When off, scans still run and the report is saved, but the pipeline auto-approves and dispatches the deploy. Off = faster, but no human gate.",
     "gcpSettings": "GCP Settings",
     "gcpProjectId": "GCP Project ID",
     "region": "Region",

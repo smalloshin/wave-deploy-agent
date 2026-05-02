@@ -10,7 +10,10 @@ import {
   updateScanReport,
   getLatestScanReport,
   createReview,
+  submitReview,
 } from './orchestrator';
+import { runDeployPipeline } from './deploy-worker';
+import { getRuntimeSettings } from './settings-service';
 import { detectProject } from './project-detector';
 import { generateDockerfile } from './dockerfile-gen';
 import { patchDockerfileForPrisma } from './prisma-fixer';
@@ -613,6 +616,11 @@ export async function runPipeline(
       return;
     }
 
+    // ─── Step 9: Transition to review_pending, then optionally auto-approve ───
+    // The `requireReview` operator setting controls whether the human review
+    // gate runs. Defaults true. When false, the pipeline still creates the
+    // scan report + review record (audit trail) but stamps the review as
+    // auto-approved by `system` and triggers the deploy worker immediately.
     currentStep = 'Step 9: Transition to review_pending';
     console.log(`[Pipeline] ${currentStep}...`);
     await transitionProject(projectId, 'review_pending', 'pipeline-worker', {
@@ -622,19 +630,52 @@ export async function runPipeline(
       costEstimate: costEstimate.monthlyTotal,
     });
 
-    // Create review entry for the human reviewer
+    const settings = await getRuntimeSettings();
+
+    // Create review entry — needed by both branches (audit trail in either path).
+    let reviewId: string | null = null;
     if (scanReport) {
       const review = await createReview(scanReport.id);
-      // Notify Discord
-      const proj = await getProject(projectId);
-      if (proj) {
-        notifyReviewNeeded(proj.name, proj.slug, review.id).catch(() => {});
-      }
+      reviewId = review.id;
     }
 
-    console.log(`[Pipeline] ✓ Complete for project ${projectId}`);
-    console.log(`[Pipeline]   Findings: ${allFindings.length} total, ${appliedCount} auto-fixed`);
-    console.log(`[Pipeline]   Status: review_pending — awaiting human approval`);
+    if (settings.requireReview) {
+      // Human gate: notify Discord, leave project in review_pending.
+      if (reviewId && scanReport) {
+        const proj = await getProject(projectId);
+        if (proj) {
+          notifyReviewNeeded(proj.name, proj.slug, reviewId).catch(() => {});
+        }
+      }
+      console.log(`[Pipeline] ✓ Complete for project ${projectId}`);
+      console.log(`[Pipeline]   Findings: ${allFindings.length} total, ${appliedCount} auto-fixed`);
+      console.log(`[Pipeline]   Status: review_pending — awaiting human approval`);
+    } else if (reviewId) {
+      // Auto-approve and dispatch deploy. Mirrors what
+      // routes/reviews.ts:104-160 does on a manual approve.
+      currentStep = 'Step 9b: Auto-approve (review gate disabled)';
+      console.log(`[Pipeline] ${currentStep}...`);
+      await submitReview(reviewId, 'approved', 'system', 'auto-approved (review disabled)');
+      await transitionProject(projectId, 'approved', 'system', {
+        reviewId,
+        autoApproved: true,
+      });
+      runDeployPipeline(projectId, reviewId).catch((err) => {
+        console.error(
+          `[Pipeline] Deploy dispatch (auto-approved) failed for ${projectId}:`,
+          (err as Error).message,
+        );
+      });
+      console.log(`[Pipeline] ✓ Complete for project ${projectId} (auto-approved)`);
+      console.log(`[Pipeline]   Findings: ${allFindings.length} total, ${appliedCount} auto-fixed`);
+      console.log(`[Pipeline]   Status: approved → deploy dispatched`);
+    } else {
+      // No scanReport means we couldn't even start the security pipeline; fall
+      // back to the human gate so an operator can investigate. This branch is
+      // mostly defensive — earlier steps short-circuit before reaching here
+      // when scanReport is null.
+      console.warn(`[Pipeline] requireReview=false but no scanReport; leaving in review_pending`);
+    }
     stopKeepAlive();
 
   } catch (err) {

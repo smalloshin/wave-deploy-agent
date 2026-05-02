@@ -16,6 +16,7 @@ interface Settings {
   slackWebhookUrl: string;
   anthropicApiKey: string;
   githubToken: string;
+  requireReview: boolean;
 }
 
 const EMPTY: Settings = {
@@ -29,6 +30,7 @@ const EMPTY: Settings = {
   slackWebhookUrl: '',
   anthropicApiKey: '',
   githubToken: '',
+  requireReview: true,
 };
 
 export default function SettingsPage() {
@@ -46,7 +48,7 @@ export default function SettingsPage() {
       .catch(() => { setLoading(false); });
   }, []);
 
-  const update = (key: keyof Settings, value: string) => {
+  const update = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -91,6 +93,15 @@ export default function SettingsPage() {
   return (
     <div style={{ maxWidth: 760 }}>
       <h2 style={heroStyle}>{t('title')}</h2>
+
+      <Section title={t('reviewGate')}>
+        <Toggle
+          label={t('requireReview')}
+          hint={t('requireReviewHint')}
+          value={settings.requireReview}
+          onChange={(v) => update('requireReview', v)}
+        />
+      </Section>
 
       <Section title={t('gcpSettings')}>
         <Field label={t('gcpProjectId')} placeholder="my-gcp-project" value={settings.gcpProject} onChange={(v) => update('gcpProject', v)} />
@@ -159,6 +170,68 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         {title}
       </h3>
       {children}
+    </div>
+  );
+}
+
+function Toggle({ label, hint, value, onChange }: {
+  label: string; hint?: string; value: boolean; onChange: (v: boolean) => void;
+}) {
+  return (
+    <div style={{ marginBottom: 'var(--sp-3)' }}>
+      <label style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 'var(--sp-3)',
+        cursor: 'pointer',
+        userSelect: 'none',
+      }}>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={value}
+          onClick={() => onChange(!value)}
+          style={{
+            width: 44,
+            height: 24,
+            padding: 2,
+            borderRadius: 999,
+            border: '1px solid var(--border)',
+            background: value ? 'var(--accent, #2563eb)' : 'var(--surface-2, #2a2a2a)',
+            cursor: 'pointer',
+            transition: 'background 120ms ease',
+            flexShrink: 0,
+          }}
+        >
+          <span style={{
+            display: 'block',
+            width: 18,
+            height: 18,
+            borderRadius: '50%',
+            background: '#fff',
+            transform: value ? 'translateX(20px)' : 'translateX(0)',
+            transition: 'transform 120ms ease',
+          }} />
+        </button>
+        <span style={{
+          fontSize: 'var(--fs-md)',
+          color: 'var(--ink-900)',
+          fontWeight: 500,
+        }}>
+          {label}
+        </span>
+      </label>
+      {hint && (
+        <p style={{
+          marginTop: 6,
+          marginLeft: 56,
+          color: 'var(--ink-500)',
+          fontSize: 'var(--fs-sm)',
+          lineHeight: 'var(--lh-snug, 1.4)',
+        }}>
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

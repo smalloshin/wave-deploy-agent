@@ -416,6 +416,9 @@
   "settings": {
     "title": "設定",
     "loadingSettings": "載入設定中...",
+    "reviewGate": "審查閘門",
+    "requireReview": "部署前需要人工審查",
+    "requireReviewHint": "開啟時，每次部署會停在「待審查」狀態，等人工核可後才會繼續。關閉時，掃描跟報告照樣產生，但 pipeline 會自動 approve 並直接觸發部署。關閉 = 比較快，但少了人工把關。",
     "gcpSettings": "GCP 設定",
     "gcpProjectId": "GCP 專案 ID",
     "region": "區域",
