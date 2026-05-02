@@ -4,6 +4,21 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-02（R45：review gate UI toggle — 部署完成 + e2e 三層驗證全綠）**
+
+**狀態：DEPLOYED + E2E 全綠**
+
+- Commit `1af5398` 在 `wave-deploy-agent/main`
+- Cloud Build `15697b5b-afd1-45b9-aaef-6a00c67f39ca` SUCCESS
+- Cloud Run revision `deploy-agent-api-00142-xg9` 跑 image `api:1af5398`
+- E2E layer 1（PUT/GET round-trip）：boolean false 正確持久化
+- E2E layer 2（deployed bundle code path）：Step 9 三分支邏輯確認正確
+- E2E layer 3（real deploy with toggle off）：
+  - 測試專案 `r45-toggle-test`（id `07ddd7a6-...`）submit 後狀態走 `scanning → deploying → failed`
+  - **關鍵證據**：deployment row `f7074dbd-...` 帶著 `review_id: c407cbef-...`，這個 row 只有 `runDeployPipeline` 會建，而 `runDeployPipeline` 只在 Step 9b 的 auto-approve branch 被呼叫
+  - Deploy 本身失敗（hello-world tarball 太小，Docker build / runtime 失敗）但與 toggle 無關
+  - 測試完 toggle 已 restore 回 true
+
 **2026-05-01（R45：review gate UI toggle — 程式碼完成，等部署）**
 
 **狀態：CODE + TESTS + ADR 全做完，2729/0 zero-dep 全綠，tsc clean，未 commit / 未部署**
