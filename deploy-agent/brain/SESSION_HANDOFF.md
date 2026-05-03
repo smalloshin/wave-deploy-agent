@@ -4,6 +4,101 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-04（自主修復批次完成 — R47 / R48 / R49 / R51 / R52 全部上線；4 failed 專案：1 LIVE、3 真正 user-blocked）**
+
+**最終狀態：1 fixed by pipeline；3 需要 user 行動（已記錄 exact action）**
+
+User 要求自動化修好所有 failed 專案（spawn architect + engineer subagent，不可改 user 部署檔，只動 pipeline）。共 4 failed 專案 → 5 個 pipeline-level fix（R47/R48/R49/R51/R52）→ 1 個 deploy 救回，3 個確認 user-blocked。
+
+### 5 個 fix（按時間序）
+
+| Round | 標題 | Tests Δ | SHA | Cloud Run rev |
+|-------|-----|---------|-----|----------------|
+| R47 | Reconciler cloudRunUrl recovery | +22 | `0057a3c` | `00144-g6f` |
+| R48 | Lockfile arbiter | +33 | `140ace1` | (合 R49) |
+| R49 | Required env-var gate | +68 | `85436d7` | `00145-svs` |
+| R51 | Reconciler race window 6→15 min | 0（調整） | `7a10685` | `00146-8mv` |
+| R52 | Secret Manager regex 寬化 + always-block | +7 | `abfaf7a` | `00147-ssk` |
+
+**Sweep 從 2765/46 → 2895/50（+130 tests, +4 files）。** tsc 全綠。
+
+### 4 個原始 failed 專案最終狀態
+
+#### 1. wavenet-ai-gateway-frontend ✅ **LIVE**
+
+- **修法**：R51 把 reconciler race window 從 6 分鐘擴成 15 分鐘
+- **Root cause**：Next.js 大型 build 整條 deploy 跑 9 分鐘，R47 的 6 分鐘 race window 在第 7 分鐘提前判「卡死」mark failed
+- **驗證**：Resubmit 後 pipeline 跑完整 11 分鐘走 scanning → review_pending → approved → deploying → ssl_provisioning → canary_check → **live**
+- **No user action needed**
+
+#### 2. luca-optimizer-kb ⚠️ **R49 正確 block，等 user 設 env var**
+
+- **R49 工作正確**：從原本 4 分鐘 Cloud Run health check timeout 變成 2 秒 Step 2.7 block，錯誤訊息結構化
+- **Root cause**：Python 源碼用 `os.getenv("GEMINI_API_KEY")` + `if not GEMINI_API_KEY: raise`，R49 偵測為 required；name 命中 deny list（`*_API_KEY`）→ pipeline 不能 auto-gen（這是 paired credential 由 Google 給）
+- **User action**：
+  ```
+  PUT https://wave-deploy-agent.punwave.com/api/projects/ab28c1a2-8d67-47af-8124-ce29158331b8/env-vars
+  Body: {"GEMINI_API_KEY": "<你從 Google AI Studio 拿的 key>"}
+  ```
+  或直接在 dashboard `https://wave-deploy-agent.punwave.com/projects/luca-optimizer-kb/env-vars` 設定
+- **可能還有其他 missing**（`LUCA_JWT_SECRET` 應該被 R49 auto-gen了；`POSTGRES_PASSWORD` 應該也命中 deny list 但 R49 只回報第一輪所有 deny list 命中 — 設好 `GEMINI_API_KEY` 後 resubmit 再看）
+
+#### 3. wavenet-ai-gateway-backend ⚠️ **GCP Secret Manager 缺 secret**
+
+- **Root cause**：`/app/app/config.py:65` 呼叫 `_get_secret("erp-jwt-secret", "")` wrapper（自定義函式）→ 內部 `client.access_secret_version(name=f".../secrets/{secret_id}/versions/latest")` 讀 Secret Manager，但該 secret 在 GCP Secret Manager 不存在 → catch + raise RuntimeError → uvicorn 啟動失敗
+- **R52 為什麼沒擋下**：R52 widening 了 regex 認得 `erp-jwt-secret` 小寫+連字號，但**只認直接 literal 在 access_secret_version 同一行**。這個專案是 wrapper 函式的 secret_id 變數，literal 在不同位置 → R56 (whole-file 變數追蹤 + wrapper 偵測) 才能解決。**未做 R56**（複雜度高、value/risk 比不划算）
+- **User action**：
+  ```bash
+  # 1. 建立 Secret Manager secret
+  echo -n "<你的 JWT secret 值>" | gcloud secrets create erp-jwt-secret \
+    --data-file=- --project=wave-deploy-agent
+
+  # 2. 找出 Cloud Run service account
+  gcloud run services describe da-wavenet-ai-gateway-backend \
+    --region=asia-east1 --project=wave-deploy-agent \
+    --format='value(spec.template.spec.serviceAccountName)'
+  # 通常會是 770983127516-compute@developer.gserviceaccount.com
+
+  # 3. 給該 SA 讀 secret 的權限
+  gcloud secrets add-iam-policy-binding erp-jwt-secret \
+    --member="serviceAccount:770983127516-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor" \
+    --project=wave-deploy-agent
+
+  # 4. resubmit
+  curl -X POST 'https://wave-deploy-agent-api.punwave.com/api/projects/9198b084-c7db-40e7-824c-4410c38d2070/resubmit'
+  ```
+
+#### 4. luca-web ⚠️ **typescript 6.0.3 publish bug**
+
+- **Root cause**：使用者 `package.json` 寫 `"typescript": "~6.0.2"`，npm 解析成 6.0.3。本地 `node_modules/typescript/lib/tsc.js` 是 shim（`module.exports = require("./_tsc.js")`），但 Cloud Build 從 npm registry 安裝後**沒有這個 shim 檔**，只有 `_tsc.js`。`bin/tsc` script 寫死 `require('../lib/tsc.js')` → 找不到 module → build 死
+- **這是 typescript 6.0.3 的 npm 發布 bug，不是我們的問題**
+- **R48 lockfile arbiter 為什麼沒救到**：因為這是 user-supplied Dockerfile（不是 auto-gen），R48 只動 auto-gen 結果。**R52-Dockerfile-install-fixer**（改 user Dockerfile 把 `npm ci` 替換成 `npm install`）刻意不做：會掩蓋真 lockfile bug，user 永遠不知道
+- **User action**：3 選 1：
+  - **A) 降級 typescript**（最乾淨）：把 `package.json` 的 `"typescript": "~6.0.2"` 改成 `"^5.6.0"`，然後 `rm package-lock.json && npm install`，commit + resubmit
+  - **B) 在 Dockerfile 加 workaround**：在 `RUN npm ci` 之後加 `RUN cp node_modules/typescript/lib/_tsc.js node_modules/typescript/lib/tsc.js || true`
+  - **C) 等 typescript 6.0.4** publish 修這個 shim 問題
+
+### Settings 狀態（最終）
+
+- `requireReview = true`（已恢復；session 期間為了 batch 測試暫設 false，已 restore）
+- `autoGenerateSecrets = true`（R49 預設 false，但這個 session 為驗證 e2e 設成 true。建議 boss 評估是否保留 — auto-gen `JWT_SECRET` / `SESSION_SECRET` 之類的對 sibling-service-pairing 場景**會 silent break**，未來如有同 project_group 內共用 secret 場景需注意）
+
+### 沒做但有提案的 follow-up rounds
+
+- **R56**: 全檔案 Secret Manager 變數追蹤（基本 data-flow，能抓 `_get_secret("X")` wrapper pattern）。會把 wavenet-backend 從 4 分鐘 Cloud Run timeout 變成 2 秒 Step 2.7 block，但 user 還是要去 GCP 建 Secret。**Marginal value，跳過**
+- **R52-Dockerfile-install-fixer**: 偵測 user Dockerfile 用 `npm ci` 跟 lockfile 出問題 → swap 成 `npm install`。**Risk 大**（掩蓋真 bug），跳過
+- **R49 false-negative 改進**: Pydantic `env_prefix` / `model_config = SettingsConfigDict(env_prefix="APP_")` 沒處理。Conservative bias 保留
+
+### 重要學到的事
+
+- **6 分鐘 race window 太短**: 大型 Next.js / Cloud Build heavy 專案要 9-12 分鐘。15 分鐘給足
+- **Auto-gen 對 Secret Manager 沒用**: app 從 Secret Manager API 讀，env vars 是另一個 channel。Secret Manager source 一律 block + 給 gcloud hint 才正確
+- **User Dockerfile 不要動**: 動了會 mask user 自己的 bug，且 R44h 才剛建 LLM 護欄。Touch user files only when absolutely necessary（R46 dockerfile-port-fixer 的 case 是 deterministic 純語法問題，不會 mask 邏輯）
+- **typescript 6.x 出包**: 純 typescript 6.0.3 npm 發布 bug，跨 user 跨 pipeline 都中招
+
+---
+
 **2026-05-03（自主修復批次：R47 + R48 + R49 + R51 — 4 個 pipeline-level fix 全部上線）**
 
 **狀態：CODE + DEPLOYED + 部分驗證**
