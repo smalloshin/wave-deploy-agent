@@ -29,7 +29,8 @@ import {
 } from './orchestrator';
 import { runCanaryChecks } from './canary-monitor';
 import { gcpFetch } from './gcp-auth';
-import { getServiceLiveTraffic } from './deploy-engine';
+import { getServiceLiveTraffic, getCloudRunServiceTruth } from './deploy-engine';
+import { decideReconcilerAction } from './reconciler-recovery';
 import type { Deployment, Project, ProjectStatus } from '@deploy-agent/shared';
 
 const STUCK_STATES: ProjectStatus[] = [
@@ -193,16 +194,67 @@ async function reconcileOne(projectId: string): Promise<Outcome> {
     return 'failed';
   }
 
-  // If no cloudRunUrl yet, the deploy never actually ran — mark failed.
+  // R47 — recovery path：cloudRunUrl 沒寫並不代表沒部署成功，先去 Cloud Run
+  // 對證真相再決定是 mark failed、back-fill recover、還是 skip 等下輪。
+  // 詳見 services/reconciler-recovery.ts 的 decideReconcilerAction。
   if (!latestDeploy.cloudRunUrl) {
-    console.warn(`[Reconciler]   ${project.name}: deployment has no cloudRunUrl, marking failed`);
-    await safeTransition(projectId, 'failed', {
-      reason: 'reconciler: deployment record exists but no cloudRunUrl',
-    });
-    return 'failed';
+    // 兩個都空 → 不查 Cloud Run，直接給 decider 跑 (3) 分支
+    let cloudRunTruth = {
+      exists: false,
+      ready: false,
+      uri: null as string | null,
+      liveRevision: null as string | null,
+      conditionState: 'UNKNOWN' as 'CONDITION_SUCCEEDED' | 'CONDITION_FAILED' | 'CONDITION_RECONCILING' | 'UNKNOWN',
+    };
+    if (latestDeploy.cloudRunService) {
+      cloudRunTruth = await getCloudRunServiceTruth(
+        gcpProject,
+        gcpRegion,
+        latestDeploy.cloudRunService,
+      );
+    }
+
+    const verdict = decideReconcilerAction(
+      {
+        id: latestDeploy.id,
+        cloudRunUrl: latestDeploy.cloudRunUrl,
+        cloudRunService: latestDeploy.cloudRunService,
+        revisionName: latestDeploy.revisionName,
+        createdAt: latestDeploy.createdAt,
+      },
+      cloudRunTruth,
+      Date.now(),
+    );
+
+    switch (verdict.kind) {
+      case 'recover-cloudrun-url': {
+        console.log(
+          `[Reconciler] [RECOVERED] cloudRunUrl backfilled from Cloud Run truth for project=${project.name} service=${latestDeploy.cloudRunService} url=${verdict.uri}`,
+        );
+        await updateDeployment(latestDeploy.id, { cloudRunUrl: verdict.uri });
+        // 後續流程接著跑（fast-forward state machine），latestDeploy 物件本地
+        // 同步一下，避免下面的 reference 拿到 null。
+        latestDeploy.cloudRunUrl = verdict.uri;
+        break;
+      }
+      case 'mark-failed': {
+        console.warn(`[Reconciler]   ${project.name}: ${verdict.reason}`);
+        await safeTransition(projectId, 'failed', { reason: verdict.reason });
+        return 'failed';
+      }
+      case 'skip': {
+        console.log(`[Reconciler]   ${project.name}: skip (${verdict.reason})`);
+        return 'skipped';
+      }
+      case 'fast-forward':
+        // 不可能（this branch only reached when cloudRunUrl is empty）。defensive log.
+        console.warn(`[Reconciler]   ${project.name}: unexpected fast-forward verdict in recovery path`);
+        return 'skipped';
+    }
   }
 
   // Verify the Cloud Run service actually exists and is ready.
+  // 走到這裡：cloudRunUrl 一定有（原本就有，或剛從 recovery 補進來）。
   const serviceName = latestDeploy.cloudRunService;
   if (!serviceName) {
     console.warn(`[Reconciler]   ${project.name}: no cloudRunService in deployment, marking failed`);

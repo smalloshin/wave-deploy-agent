@@ -685,6 +685,99 @@ export async function getServiceLiveTraffic(
   }
 }
 
+// ─── Cloud Run service truth (for reconciler recovery, R47) ─────
+//
+// 為什麼需要這個函式：
+//   reconciler 在判斷「DB 沒寫到 cloudRunUrl 但 Cloud Run 服務其實活著」這個
+//   recovery case 時，需要同時拿 readiness、URI、liveRevision、condition state
+//   四個資料點，舊的 isCloudRunServiceReady() 只回 bool，不夠用。
+//
+// 設計：
+//   單一 GET 抓 service object，把四個欄位打包出來。網路錯誤回 exists=false
+//   全 false，讓 reconciler 走「skip + 下輪再試」的安全分支（不會把 transient
+//   失敗誤判成「服務不存在 → mark failed」）。
+
+export type CloudRunConditionState =
+  | 'CONDITION_SUCCEEDED'
+  | 'CONDITION_FAILED'
+  | 'CONDITION_RECONCILING'
+  | 'UNKNOWN';
+
+export interface CloudRunServiceTruth {
+  /** Service exists in Cloud Run（GET 200 即視為 true；404 / 網路錯誤回 false）*/
+  exists: boolean;
+  /** terminalCondition.state === 'CONDITION_SUCCEEDED' */
+  ready: boolean;
+  /** Service uri 欄位（https://...run.app）。讀不到回 null */
+  uri: string | null;
+  /** 目前 100% 流量的 revision 名。讀不到 / traffic split 回 null */
+  liveRevision: string | null;
+  /** terminalCondition.state，沒拿到 / 不認得就回 'UNKNOWN' */
+  conditionState: CloudRunConditionState;
+}
+
+/**
+ * Cloud Run 服務真相 (used by reconciler recovery path).
+ *
+ * 一次拉齊 reconciler 判斷需要的所有欄位：exists / ready / uri / liveRevision /
+ * conditionState。任何網路或解析錯誤回 `exists=false` + 其他保守值，呼叫端把
+ * 這個視為「不確定 → skip 等下輪」而非「確定不存在 → mark failed」。
+ */
+export async function getCloudRunServiceTruth(
+  gcpProject: string,
+  gcpRegion: string,
+  serviceName: string,
+): Promise<CloudRunServiceTruth> {
+  const fallback: CloudRunServiceTruth = {
+    exists: false,
+    ready: false,
+    uri: null,
+    liveRevision: null,
+    conditionState: 'UNKNOWN',
+  };
+
+  try {
+    const url = `https://run.googleapis.com/v2/projects/${gcpProject}/locations/${gcpRegion}/services/${serviceName}`;
+    const res = await gcpFetch(url);
+
+    // 404 → 服務真的不存在。其他非 OK 回應視為 transient（exists=false 但
+    // reconciler 應該 skip 而非 mark failed —— 由純函式邏輯決定）。
+    if (!res.ok) {
+      return fallback;
+    }
+
+    const svc = (await res.json()) as {
+      uri?: string;
+      terminalCondition?: { state?: string; type?: string };
+      trafficStatuses?: Array<{ revision?: string; percent?: number }>;
+    };
+
+    const rawState = svc.terminalCondition?.state;
+    const conditionState: CloudRunConditionState =
+      rawState === 'CONDITION_SUCCEEDED' ||
+      rawState === 'CONDITION_FAILED' ||
+      rawState === 'CONDITION_RECONCILING'
+        ? rawState
+        : 'UNKNOWN';
+
+    const statuses = svc.trafficStatuses ?? [];
+    const live = statuses.find((t) => (t.percent ?? 0) === 100 && t.revision);
+
+    return {
+      exists: true,
+      ready: conditionState === 'CONDITION_SUCCEEDED',
+      uri: svc.uri ?? null,
+      liveRevision: live?.revision ?? null,
+      conditionState,
+    };
+  } catch (err) {
+    console.warn(
+      `[Deploy]   getCloudRunServiceTruth(${serviceName}) failed: ${(err as Error).message}`,
+    );
+    return fallback;
+  }
+}
+
 // ─── Tag a revision for preview URL (v3---service.a.run.app) ───
 
 export async function tagRevision(

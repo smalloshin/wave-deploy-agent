@@ -889,16 +889,53 @@ export async function runDeployPipeline(
       }
     }
 
-    // Update deployment record with versioning info
-    await updateDeployment(deployment.id, {
-      cloudRunService: deployResult.serviceName,
-      cloudRunUrl: deployResult.serviceUrl ?? undefined,
-      healthStatus: 'unknown',
-      deployedAt: new Date(),
-      imageUri: deployResult.imageUri ?? buildResult.imageUri,
-      revisionName: deployResult.revisionName,
-      previewUrl,
-    });
+    // Update deployment record with versioning info.
+    // R47 — defensive 3-attempt retry with exponential backoff (100/300/900 ms).
+    // 為什麼：這個 write 是「Cloud Run 已經活著、只剩 DB 紀錄要補上 cloudRunUrl」的
+    // 唯一 persistence point；單次失敗會讓 reconciler 5 分鐘後誤判 stuck → mark
+    // failed（real incident: wavenet-ai-gateway-frontend / revision 00001-2x7）。
+    // 全失敗時 *不 throw*，因為 Cloud Run 已經在服務流量；丟例外會把使用者本來
+    // 已經成功的部署整個 mark failed，比 DB 漏寫還糟。改成 [CRITICAL] log 留
+    // grep 鉤子，reconciler 的 recovery 路徑會接手 back-fill。
+    {
+      const updates = {
+        cloudRunService: deployResult.serviceName,
+        cloudRunUrl: deployResult.serviceUrl ?? undefined,
+        healthStatus: 'unknown' as const,
+        deployedAt: new Date(),
+        imageUri: deployResult.imageUri ?? buildResult.imageUri,
+        revisionName: deployResult.revisionName,
+        previewUrl,
+      };
+      const backoffMs = [100, 300, 900];
+      let lastErr: Error | null = null;
+      let writeOk = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await updateDeployment(deployment.id, updates);
+          writeOk = true;
+          if (attempt > 0) {
+            console.log(`[Deploy]   cloudRunUrl write succeeded on attempt ${attempt + 1}/3`);
+          }
+          break;
+        } catch (err) {
+          lastErr = err as Error;
+          console.warn(
+            `[Deploy]   cloudRunUrl write attempt ${attempt + 1}/3 failed: ${lastErr.message}`,
+          );
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, backoffMs[attempt]));
+          }
+        }
+      }
+      if (!writeOk) {
+        console.error(
+          `[CRITICAL errorCode=cloudrun_url_persist_failed] project=${project.name} deploy=${deployment.id} url=${deployResult.serviceUrl ?? 'unknown'} lastError=${lastErr?.message ?? 'unknown'} — Cloud Run is live; reconciler recovery path will back-fill cloudRunUrl on next tick`,
+        );
+        // 故意不 throw —— Cloud Run 已經 serving，後續步驟（source capture / image
+        // cache）對 cloudRunUrl 不是強制依賴，繼續往下跑。
+      }
+    }
 
     // ── Step 4b: Post-deploy secondary writes (verdict-driven, round 18) ──
     // Two writes that used to be wrapped in independent try/catch blocks
