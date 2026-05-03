@@ -134,6 +134,22 @@ export function decideEnvGate(input: EnvGateInput): EnvGateVerdict {
   const blockList: Array<{ name: string; reason: string; hint: string }> = [];
 
   for (const m of missing) {
+    // R52: Secret Manager source ALWAYS blocks regardless of name pattern.
+    // Even if name matches the auto-gen whitelist (e.g. erp-jwt-secret would
+    // match *JWT*SECRET*), auto-gen would put the value in Cloud Run env
+    // vars — but the app reads from Google Secret Manager API directly, so
+    // the env var is never consulted. Auto-gen would silently fail to fix
+    // the actual problem. The right move is: tell the user to create the
+    // secret in GCP Secret Manager + grant the Cloud Run service account
+    // `roles/secretmanager.secretAccessor`.
+    if (m.source === 'secret-manager') {
+      blockList.push({
+        name: m.name,
+        reason: `Google Secret Manager secret missing (detected in ${m.source})`,
+        hint: `Create the secret in GCP and grant the Cloud Run service account access. Example: gcloud secrets create ${m.name} --data-file=- <<<"<your-secret-value>" && gcloud secrets add-iam-policy-binding ${m.name} --member=serviceAccount:<cloud-run-sa> --role=roles/secretmanager.secretAccessor`,
+      });
+      continue;
+    }
     if (matchesAny(m.name, DENY_PATTERNS)) {
       // Paired credential — never auto-gen.
       blockList.push({

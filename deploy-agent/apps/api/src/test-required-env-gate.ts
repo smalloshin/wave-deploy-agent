@@ -369,5 +369,66 @@ test('mergeEnvVars: null existing → record output', () => {
   assert.deepEqual(merged, { A: '1' });
 });
 
+// ─── R52: Secret Manager source always blocks ────────────────────
+
+test('R52: Secret Manager source ALWAYS blocks even when name matches whitelist', () => {
+  // erp-jwt-secret matches *JWT*SECRET* (auto-gen whitelist) by name,
+  // but its source is secret-manager — auto-gen would put value in env vars
+  // which the app never reads. Always block.
+  const v = decideEnvGate({
+    refs: [{ name: 'erp-jwt-secret', required: true, source: 'secret-manager' }],
+    userProvidedKeys: new Set(),
+    autoGenerateSecrets: true,  // even with auto-gen ON, secret-manager still blocks
+  });
+  assert.equal(v.kind, 'block');
+  if (v.kind === 'block') {
+    assert.equal(v.missingRequired.length, 1);
+    assert.equal(v.missingRequired[0].name, 'erp-jwt-secret');
+    assert.match(v.missingRequired[0].reason, /Secret Manager/);
+    assert.match(v.missingRequired[0].hint, /gcloud secrets create/);
+    assert.match(v.missingRequired[0].hint, /erp-jwt-secret/);
+  }
+});
+
+test('R52: Secret Manager source name matching deny list ALSO blocks (with secret-manager hint, not deny hint)', () => {
+  // STRIPE_SECRET_KEY matches both deny list AND happens to be in secret-manager source.
+  // Secret-manager check fires FIRST, so user gets the actionable gcloud hint.
+  const v = decideEnvGate({
+    refs: [{ name: 'STRIPE_SECRET_KEY', required: true, source: 'secret-manager' }],
+    userProvidedKeys: new Set(),
+    autoGenerateSecrets: true,
+  });
+  assert.equal(v.kind, 'block');
+  if (v.kind === 'block') {
+    assert.match(v.missingRequired[0].hint, /gcloud secrets create/);
+  }
+});
+
+test('R52: Secret Manager source mixed with os.environ → both reported', () => {
+  const v = decideEnvGate({
+    refs: [
+      { name: 'erp-jwt-secret', required: true, source: 'secret-manager' },
+      { name: 'STRIPE_SECRET_KEY', required: true, source: 'os.environ' },
+    ],
+    userProvidedKeys: new Set(),
+    autoGenerateSecrets: true,
+  });
+  assert.equal(v.kind, 'block');
+  if (v.kind === 'block') {
+    assert.equal(v.missingRequired.length, 2);
+    const names = v.missingRequired.map((m) => m.name).sort();
+    assert.deepEqual(names, ['STRIPE_SECRET_KEY', 'erp-jwt-secret']);
+  }
+});
+
+test('R52: Secret Manager with autoGenerateSecrets=false also blocks (no regression)', () => {
+  const v = decideEnvGate({
+    refs: [{ name: 'JWT_SECRET', required: true, source: 'secret-manager' }],
+    userProvidedKeys: new Set(),
+    autoGenerateSecrets: false,
+  });
+  assert.equal(v.kind, 'block');
+});
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

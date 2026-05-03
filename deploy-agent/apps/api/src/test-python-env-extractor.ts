@@ -231,6 +231,29 @@ test('Secret Manager: name in dict request format → required=true', () => {
   assert.equal(findRef(refs, 'MY_SECRET')?.required, true);
 });
 
+test('R52: Secret Manager: lowercase + hyphen secret name (wavenet-backend canonical) → required=true', () => {
+  // erp-jwt-secret is lowercase + hyphens (common GCP naming convention).
+  // Pre-R52 regex required uppercase only — missed this entirely.
+  const src = 'resp = client.access_secret_version(name=f"projects/p/secrets/erp-jwt-secret/versions/latest")';
+  const refs = scanPythonContent(src, 'secrets.py');
+  const r = findRef(refs, 'erp-jwt-secret');
+  assert.ok(r, 'should detect lowercase+hyphen secret name');
+  assert.equal(r!.required, true);
+  assert.equal(r!.source, 'secret-manager');
+});
+
+test('R52: Secret Manager: mixed-case secret name → required=true', () => {
+  const src = 'resp = client.access_secret_version(name=f"projects/p/secrets/MyAppSecret/versions/latest")';
+  const refs = scanPythonContent(src, 'secrets.py');
+  assert.ok(findRef(refs, 'MyAppSecret'), 'mixed case should match');
+});
+
+test('R52: Secret Manager: underscore secret name still works (no regression)', () => {
+  const src = 'resp = client.access_secret_version(name=f"projects/p/secrets/my_secret_v2/versions/latest")';
+  const refs = scanPythonContent(src, 'secrets.py');
+  assert.ok(findRef(refs, 'my_secret_v2'), 'underscore + lowercase should match');
+});
+
 // ─── False-positive guards ────────────────────────────────────
 
 test('Commented-out code is NOT extracted', () => {

@@ -183,11 +183,15 @@ export function scanPythonContent(content: string, locationLabel: string): Pytho
   // Pattern 4: Google Secret Manager — secret name embedded in path string.
   // Common forms:
   //   client.access_secret_version(name=f"projects/X/secrets/JWT_SECRET/versions/latest")
-  //   client.access_secret_version(request={"name": "projects/X/secrets/JWT_SECRET/versions/latest"})
+  //   client.access_secret_version(request={"name": "projects/X/secrets/erp-jwt-secret/versions/latest"})
   // We require `access_secret_version` to appear OUTSIDE a string (mask
   // check on its start position), then read the secret name from the
   // path-string parameter.
-  const secretManagerPattern = /access_secret_version[^\n]*?secrets\/([A-Z_][A-Z0-9_]*)\/versions/g;
+  // R52: GCP Secret Manager allows `[a-zA-Z][a-zA-Z0-9_-]*` (mixed case +
+  // hyphens + underscores). Old regex `[A-Z_][A-Z0-9_]*` only matched
+  // SCREAMING_SNAKE — missed wavenet-ai-gateway-backend's `erp-jwt-secret`
+  // (lowercase + hyphens, common GCP convention). Widen.
+  const secretManagerPattern = /access_secret_version[^\n]*?secrets\/([a-zA-Z][a-zA-Z0-9_-]*)\/versions/g;
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
     if (!cleanedLines[i].includes('access_secret_version')) continue;
