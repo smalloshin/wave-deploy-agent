@@ -35,10 +35,21 @@ export function generateDockerignore(detection: DetectionResult): string {
 
 function generateNodeDockerfile(d: DetectionResult): string {
   const pm = d.packageManager ?? 'npm';
+  // R48: For low-confidence npm (no lockfile detected), swap `npm ci` →
+  // `npm install`. `npm ci` requires the lockfile to be in lockstep with
+  // package.json and breaks loudly when it's missing or stale; `install` is
+  // forgiving. We accept the tiny reproducibility loss for projects whose
+  // reproducibility was already zero (no lockfile = no reproducibility).
+  // pnpm/yarn/bun branches still use --frozen-lockfile because those PMs
+  // fail with a clear "no lockfile" message rather than a cryptic binary
+  // mismatch. No Docker-side retry; surface mismatch via warnings instead.
+  const npmInstallCmd = d.packageManagerConfidence === 'low'
+    ? 'npm install --no-audit --no-fund'
+    : 'npm ci';
   const installCmd = pm === 'bun' ? 'bun install --frozen-lockfile'
     : pm === 'pnpm' ? 'pnpm install --frozen-lockfile'
     : pm === 'yarn' ? 'yarn install --frozen-lockfile'
-    : 'npm ci';
+    : npmInstallCmd;
   const buildCmd = d.framework === 'nextjs' ? 'npm run build' : 'npm run build';
   const baseImage = pm === 'bun' ? 'oven/bun:1' : 'node:22-alpine';
   const safePort = sanitizePort(d.port);
@@ -56,7 +67,7 @@ function generateNodeDockerfile(d: DetectionResult): string {
     return `# Multi-stage build for Next.js
 FROM ${baseImage} AS deps
 WORKDIR /app
-COPY package*.json ${pm === 'bun' ? 'bun.lock*' : pm === 'pnpm' ? 'pnpm-lock.yaml*' : pm === 'yarn' ? 'yarn.lock*' : 'package-lock.json*'} ./
+COPY package*.json ${pm === 'bun' ? 'bun.lock*' : pm === 'pnpm' ? 'pnpm-lock.yaml* pnpm-workspace.yaml* pnpm-workspace.yml*' : pm === 'yarn' ? 'yarn.lock*' : 'package-lock.json*'} ./
 RUN ${installCmd}
 
 FROM ${baseImage} AS builder

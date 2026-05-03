@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { safeParsePort } from '../utils/safe-number.js';
 import { detectPrismaSignals, isPrismaProject } from './prisma-fixer.js';
+import { arbitrateLockfile } from './lockfile-arbiter.js';
 
 export interface DetectionResult {
   language: string;
@@ -20,6 +21,23 @@ export interface DetectionResult {
    * "PrismaClient did not initialize yet."
    */
   hasPrisma: boolean;
+  /**
+   * R48: Confidence in the chosen packageManager. Set by lockfile-arbiter.
+   * - 'high': declared via packageManager field, or workspace.yaml present,
+   *   or unambiguous winner among multiple lockfiles (newest mtime).
+   * - 'medium': single lockfile present, no other signals.
+   * - 'low': no lockfile present (defaulted to npm). dockerfile-gen relaxes
+   *   `npm ci` → `npm install` for low-confidence npm choices.
+   * Undefined for non-Node projects.
+   */
+  packageManagerConfidence?: 'high' | 'medium' | 'low';
+  /**
+   * R48: Lockfile-arbiter warnings (stale lockfile, declared-PM mismatch,
+   * no-reproducibility, malformed package.json). Pipeline surfaces these in
+   * build logs so the user can clean up their repo. Undefined for non-Node
+   * projects.
+   */
+  packageManagerWarnings?: string[];
 }
 
 export function detectProject(projectDir: string): DetectionResult {
@@ -42,11 +60,15 @@ export function detectProject(projectDir: string): DetectionResult {
     result.language = 'typescript';
     const pkg = readJson(path.join(projectDir, 'package.json'));
     if (pkg) {
-      // Detect package manager
-      if (fileNames.has('bun.lockb') || fileNames.has('bun.lock')) result.packageManager = 'bun';
-      else if (fileNames.has('pnpm-lock.yaml')) result.packageManager = 'pnpm';
-      else if (fileNames.has('yarn.lock')) result.packageManager = 'yarn';
-      else result.packageManager = 'npm';
+      // R48: Use lockfile-arbiter for PM detection. The old if/else chain
+      // misfired on stale package-lock.json sitting in a real pnpm project
+      // (luca-web bug: tsc binary couldn't find ../lib/tsc.js because npm ci
+      // laid down a layout that didn't match the original pnpm install).
+      // The arbiter centralises the priority order and surfaces warnings.
+      const verdict = arbitrateLockfile(projectDir);
+      result.packageManager = verdict.packageManager;
+      result.packageManagerConfidence = verdict.confidence;
+      result.packageManagerWarnings = verdict.warnings;
 
       // Detect framework
       const deps: Record<string, string> = { ...(pkg.dependencies as Record<string, string> ?? {}), ...(pkg.devDependencies as Record<string, string> ?? {}) };
