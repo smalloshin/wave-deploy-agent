@@ -17,6 +17,7 @@ import { getRuntimeSettings } from './settings-service';
 import { detectProject } from './project-detector';
 import { generateDockerfile } from './dockerfile-gen';
 import { patchDockerfileForPrisma } from './prisma-fixer';
+import { fixDockerfilePorts } from './dockerfile-port-fixer';
 import {
   isStrictnessFlip,
   detectNextMajorVersion,
@@ -208,6 +209,29 @@ export async function runPipeline(
           );
         }
       }
+    }
+
+    // R46 (2026-05-02): Cloud Run health check fails when CMD/ENTRYPOINT
+    // hardcodes a port that doesn't match the injected PORT env var, OR when
+    // exec form leaks `${PORT...}` (which Docker doesn't expand without a
+    // shell). Apply to BOTH auto-gen and user Dockerfiles — auto-gen has
+    // historically had the same exec-form bug, and user Dockerfiles canonical
+    // case (luca-optimizer-kb) hardcoded uvicorn --port 8080 against
+    // Cloud Run PORT=8000. Idempotent: skips lines already in `sh -c` form.
+    try {
+      const dockerfilePath = join(projectDir, 'Dockerfile');
+      if (existsSync(dockerfilePath)) {
+        const original = readFileSync(dockerfilePath, 'utf-8');
+        const result = fixDockerfilePorts(original);
+        if (result.changed) {
+          writeFileSync(dockerfilePath, result.next);
+          console.log(`[Pipeline]   R46: ${result.reason}`);
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline]   R46: port fix failed (non-fatal): ${(err as Error).message}`,
+      );
     }
 
     // R44h-2 (2026-04-30): Next.js 16 dropped the `eslint` key from NextConfig.

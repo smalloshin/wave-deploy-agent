@@ -102,6 +102,13 @@ function generatePythonDockerfile(d: DetectionResult): string {
     ? 'pip install pipenv && pipenv install --deploy'
     : 'pip install --no-cache-dir -r requirements.txt';
 
+  // R46: must use sh -c form (not raw exec form) when startCmd contains
+  // shell variable expansion like ${PORT:-N}. Docker exec form is JSON and
+  // does NOT spawn a shell, so without the sh wrapper `${PORT:-8000}` is
+  // passed to uvicorn/gunicorn as a literal 13-char string and the container
+  // fails to start. dockerfile-port-fixer locks this contract for user
+  // Dockerfiles too — generating broken auto-gen here would partially defeat
+  // that defense.
   const startCmd = d.framework === 'django'
     ? 'gunicorn --bind 0.0.0.0:${PORT:-8000} config.wsgi'
     : d.framework === 'fastapi'
@@ -109,6 +116,12 @@ function generatePythonDockerfile(d: DetectionResult): string {
     : d.framework === 'flask'
     ? 'gunicorn --bind 0.0.0.0:${PORT:-5000} app:app'
     : 'python main.py';
+
+  // For `python main.py` the port comes from app code (via os.environ
+  // ['PORT']) — no shell expansion needed in CMD, exec form is safe.
+  const cmdLine = startCmd === 'python main.py'
+    ? 'CMD ["python", "main.py"]'
+    : `CMD ["sh", "-c", ${JSON.stringify(startCmd)}]`;
 
   const safePort = sanitizePort(d.port);
   return `FROM python:3.12-slim
@@ -118,7 +131,7 @@ RUN ${installCmd}
 COPY . .
 ENV PORT=${safePort}
 EXPOSE ${safePort}
-CMD ${JSON.stringify(startCmd.split(' '))}
+${cmdLine}
 `;
 }
 

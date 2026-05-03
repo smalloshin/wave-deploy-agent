@@ -454,6 +454,60 @@ test('R44g: non-nextjs Node project + hasPrisma=true → no prisma injection (on
   assert.ok(!out.includes('prisma generate'));
 });
 
+// ─── R46: Python startCmd uses sh -c so ${PORT...} actually expands ─────
+
+test('R46: python+fastapi CMD uses sh -c (not raw exec form)', () => {
+  const out = generateDockerfile(baseDetection({ language: 'python', framework: 'fastapi' }));
+  // Must wrap in sh -c so the shell expands ${PORT:-N}.
+  assert.ok(
+    out.includes(`CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port \${PORT:-8000}"]`),
+    'expected sh -c wrapper, got:\n' + out,
+  );
+  // Must NOT produce the broken pre-R46 exec form where ${...} is a JSON literal.
+  assert.ok(
+    !out.includes(`CMD ["uvicorn","main:app","--host","0.0.0.0","--port","\${PORT:-8000}"]`),
+    'must not regress to broken exec form',
+  );
+});
+
+test('R46: python+django CMD uses sh -c with gunicorn --bind ${PORT:-8000}', () => {
+  const out = generateDockerfile(baseDetection({ language: 'python', framework: 'django' }));
+  assert.ok(
+    out.includes(`CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:\${PORT:-8000} config.wsgi"]`),
+    'expected sh -c wrapper, got:\n' + out,
+  );
+});
+
+test('R46: python+flask CMD uses sh -c with gunicorn --bind ${PORT:-5000}', () => {
+  const out = generateDockerfile(baseDetection({ language: 'python', framework: 'flask' }));
+  assert.ok(
+    out.includes(`CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:\${PORT:-5000} app:app"]`),
+    'expected sh -c wrapper, got:\n' + out,
+  );
+});
+
+test('R46: python+null framework keeps exec form (port lives in app code)', () => {
+  // No shell expansion to do — preserve the cleaner exec form.
+  const out = generateDockerfile(baseDetection({ language: 'python', framework: null }));
+  assert.ok(out.includes(`CMD ["python", "main.py"]`), 'expected exec form, got:\n' + out);
+  assert.ok(!out.includes('sh -c'), 'should not wrap when no var expansion needed');
+});
+
+test('R46: python CMD never contains literal "${PORT:-N}" string outside sh -c (regression guard)', () => {
+  // The old broken auto-gen produced literal ${PORT...} inside JSON exec form.
+  // Verify that EVERY case (fastapi/django/flask) either uses sh -c or has no
+  // ${PORT...} reference at all.
+  for (const framework of ['fastapi', 'django', 'flask', null] as const) {
+    const out = generateDockerfile(baseDetection({ language: 'python', framework }));
+    if (out.includes('${PORT')) {
+      assert.ok(
+        /CMD \["sh", "-c"/.test(out),
+        `python+${framework}: \${PORT...} reference found but not in sh -c — would not expand`,
+      );
+    }
+  }
+});
+
 // ─── done ──────────────────────────────────────────────────
 
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);

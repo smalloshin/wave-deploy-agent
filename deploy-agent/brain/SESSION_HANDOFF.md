@@ -4,6 +4,43 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-02（R46：Cloud Run PORT 自動修 — 程式碼完成，等部署）**
+
+**狀態：CODE + 36 NEW TESTS + ADR 全做完，2765/0 全綠，未 commit / 未部署**
+
+User 發現 `luca-optimizer-kb` 部署掛了。診斷：user Dockerfile hardcode `--port 8080`，Cloud Run 給 `PORT=8000`，container 沒 listen 對的 port，4 分鐘 health check timeout。順手讀 dockerfile-gen.ts 發現我們 auto-gen 的 Python Dockerfile 也有同款 latent bug（exec form `${PORT:-8000}` 不會展開）。
+
+User 選了「自動修」路線（option D），但我做成 deterministic Step 2 而不是 LLM Step 5（理由寫在 ADR）。
+
+**改動**（2 新 / 4 改）：
+
+- **新增** `apps/api/src/services/dockerfile-port-fixer.ts`（249 LOC）— `fixDockerfilePorts(content)` 純函式：偵測 5 種 hardcoded port 形式（`--port=N` / `--bind=H:N` / `--port N` / `--bind H:N` / 位置型 `H:N` after `runserver|server`）+ 1 種變數洩漏（args 含 `${PORT...}` 但在 exec form 裡），改寫成 `CMD ["sh", "-c", "<重組命令，port literal 替換成 ${PORT:-原值}>"]`
+- **新增** `apps/api/src/test-dockerfile-port-fixer.ts`（284 LOC，31 個 zero-dep 測試）— 全綠：luca-optimizer-kb canonical case + 每個 port-flag 形式 + sh -c idempotency + node CMD 不動 + defensive（壞 JSON / 非字串 / 空陣列 / null 全部 changed=false 不 throw）+ shell-quote 處理含空白 args + reason 字串含原 port + 多 CMD 都修
+- **改** `apps/api/src/services/pipeline-worker.ts` Step 2 — 接在 prisma-fixer 後面、next-config eslint strip 前面，對所有 Dockerfile（auto-gen + user）跑 `fixDockerfilePorts`，try/catch 非致命
+- **改** `apps/api/src/services/dockerfile-gen.ts` `generatePythonDockerfile` — Python startCmd 改走 `CMD ["sh", "-c", ${JSON.stringify(startCmd)}]`，`python main.py` 例外保留 exec form（無 shell expansion 需要）
+- **改** `apps/api/src/test-dockerfile-gen.ts` — 加 5 個 R46 測試鎖死 sh -c 形式 + regression guard（`${PORT}` 出現必在 sh -c 內）
+- **新增** `brain/decisions/2026-05-02-cloud-run-port-auto-fix.md` ADR + index.md 登記
+
+**驗證**：
+
+- `tsc --noEmit` 兩個 workspace 全綠
+- `./scripts/sweep-zero-dep-tests.sh` → **2765 passed / 0 failed across 46 files**（從 R45 的 2729/45 加 36 個測試剛好對上）
+
+**待辦**：
+
+1. **commit + push + Cloud Build 部署 R46**（等 boss 授權）
+2. **重 trigger luca-optimizer-kb 部署**驗 e2e — 預期 R46 會自動修 user Dockerfile，container 正確 listen `${PORT}`，health check 過、deploy 成功
+3. （optional）port-fix 結果寫進 `scan_reports.metadata`，dashboard 顯示「我們幫你改了什麼」
+
+**重要關注**：
+
+- **Docker exec form ≠ shell**：`CMD ["uvicorn", ..., "--port", "${PORT:-8000}"]` 看起來合理，但 Docker 不 spawn shell，`${PORT:-8000}` 是 literal 字串。要 var expansion 必須 `CMD ["sh", "-c", "uvicorn ... --port ${PORT:-8000}"]`。這個誤解橫跨 user 跟我們自己的 auto-gen，是高頻 bug 點
+- **架構 pattern 一致**：R44g prisma-fixer、R44h next-config-fixer、R46 port-fixer 都是純函式 + Step 2 注入 + 大量 zero-dep 測試。下次再遇到「user Dockerfile 一類問題」遵循這個模板
+- **不走 LLM 的理由**（記錄一下未來不要回頭走錯路）：1) LLM call 5-10s vs 純函式 <1ms，2) 機械 pattern 100% 重現，3) R44h 才剛建護欄擋 LLM 翻 strictness flag，再讓 LLM 改 Dockerfile 增加風險面
+- **保守原則**：辨識規則寧可漏也不可錯改。隨機整數不在 port-flag 旁邊不動、`H:N` 不在 `runserver|server` 後面不動、shell form 不動、無 port 引用 CMD 不動
+
+---
+
 **2026-05-02（R45：review gate UI toggle — 部署完成 + e2e 三層驗證全綠）**
 
 **狀態：DEPLOYED + E2E 全綠**
