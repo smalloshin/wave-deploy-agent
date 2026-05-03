@@ -66,8 +66,8 @@ function deployment(overrides: Partial<ReconcilerDeploymentInput> = {}): Reconci
     cloudRunUrl: null,
     cloudRunService: 'svc-test',
     revisionName: 'svc-test-00001-abc',
-    // default: created 10 minutes ago — well past race window
-    createdAt: new Date(NOW - 10 * 60 * 1000).toISOString(),
+    // default: created 20 minutes ago — well past race window (15 min after R51)
+    createdAt: new Date(NOW - 20 * 60 * 1000).toISOString(),
     ...overrides,
   };
 }
@@ -97,16 +97,16 @@ test('race window: deployment created 1 minute ago → skip', () => {
   assert.match((v as { kind: 'skip'; reason: string }).reason, /too young/);
 });
 
-test('race window: deployment created 5 minutes ago (still inside 6min window) → skip', () => {
+test('race window: deployment created 14 minutes ago (still inside 15min window after R51) → skip', () => {
   const v = decideReconcilerAction(
-    deployment({ createdAt: new Date(NOW - 5 * 60 * 1000).toISOString() }),
+    deployment({ createdAt: new Date(NOW - 14 * 60 * 1000).toISOString() }),
     truth(),
     NOW,
   );
   assert.equal(v.kind, 'skip');
 });
 
-test('race window: deployment exactly at boundary (createdAt = now - 6min) → NOT skip', () => {
+test('race window: deployment exactly at boundary (createdAt = now - 15min) → NOT skip', () => {
   // age === RECONCILER_RACE_WINDOW_MS, the check is `<` so this should pass
   const v = decideReconcilerAction(
     deployment({ createdAt: new Date(NOW - RECONCILER_RACE_WINDOW_MS).toISOString() }),

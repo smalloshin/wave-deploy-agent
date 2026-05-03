@@ -53,12 +53,15 @@ export type ReconcilerVerdict =
   | { kind: 'fast-forward' }
   | { kind: 'skip'; reason: string };
 
-// 6 分鐘 race 窗：deploy-worker 寫 cloudRunUrl 那一行如果剛失敗、retry 還在跑，
-// reconciler 不應該插進來搶。deploy-worker 的 retry 最多 100+300+900 ≈ 1.3s，
-// 加上 retry 之後還有 captureDeployedSource 等後續步驟 (~1-2 分鐘)，6 分鐘給足
-// buffer。注意：reconciler 自己的 STALE_THRESHOLD_MS 是 5 分鐘，這邊故意設得
-// 比 stale window 略大，多一層保險。
-export const RECONCILER_RACE_WINDOW_MS = 6 * 60 * 1000;
+// 15 分鐘 race 窗（R51 升級，原 6 分鐘）：
+// 原本 6 分鐘的設計只算了 deploy-worker 自己的 retry + captureDeployedSource。
+// 實測 wavenet-ai-gateway-frontend (Next.js + 大 npm install) Cloud Build 部分
+// 就花了 7+ 分鐘，加上 Cloud Run revision 啟動 + IAM + tag + capture，整條 deploy
+// 路徑要跑到 9 分鐘左右。reconciler 在第 7 分鐘就誤判「卡死」、提早 mark failed。
+// 真實的 Next.js 大型專案 Cloud Build 可能 10+ 分鐘，15 分鐘給足空間。
+// 真的卡死的 deploy（沒有 Cloud Run service materialize）等 15 分鐘才介入也合理 —
+// 反正 Cloud Run 沒啟動 = 沒 user impact，多等 9 分鐘換取 false-positive 為 0。
+export const RECONCILER_RACE_WINDOW_MS = 15 * 60 * 1000;
 
 function toMs(t: string | Date): number {
   if (t instanceof Date) return t.getTime();
