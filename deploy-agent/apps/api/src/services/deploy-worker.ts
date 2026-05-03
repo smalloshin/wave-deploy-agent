@@ -19,6 +19,9 @@ import { monitorSsl } from './ssl-monitor';
 import { runCanaryChecks } from './canary-monitor';
 import { detectProject } from './project-detector';
 import { detectEnvVars, mergeEnvVars } from './env-detector';
+import { extractPythonEnvVars } from './python-env-extractor';
+import { decideEnvGate } from './required-env-gate';
+import { getRuntimeSettings } from './settings-service';
 import { classifyEnvWithLLM, analyzeDeployFailure, type EnvClassificationContext } from './llm-analyzer';
 import { readSourceContextFromDir, readSourceContextFromGcs } from './source-reader';
 import { provisionProjectDatabase } from './db-provisioner';
@@ -694,6 +697,55 @@ export async function runDeployPipeline(
       }
     } catch (err) {
       console.warn(`[Deploy]   Resource provisioning step failed: ${(err as Error).message}`);
+    }
+
+    // ─── R49: Required env-var gate (defense in depth) ───
+    // The same gate ran in pipeline-worker Step 2.7 (saving Cloud Build
+    // minutes when scan + Dockerfile patches are still cheap to redo). We
+    // re-check here AFTER LLM classification because the LLM may have:
+    //   - resolved a missing var via replace_with_cloudsql / generate_secret
+    //     (in which case the gate now passes)
+    //   - newly flagged a var as needs_user_input (in which case we should
+    //     fail fast BEFORE burning Cloud Build minutes on a doomed deploy)
+    // Python-only for now to match Step 2.7.
+    if (detectedLanguage === 'python' && projectDir) {
+      try {
+        const refs = extractPythonEnvVars(projectDir);
+        const settings = await getRuntimeSettings();
+        const verdict = decideEnvGate({
+          refs,
+          userProvidedKeys: new Set(Object.keys(finalEnvVars)),
+          autoGenerateSecrets: settings.autoGenerateSecrets,
+        });
+        if (verdict.kind === 'block') {
+          const names = verdict.missingRequired.map((m) => m.name).join(', ');
+          const err = new Error(
+            `Required env vars missing post-LLM: ${names}. ` +
+            `Set them via /api/projects/:id/env-vars or the dashboard, then redeploy.`,
+          );
+          (err as Error & { errorCode?: string }).errorCode = 'env_vars_required';
+          (err as Error & { missingRequired?: typeof verdict.missingRequired }).missingRequired =
+            verdict.missingRequired;
+          console.error(`[Deploy]   R49: env-gate BLOCK before build — ${names}`);
+          throw err;
+        }
+        if (verdict.kind === 'auto-generated') {
+          // The LLM may have auto-generated some secrets too; merge ours in
+          // (only for keys the LLM didn't already set).
+          for (const [k, v] of Object.entries(verdict.generated)) {
+            if (finalEnvVars[k] === undefined) {
+              finalEnvVars[k] = v;
+              console.log(`[Deploy]   R49: auto-generated ${k}`);
+            }
+          }
+        }
+      } catch (err) {
+        // Re-throw env_vars_required to fail fast; swallow other errors as
+        // non-fatal (don't let a scanner bug block deploys that would have worked).
+        const code = (err as Error & { errorCode?: string }).errorCode;
+        if (code === 'env_vars_required') throw err;
+        console.warn(`[Deploy]   R49: env-gate non-fatal error: ${(err as Error).message}`);
+      }
     }
 
     // ─── Step 3: Build and push Docker image ───

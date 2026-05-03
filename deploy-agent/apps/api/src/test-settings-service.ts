@@ -81,5 +81,40 @@ test('RUNTIME_DEFAULTS is true (safe direction — review-on by default)', () =>
   assert.equal(RUNTIME_DEFAULTS.requireReview, true);
 });
 
+// ─── R49: autoGenerateSecrets ───
+
+test('R49: autoGenerateSecrets defaults to false (opt-in for first rollout)', () => {
+  assert.equal(RUNTIME_DEFAULTS.autoGenerateSecrets, false);
+  assert.equal(parseRuntimeSettings(undefined).autoGenerateSecrets, false);
+  assert.equal(parseRuntimeSettings({}).autoGenerateSecrets, false);
+});
+
+test('R49: object with autoGenerateSecrets=true → true', () => {
+  assert.equal(parseRuntimeSettings({ autoGenerateSecrets: true }).autoGenerateSecrets, true);
+});
+
+test('R49: object with autoGenerateSecrets=false → false', () => {
+  assert.equal(parseRuntimeSettings({ autoGenerateSecrets: false }).autoGenerateSecrets, false);
+});
+
+test('R49: non-boolean autoGenerateSecrets → falls back to default', () => {
+  assert.equal(parseRuntimeSettings({ autoGenerateSecrets: 'true' }).autoGenerateSecrets, false);
+  assert.equal(parseRuntimeSettings({ autoGenerateSecrets: 1 }).autoGenerateSecrets, false);
+  assert.equal(parseRuntimeSettings({ autoGenerateSecrets: null }).autoGenerateSecrets, false);
+});
+
+test('R49: JSON string with autoGenerateSecrets=true → true', () => {
+  assert.equal(
+    parseRuntimeSettings('{"autoGenerateSecrets":true}').autoGenerateSecrets,
+    true,
+  );
+});
+
+test('R49: both flags persist independently', () => {
+  const s = parseRuntimeSettings({ requireReview: false, autoGenerateSecrets: true });
+  assert.equal(s.requireReview, false);
+  assert.equal(s.autoGenerateSecrets, true);
+});
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

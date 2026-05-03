@@ -17,6 +17,7 @@ const settingsSchema = z.object({
   anthropicApiKey: z.string().optional(),
   githubToken: z.string().optional(),
   requireReview: z.boolean().optional(),
+  autoGenerateSecrets: z.boolean().optional(),
 });
 
 type Settings = z.infer<typeof settingsSchema>;
@@ -33,6 +34,7 @@ const DEFAULTS: Settings = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ? '••••••••' : '',
   githubToken: process.env.GITHUB_TOKEN ? '••••••••' : '',
   requireReview: true,
+  autoGenerateSecrets: false,
 };
 
 // Fields that should be masked when echoed back from GET. Booleans and

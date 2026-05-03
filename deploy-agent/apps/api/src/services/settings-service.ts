@@ -13,10 +13,19 @@ export interface RuntimeSettings {
    *  pipeline auto-approves the review record and triggers deploy
    *  immediately after scan + LLM analysis. */
   requireReview: boolean;
+  /** R49: when true, the pipeline-worker env-gate auto-generates strong
+   *  values for required-but-missing secrets that match a NARROW
+   *  whitelist (JWT_SECRET / NEXTAUTH_SECRET / SESSION_SECRET /
+   *  *_SIGNING_KEY / *_ENCRYPTION_KEY / *_CSRF*SECRET).
+   *  Default false — operator must opt in. False-positive (block a deploy
+   *  that would have worked) is much better than false-negative (auto-gen
+   *  a secret that breaks a paired service silently). */
+  autoGenerateSecrets: boolean;
 }
 
 export const RUNTIME_DEFAULTS: RuntimeSettings = {
   requireReview: true,
+  autoGenerateSecrets: false,
 };
 
 /**
@@ -34,6 +43,10 @@ export function parseRuntimeSettings(stored: unknown): RuntimeSettings {
   return {
     requireReview:
       typeof data.requireReview === 'boolean' ? data.requireReview : RUNTIME_DEFAULTS.requireReview,
+    autoGenerateSecrets:
+      typeof data.autoGenerateSecrets === 'boolean'
+        ? data.autoGenerateSecrets
+        : RUNTIME_DEFAULTS.autoGenerateSecrets,
   };
 }
 
