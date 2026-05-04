@@ -20,6 +20,7 @@ import { patchDockerfileForPrisma } from './prisma-fixer';
 import { fixDockerfilePorts } from './dockerfile-port-fixer';
 import { extractPythonEnvVars } from './python-env-extractor';
 import { decideEnvGate, parseEnvVarKeys, mergeEnvVars as mergeEnvVarsR49 } from './required-env-gate';
+import { scanEnvFiles } from './env-file-scanner';
 import {
   isStrictnessFlip,
   detectNextMajorVersion,
@@ -284,6 +285,34 @@ export async function runPipeline(
         const userProvidedKeys = parseEnvVarKeys(
           project?.config?.envVars as string | Record<string, string> | undefined,
         );
+        // R55: also read .env files committed in source — luca-v2-20260504-luca-
+        // optimizer-kb canonical case had `GEMINI_API_KEY=AIzaSy...` in `.env`
+        // but pre-R55 we only checked dashboard-set envVars and false-positive
+        // blocked. Reads `.env` / `.env.local` / `.env.production` / `.env.staging`
+        // / `.env.development` (root-level only); skips `.env.example` /
+        // `.env.sample` etc. (templates). Best-effort, never throws.
+        // Bonus: detects real secrets committed to source (sk-..., AIza..., etc.)
+        // and logs P0 security warning so operator knows to rotate + .gitignore.
+        try {
+          const envFileScan = scanEnvFiles(projectDir);
+          if (envFileScan.filesRead.length > 0) {
+            for (const k of envFileScan.keys) userProvidedKeys.add(k);
+            console.log(
+              `[Pipeline]   R55: read ${envFileScan.keys.size} env var(s) from ${envFileScan.filesRead.join(', ')} — merged into user-provided`,
+            );
+          }
+          if (envFileScan.realSecretsDetected.length > 0) {
+            console.warn(
+              `[Pipeline]   R55: ⚠️  SECURITY: detected ${envFileScan.realSecretsDetected.length} REAL secret(s) committed in .env — recommend rotate + .gitignore`,
+            );
+            for (const s of envFileScan.realSecretsDetected.slice(0, 8)) {
+              console.warn(`[Pipeline]     - ${s.key} in ${s.file} (${s.reason})`);
+            }
+          }
+        } catch (envFileErr) {
+          console.warn(`[Pipeline]   R55: env-file scan failed (non-fatal): ${(envFileErr as Error).message}`);
+        }
+
         const settings = await getRuntimeSettings();
         const verdict = decideEnvGate({
           refs,
