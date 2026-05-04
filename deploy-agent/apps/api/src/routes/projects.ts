@@ -1673,9 +1673,44 @@ export async function projectRoutes(app: FastifyInstance) {
       console.log('[Reanalyze] No source context available (no GCS tarball or fetch failed)');
     }
 
-    // Run LLM analysis
+    // R54 (R53 follow-up): for Cloud Run deploy failures, also fetch container
+    // logs from the failed revision. Cloud Build ID 不會在 Step 4 errorMessage
+    // 裡（那個只在 Step 3 build 失敗時出現），所以 buildLog 上面那段邏輯撈不到。
+    // 但 Cloud Run timeout error 訊息會帶 service+revision，撈 container stderr/
+    // stdout 的 Python traceback 對 LLM 診斷比 build log 還重要。
+    // Best-effort：撈失敗就略過，不影響原 reanalyze 流程。
+    let containerLogsAppend = '';
+    if (failedStep && failedStep.includes('Cloud Run')) {
+      try {
+        const { extractCloudRunMetaFromError, fetchContainerLogs } = await import('../services/cloud-run-logs-fetcher');
+        const meta = extractCloudRunMetaFromError(errorMessage);
+        if (meta.serviceName && meta.revisionName) {
+          const projGcp = (project.config?.gcpProject as string | undefined) || process.env.GCP_PROJECT || '';
+          if (projGcp) {
+            console.log(`[Reanalyze] R54: fetching Cloud Run container logs for ${meta.serviceName}/${meta.revisionName}...`);
+            const containerLogs = await fetchContainerLogs(meta.serviceName, meta.revisionName, projGcp);
+            if (containerLogs) {
+              containerLogsAppend = `=== Cloud Run container logs (${meta.revisionName}) ===\n${containerLogs}\n\n`;
+              console.log(`[Reanalyze] R54: prepended ${containerLogs.length} bytes of container logs`);
+              if (logFetchNote === null || logFetchNote.startsWith('error 訊息中找不到 Cloud Build ID')) {
+                logFetchNote = `撈到 Cloud Run container logs (${containerLogs.length} bytes)`;
+              }
+            } else {
+              console.log(`[Reanalyze] R54: no container logs returned`);
+            }
+          }
+        } else {
+          console.log(`[Reanalyze] R54: error message has no service/revision — skipping container log fetch`);
+        }
+      } catch (logsErr) {
+        console.warn(`[Reanalyze] R54: container log fetch threw: ${(logsErr as Error).message}`);
+      }
+    }
+
+    // Run LLM analysis (logsForLLM = container logs prepended to existing buildLog)
+    const logsForLLM = containerLogsAppend ? `${containerLogsAppend}=== Original deploy-worker / build log ===\n${buildLog}` : buildLog;
     const { analyzeDeployFailure } = await import('../services/llm-analyzer');
-    const diagnosis = await analyzeDeployFailure(failedStep, errorMessage, buildLog, project.name, sourceContext);
+    const diagnosis = await analyzeDeployFailure(failedStep, errorMessage, logsForLLM, project.name, sourceContext);
     console.log(`[Reanalyze] Diagnosis: [${diagnosis.category}] ${diagnosis.summary} (provider=${diagnosis.provider})`);
 
     // Merge buildDiagnosis into the existing transition's metadata
