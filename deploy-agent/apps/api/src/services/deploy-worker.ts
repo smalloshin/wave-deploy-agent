@@ -1639,7 +1639,41 @@ export async function runDeployPipeline(
     }
     // 優先用已附著的 buildDiagnosis（Step 3 build 失敗路徑會帶），否則現場呼叫 LLM
     let buildDiagnosis = (error as Error & { buildDiagnosis?: Awaited<ReturnType<typeof analyzeDeployFailure>> }).buildDiagnosis ?? null;
-    const attachedLog = (error as Error & { buildLog?: string }).buildLog ?? '';
+    let attachedLog = (error as Error & { buildLog?: string }).buildLog ?? '';
+
+    // R53: 若 Step 4 (Cloud Run deploy) 失敗，從錯誤訊息提取 service+revision，
+    // 撈 Cloud Run container 的 stderr/stdout（Python traceback 之類的真因都
+    // 在那裡，原本 LLM 看不到只能通用建議「請本機 docker run debug」。撈到後
+    // 把 container logs prepend 到 attachedLog 給 LLM 一起分析。
+    // Best-effort：撈失敗（auth / IAM / network）就跳過，不阻塞失敗處理路徑。
+    // gcpProject 從 catch-內 fresh fetch project 取得（外層 try 的 const 不在 scope）。
+    if (currentStep && currentStep.includes('Cloud Run')) {
+      try {
+        const projForLogs = await getProject(projectId);
+        const projGcp = (projForLogs?.config?.gcpProject as string | undefined)
+          || process.env.GCP_PROJECT || '';
+        if (!projGcp) {
+          console.log(`[Deploy]   R53: no gcpProject — skipping container log fetch`);
+        } else {
+          const { extractCloudRunMetaFromError, fetchContainerLogs } = await import('./cloud-run-logs-fetcher');
+          const meta = extractCloudRunMetaFromError(error.message);
+          if (meta.serviceName && meta.revisionName) {
+            console.log(`[Deploy]   R53: fetching Cloud Run container logs for ${meta.serviceName}/${meta.revisionName}...`);
+            const containerLogs = await fetchContainerLogs(meta.serviceName, meta.revisionName, projGcp);
+            if (containerLogs) {
+              attachedLog = `=== Cloud Run container logs (${meta.revisionName}) ===\n${containerLogs}\n\n=== Original deploy-worker error ===\n${attachedLog}`;
+              console.log(`[Deploy]   R53: prepended ${containerLogs.length} bytes of container logs to LLM input`);
+            } else {
+              console.log(`[Deploy]   R53: no container logs returned (entries empty / permission / network)`);
+            }
+          } else {
+            console.log(`[Deploy]   R53: no service/revision in error message — skipping container log fetch`);
+          }
+        }
+      } catch (logsErr) {
+        console.warn(`[Deploy]   R53: container log fetch threw (non-fatal): ${(logsErr as Error).message}`);
+      }
+    }
 
     if (!buildDiagnosis) {
       try {
