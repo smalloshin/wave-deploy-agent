@@ -1610,7 +1610,11 @@ export async function projectRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: 'No failed transition found for this project' });
     }
 
-    const transition = latestFailed.rows[0] as { id: string; metadata: Record<string, unknown> };
+    const transition = latestFailed.rows[0] as {
+      id: string;
+      metadata: Record<string, unknown>;
+      created_at: string | Date;
+    };
     const meta = transition.metadata ?? {};
     const errorMessage = typeof meta.error === 'string' ? meta.error : 'Unknown error';
     const failedStep = typeof meta.failedStep === 'string' ? meta.failedStep : 'Unknown step';
@@ -1687,8 +1691,15 @@ export async function projectRoutes(app: FastifyInstance) {
         if (meta.serviceName && meta.revisionName) {
           const projGcp = (project.config?.gcpProject as string | undefined) || process.env.GCP_PROJECT || '';
           if (projGcp) {
-            console.log(`[Reanalyze] R54: fetching Cloud Run container logs for ${meta.serviceName}/${meta.revisionName}...`);
-            const containerLogs = await fetchContainerLogs(meta.serviceName, meta.revisionName, projGcp);
+            // R56: lookback from transition.created_at + 1h buffer (instead of
+            // default 10min). Reanalyze can fire hours / days after the failure
+            // — we need the lookback to actually reach the failure timestamp.
+            // Floor at 10min so live-deploy use case (R53) still works fast.
+            const transitionMs = new Date(transition.created_at).getTime();
+            const ageMs = Math.max(0, Date.now() - transitionMs);
+            const r56Lookback = Math.max(10 * 60 * 1000, ageMs + 60 * 60 * 1000);
+            console.log(`[Reanalyze] R54+R56: fetching Cloud Run container logs for ${meta.serviceName}/${meta.revisionName} (lookback ${Math.round(r56Lookback / 60000)}min)...`);
+            const containerLogs = await fetchContainerLogs(meta.serviceName, meta.revisionName, projGcp, r56Lookback);
             if (containerLogs) {
               containerLogsAppend = `=== Cloud Run container logs (${meta.revisionName}) ===\n${containerLogs}\n\n`;
               console.log(`[Reanalyze] R54: prepended ${containerLogs.length} bytes of container logs`);
