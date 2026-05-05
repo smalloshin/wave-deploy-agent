@@ -860,6 +860,59 @@ export async function runDeployPipeline(
     stageStart('push', { imageUri: buildResult.imageUri });
     stageEnd('push', 'succeeded', { imageUri: buildResult.imageUri });
 
+    // ─── Step 3.5: Pre-deploy migration (R57) ───
+    // Runs DB migration via Cloud Run Jobs using the just-built image.
+    // Gated by settings.runMigrations (default false — operator opt-in).
+    // On failure: throws with errorCode set, deploy-worker outer catch handles.
+    // Old Cloud Run revision keeps serving 100% traffic — Step 4 hasn't swapped yet.
+    {
+      const settingsR57 = await getRuntimeSettings();
+      if (settingsR57.runMigrations) {
+        currentStep = 'Step 3.5: Pre-deploy migration';
+        console.log(`[Deploy] ${currentStep}...`);
+        const { runMigration } = await import('./cloudrun-jobs-migration-runner');
+        const migrationResult = await runMigration({
+          projectId,
+          deploymentId: deploymentIdForStages,
+          projectSlug: project.slug,
+          imageUri: buildResult.imageUri!,
+          gcpProject,
+          gcpRegion,
+          envVars: finalEnvVars,
+          cloudSqlInstance,
+          projectDir,
+        });
+
+        if (migrationResult.outcome === 'failed' || migrationResult.outcome === 'timeout' ||
+            migrationResult.outcome === 'lock_wait_exceeded' ||
+            migrationResult.outcome === 'fetcher_error') {
+          const err = new Error(
+            `Migration ${migrationResult.outcome}: ${migrationResult.errorMessage ?? 'unknown'}`,
+          ) as Error & { errorCode?: string; migrationResult?: typeof migrationResult };
+          err.errorCode = migrationResult.errorMessage?.split(':')[0] ?? 'migration_failed';
+          err.migrationResult = migrationResult;
+          throw err;
+        }
+
+        if (migrationResult.outcome === 'succeeded') {
+          console.log(
+            `[Deploy]   Migration succeeded: ${migrationResult.tool} ` +
+            `(${migrationResult.durationMs}ms, exitCode=${migrationResult.exitCode})`,
+          );
+        } else {
+          // 'skipped' — no migration tool detected
+          console.log(`[Deploy]   Migration skipped: ${migrationResult.tool}`);
+        }
+        if (migrationResult.warnings.length > 0) {
+          for (const w of migrationResult.warnings) {
+            console.warn(`[Deploy]   Migration warning: ${w}`);
+          }
+        }
+      } else {
+        console.log(`[Deploy]   Migration step skipped (settings.runMigrations=false)`);
+      }
+    }
+
     // ─── Step 4: Deploy to Cloud Run ───
     currentStep = 'Step 4: Deploy to Cloud Run';
     console.log(`[Deploy] ${currentStep}...`);

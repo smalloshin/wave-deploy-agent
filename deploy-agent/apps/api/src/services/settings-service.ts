@@ -21,11 +21,19 @@ export interface RuntimeSettings {
    *  that would have worked) is much better than false-negative (auto-gen
    *  a secret that breaks a paired service silently). */
   autoGenerateSecrets: boolean;
+  /** R57: when true, deploy-worker Step 3.5 runs DB migrations via Cloud
+   *  Run Jobs before swapping Cloud Run revision. Default false — operator
+   *  must opt in. Reviewer flagged that default-on contradicts the v1
+   *  no-rollback stance: forward-only migration + deploy fail = DB ahead
+   *  of code. Operator should test in staging first.
+   *  When false, migration step is skipped entirely (legacy behavior). */
+  runMigrations: boolean;
 }
 
 export const RUNTIME_DEFAULTS: RuntimeSettings = {
   requireReview: true,
   autoGenerateSecrets: false,
+  runMigrations: false,
 };
 
 /**
@@ -47,6 +55,10 @@ export function parseRuntimeSettings(stored: unknown): RuntimeSettings {
       typeof data.autoGenerateSecrets === 'boolean'
         ? data.autoGenerateSecrets
         : RUNTIME_DEFAULTS.autoGenerateSecrets,
+    runMigrations:
+      typeof data.runMigrations === 'boolean'
+        ? data.runMigrations
+        : RUNTIME_DEFAULTS.runMigrations,
   };
 }
 

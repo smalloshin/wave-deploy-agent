@@ -116,5 +116,37 @@ test('R49: both flags persist independently', () => {
   assert.equal(s.autoGenerateSecrets, true);
 });
 
+// ─── R57: runMigrations toggle ───
+
+test('R57: runMigrations default = false (opt-in for safety)', () => {
+  assert.equal(parseRuntimeSettings({}).runMigrations, false);
+  assert.equal(parseRuntimeSettings(undefined).runMigrations, false);
+});
+
+test('R57: runMigrations=true respected', () => {
+  assert.equal(parseRuntimeSettings({ runMigrations: true }).runMigrations, true);
+});
+
+test('R57: non-boolean runMigrations falls back to default false', () => {
+  assert.equal(parseRuntimeSettings({ runMigrations: 'true' }).runMigrations, false);
+  assert.equal(parseRuntimeSettings({ runMigrations: 1 }).runMigrations, false);
+  assert.equal(parseRuntimeSettings({ runMigrations: null }).runMigrations, false);
+});
+
+test('R57: JSON string with runMigrations=true → true', () => {
+  assert.equal(parseRuntimeSettings('{"runMigrations":true}').runMigrations, true);
+});
+
+test('R57: all 3 flags persist independently', () => {
+  const s = parseRuntimeSettings({
+    requireReview: false,
+    autoGenerateSecrets: true,
+    runMigrations: true,
+  });
+  assert.equal(s.requireReview, false);
+  assert.equal(s.autoGenerateSecrets, true);
+  assert.equal(s.runMigrations, true);
+});
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

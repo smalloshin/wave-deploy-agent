@@ -19,6 +19,7 @@ export type StageName =
   | 'extract'
   | 'build'
   | 'push'
+  | 'migrate'   // R57: pre-deploy DB migration via Cloud Run Jobs
   | 'deploy'
   | 'health_check'
   | 'ssl';
@@ -106,8 +107,11 @@ export async function getStageEvents(deploymentId: string): Promise<StageEventRo
  * Returns array in the canonical 7-stage order; stages with no events are
  * omitted.
  */
+// R57: 'migrate' inserted between 'push' and 'deploy' — DB migration runs
+// AFTER image is pushed to AR, BEFORE Cloud Run revision swaps. If migration
+// fails, the new image is wasted but no traffic is affected.
 const STAGE_ORDER: StageName[] = [
-  'upload', 'extract', 'build', 'push', 'deploy', 'health_check', 'ssl',
+  'upload', 'extract', 'build', 'push', 'migrate', 'deploy', 'health_check', 'ssl',
 ];
 const TERMINAL_PRIORITY: Record<'failed' | 'succeeded' | 'skipped', number> = {
   failed: 3,

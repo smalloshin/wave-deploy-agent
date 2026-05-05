@@ -30,6 +30,7 @@ import {
   detectPrismaSignals,
   isPrismaProject,
   patchDockerfileForPrisma,
+  ensurePrismaCliInProd,
 } from './services/prisma-fixer.js';
 
 let passed = 0;
@@ -541,6 +542,135 @@ test('output line: starts with RUN (uppercase, Dockerfile convention)', () => {
   const input = 'FROM node:20\nRUN npm run build\n';
   const result = patchDockerfileForPrisma(input);
   assert.match(result.next, /^RUN DATABASE_URL=/m);
+});
+
+// ─── R57: ensurePrismaCliInProd ───────────────────────────────
+
+test('R57: single-stage Dockerfile → no-op (CLI already present)', () => {
+  const input = `FROM node:20-alpine
+WORKDIR /app
+COPY . .
+RUN npm ci
+CMD ["node", "server.js"]
+`;
+  const r = ensurePrismaCliInProd(input);
+  assert.equal(r.changed, false);
+  assert.match(r.reason, /single-stage/);
+});
+
+test('R57: multi-stage Next.js Dockerfile → injects 3 COPY lines before CMD', () => {
+  const input = `FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npx prisma generate
+RUN npm run build
+
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+USER nextjs
+EXPOSE 8080
+CMD ["node", "server.js"]
+`;
+  const r = ensurePrismaCliInProd(input);
+  assert.equal(r.changed, true);
+  // 3 COPY lines for prisma CLI + comment line
+  assert.match(r.next, /COPY --from=builder \/app\/node_modules\/\.prisma \.\/node_modules\/\.prisma/);
+  assert.match(r.next, /COPY --from=builder \/app\/node_modules\/prisma \.\/node_modules\/prisma/);
+  assert.match(r.next, /COPY --from=builder \/app\/node_modules\/@prisma \.\/node_modules\/@prisma/);
+  // Inserted BEFORE CMD line
+  const lines = r.next.split('\n');
+  const cmdIdx = lines.findIndex((l) => l.startsWith('CMD'));
+  let lastCopyIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].includes('node_modules/@prisma')) { lastCopyIdx = i; break; }
+  }
+  assert.ok(lastCopyIdx < cmdIdx, 'COPY lines should be before CMD');
+});
+
+test('R57: idempotent — running twice produces same output', () => {
+  const input = `FROM node:22-alpine AS builder
+WORKDIR /app
+
+FROM node:22-alpine AS runner
+WORKDIR /app
+CMD ["node", "server.js"]
+`;
+  const r1 = ensurePrismaCliInProd(input);
+  assert.equal(r1.changed, true);
+  const r2 = ensurePrismaCliInProd(r1.next);
+  assert.equal(r2.changed, false);
+  assert.match(r2.reason, /already copies prisma CLI/);
+  assert.equal(r2.next, r1.next);
+});
+
+test('R57: chooses "builder" stage when present (vs immediate predecessor)', () => {
+  // 3 stages: deps → builder → runner. Should pick "builder" not "deps".
+  const input = `FROM node:22 AS deps
+WORKDIR /app
+
+FROM node:22 AS builder
+WORKDIR /app
+
+FROM node:22 AS runner
+WORKDIR /app
+CMD ["node"]
+`;
+  const r = ensurePrismaCliInProd(input);
+  assert.equal(r.changed, true);
+  assert.match(r.reason, /from=builder/);
+});
+
+test('R57: no "builder" stage → falls back to immediate predecessor', () => {
+  const input = `FROM node:22 AS deps
+WORKDIR /app
+
+FROM node:22 AS final
+WORKDIR /app
+CMD ["node"]
+`;
+  const r = ensurePrismaCliInProd(input);
+  assert.equal(r.changed, true);
+  // Should use 'deps' as source (immediate predecessor of 'final')
+  assert.match(r.next, /COPY --from=deps/);
+});
+
+test('R57: ENTRYPOINT instead of CMD → injects before ENTRYPOINT', () => {
+  const input = `FROM node:22 AS builder
+WORKDIR /app
+
+FROM node:22 AS runner
+WORKDIR /app
+ENTRYPOINT ["node", "server.js"]
+`;
+  const r = ensurePrismaCliInProd(input);
+  assert.equal(r.changed, true);
+  const lines = r.next.split('\n');
+  const entryIdx = lines.findIndex((l) => l.startsWith('ENTRYPOINT'));
+  let lastCopy = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].includes('@prisma')) { lastCopy = i; break; }
+  }
+  assert.ok(lastCopy < entryIdx);
+});
+
+test('R57: defensive — non-string content returns changed=false, no throw', () => {
+  // @ts-expect-error testing defensive guard
+  const r = ensurePrismaCliInProd(null);
+  assert.equal(r.changed, false);
+});
+
+test('R57: defensive — empty string returns changed=false', () => {
+  const r = ensurePrismaCliInProd('');
+  assert.equal(r.changed, false);
 });
 
 // ─── final report ─────────────────────────────────────────────

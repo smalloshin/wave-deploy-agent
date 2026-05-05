@@ -371,3 +371,45 @@ UPDATE projects p
        JOIN roles r ON r.id = u.role_id
       WHERE r.name = 'admin' AND u.is_active = true
    );
+
+-- ───────────────────────────────────────────────────────────────────
+-- R57 (2026-05-05): Pre-deploy migration step concurrency control
+-- ───────────────────────────────────────────────────────────────────
+-- Why: deploy-worker Step 3.5 runs migrations via Cloud Run Jobs. Two
+-- parallel deploys for the same project must not race (both running
+-- `prisma migrate deploy` simultaneously corrupts state).
+--
+-- Primitive: row-based lock (vs advisory lock). Survives connection
+-- drops via `expires_at` TTL. Auditable — each migration attempt has
+-- a record. Reviewer rejected pg_advisory_lock because it has no TTL
+-- and releases on connection close (race window when worker connection
+-- drops mid-migration).
+-- ───────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS wave_deploy_migrations (
+  id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id    UUID         NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  deployment_id UUID         REFERENCES deployments(id) ON DELETE SET NULL,
+  tool          TEXT         NOT NULL,
+  command       TEXT         NOT NULL,
+  job_name      TEXT,
+  status        TEXT         NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled', 'expired')),
+  exit_code     INTEGER,
+  duration_ms   INTEGER,
+  error_message TEXT,
+  started_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  finished_at   TIMESTAMPTZ,
+  expires_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW() + INTERVAL '15 minutes',
+  created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wave_deploy_migrations_running
+  ON wave_deploy_migrations (project_id)
+  WHERE status = 'running';
+
+CREATE INDEX IF NOT EXISTS idx_wave_deploy_migrations_project_started
+  ON wave_deploy_migrations (project_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_wave_deploy_migrations_expires
+  ON wave_deploy_migrations (expires_at)
+  WHERE status = 'running';

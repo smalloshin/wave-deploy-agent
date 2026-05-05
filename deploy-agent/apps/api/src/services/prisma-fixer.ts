@@ -148,6 +148,123 @@ export function patchDockerfileForPrisma(
   };
 }
 
+/**
+ * R57 helper: ensure prisma CLI is available in the runner (prod) stage of
+ * a multi-stage Dockerfile so `npx prisma migrate deploy` works in the
+ * Cloud Run Job at deploy time.
+ *
+ * Why: Next.js multi-stage Dockerfile copies only `.next/standalone` to the
+ * runner stage. node_modules/.prisma + node_modules/prisma + node_modules/@prisma
+ * get stripped. Migration Job uses the same image — without prisma CLI it
+ * crashes with "prisma: command not found".
+ *
+ * Strategy: find the LAST `FROM ... AS runner` (or final `FROM` if no AS),
+ * inject 3 COPY lines BEFORE its CMD/ENTRYPOINT line. Idempotent — if the
+ * Dockerfile already references `node_modules/.prisma`, return changed=false.
+ *
+ * Pure function. Designed to be called from `dockerfile-gen.ts` after the
+ * multi-stage Next.js Dockerfile is generated. Safe to call on single-stage
+ * Dockerfiles too (returns changed=false because there's nothing to fix —
+ * single-stage already has the prisma CLI).
+ */
+export function ensurePrismaCliInProd(content: string): PatchResult {
+  if (typeof content !== 'string') {
+    return { changed: false, next: '', reason: 'invalid input: content not a string' };
+  }
+
+  // Idempotency: already injected
+  if (/COPY\s+--from=\S+\s+\/app\/node_modules\/\.prisma\b/i.test(content)) {
+    return {
+      changed: false,
+      next: content,
+      reason: 'Dockerfile already copies prisma CLI to runner stage',
+    };
+  }
+
+  // Detect multi-stage: at least 2 FROM directives with AS aliases.
+  // Pattern: FROM <image> AS <alias>
+  const fromAsRe = /^\s*FROM\s+\S+\s+AS\s+(\w+)/gim;
+  const stages: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = fromAsRe.exec(content)) !== null) {
+    stages.push(m[1]);
+  }
+  if (stages.length < 2) {
+    return {
+      changed: false,
+      next: content,
+      reason: 'single-stage Dockerfile (no multi-stage strip risk)',
+    };
+  }
+
+  // Find the source stage to copy FROM. Prefer "builder", fall back to first non-final.
+  // The final stage = last entry in `stages`. Source = "builder" if present, else the
+  // stage immediately before final.
+  const finalStage = stages[stages.length - 1];
+  let sourceStage = stages.find((s) => s.toLowerCase() === 'builder');
+  if (!sourceStage || sourceStage === finalStage) {
+    sourceStage = stages[stages.length - 2]; // immediate predecessor
+  }
+  if (!sourceStage) {
+    return {
+      changed: false,
+      next: content,
+      reason: 'could not identify source stage for prisma CLI copy',
+    };
+  }
+
+  // Find the start of the final stage in the file. Inject COPY lines just before
+  // the CMD or ENTRYPOINT line (or at end of stage if neither).
+  const lines = content.split('\n');
+  const finalStageStartRe = new RegExp(`^\\s*FROM\\s+\\S+\\s+AS\\s+${finalStage}\\b`, 'i');
+  let finalStageStart = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (finalStageStartRe.test(lines[i])) {
+      finalStageStart = i;
+      break;
+    }
+  }
+  if (finalStageStart < 0) {
+    return {
+      changed: false,
+      next: content,
+      reason: 'could not locate final stage start',
+    };
+  }
+
+  // Find CMD or ENTRYPOINT in the final stage. Inject before it.
+  let injectIdx = -1;
+  for (let i = finalStageStart + 1; i < lines.length; i++) {
+    if (/^\s*(CMD|ENTRYPOINT)\b/i.test(lines[i])) {
+      injectIdx = i;
+      break;
+    }
+  }
+  if (injectIdx < 0) {
+    // No CMD/ENTRYPOINT — append at end. Rare for valid Dockerfiles.
+    injectIdx = lines.length;
+  }
+
+  const copyLines = [
+    '# R57: ensure prisma CLI + generated client survive multi-stage strip',
+    `COPY --from=${sourceStage} /app/node_modules/.prisma ./node_modules/.prisma`,
+    `COPY --from=${sourceStage} /app/node_modules/prisma ./node_modules/prisma`,
+    `COPY --from=${sourceStage} /app/node_modules/@prisma ./node_modules/@prisma`,
+  ];
+
+  const next = [
+    ...lines.slice(0, injectIdx),
+    ...copyLines,
+    ...lines.slice(injectIdx),
+  ].join('\n');
+
+  return {
+    changed: true,
+    next,
+    reason: `injected prisma CLI COPY (--from=${sourceStage}) into ${finalStage} stage`,
+  };
+}
+
 // ───────────────────── internal helpers ─────────────────────
 
 function safeReadJson(filePath: string): Record<string, unknown> | null {
