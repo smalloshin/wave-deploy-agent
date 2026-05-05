@@ -18,6 +18,7 @@ const settingsSchema = z.object({
   githubToken: z.string().optional(),
   requireReview: z.boolean().optional(),
   autoGenerateSecrets: z.boolean().optional(),
+  runMigrations: z.boolean().optional(),
 });
 
 type Settings = z.infer<typeof settingsSchema>;
@@ -35,6 +36,7 @@ const DEFAULTS: Settings = {
   githubToken: process.env.GITHUB_TOKEN ? '••••••••' : '',
   requireReview: true,
   autoGenerateSecrets: false,
+  runMigrations: false,
 };
 
 // Fields that should be masked when echoed back from GET. Booleans and
