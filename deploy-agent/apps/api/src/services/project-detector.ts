@@ -78,6 +78,24 @@ export function detectProject(projectDir: string): DetectionResult {
       else if (deps['express']) { result.framework = 'express'; result.port = 3000; }
       else if (deps['fastify']) { result.framework = 'fastify'; result.port = 3000; }
       else if (deps['hono']) { result.framework = 'hono'; result.port = 3000; }
+      // R59 (2026-05-07): Vite detection. `vite` is the framework signal but
+      // we also gate on `vite.config.{ts,js,mjs}` to avoid false positives
+      // (some packages declare `vite` as a peer dep without using it).
+      // Vite SSR/SSG is detected via `ssr.target` / `build.ssr` later — for v1
+      // we treat all Vite as static SPA (the dominant case). Library-mode
+      // projects (`build.lib` set in vite.config) shouldn't be containerized
+      // anyway; if a user containerizes a library, the static Dockerfile
+      // produces an unusable image but the build won't crash the pipeline.
+      else if (deps['vite']) {
+        const hasViteConfig = ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']
+          .some((name) => fileNames.has(name));
+        if (hasViteConfig) {
+          result.framework = 'vite-static';
+          // Cloud Run injects PORT; nginx will listen on $PORT via envsubst.
+          // 80 here is just the default fallback when PORT not set.
+          result.port = 80;
+        }
+      }
 
       // Check if it's JS not TS
       if (!deps['typescript'] && !fileNames.has('tsconfig.json')) {

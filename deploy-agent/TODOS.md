@@ -109,7 +109,17 @@
 
 ---
 
-## R60 — Honest-Monorepo Descent
+## R60 — Honest-Monorepo Descent ✅ SHIPPED 2026-05-07
+
+**Status**: COMMIT `bb1d63f` PUSHED + Cloud Build `29df2ede` IN-FLIGHT。E2E（resubmit rfp-agent）pending。
+
+ADR: `brain/decisions/2026-05-07-honest-monorepo-descent.md`
+Sweep: 3001 → 3018 (+17 R60 tests), 0 fail across 55 files
+TS: api + web 全綠
+
+---
+
+## R60 — Honest-Monorepo Descent (original spec, kept for context)
 
 **Priority**: P0（user 已撞到 rfp-agent case，frontend static files 全沒了）
 **When**: ASAP（user 授權 auto mode 但被插單打斷）
@@ -197,7 +207,13 @@
 
 ---
 
-## R59 — Vite static-app detection in dockerfile-gen
+## R59 — Vite static-app detection in dockerfile-gen ✅ SHIPPED 2026-05-07
+
+**Status**: ADR `2026-05-07-vite-static-detection.md`、+7 tests（3018 → 3025），等 commit + push + Cloud Build。
+
+---
+
+## R59 — Vite static-app detection in dockerfile-gen (original spec, kept for context)
 
 **Priority**: P1（已撞到，bid-ops-frontend 案例）
 **When**: 下次能動的時候（platform bug, user 撞到就會抱怨）

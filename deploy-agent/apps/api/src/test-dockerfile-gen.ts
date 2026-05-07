@@ -508,6 +508,100 @@ test('R46: python CMD never contains literal "${PORT:-N}" string outside sh -c (
   }
 });
 
+// ─── R59: Vite static SPA generator ────────────────────────────
+
+test('R59: Vite static produces multi-stage build with nginx runtime', () => {
+  const out = generateDockerfile(baseDetection({ framework: 'vite-static' }));
+  // Build stage uses Node base image
+  assert.ok(/FROM node:.* AS build/.test(out), 'should have multi-stage build with Node builder');
+  // Runtime stage uses nginx:alpine
+  assert.ok(out.includes('FROM nginx:alpine'), 'should use nginx:alpine for runtime');
+  // Static assets copied to nginx html dir
+  assert.ok(
+    out.includes('COPY --from=build /app/dist /usr/share/nginx/html'),
+    'should copy /app/dist to nginx html root',
+  );
+});
+
+test('R59: Vite output has SPA fallback (try_files → index.html)', () => {
+  const out = generateDockerfile(baseDetection({ framework: 'vite-static' }));
+  assert.ok(
+    out.includes("try_files $uri $uri/ /index.html"),
+    'SPA fallback to index.html required for client-side routing',
+  );
+});
+
+test('R59: Vite CMD uses sh -c form so $PORT expands at runtime', () => {
+  const out = generateDockerfile(baseDetection({ framework: 'vite-static' }));
+  // Must use sh -c (Docker exec form does NOT expand vars).
+  assert.ok(/CMD \["sh", "-c"/.test(out), 'Vite CMD must use sh -c for PORT expansion');
+  // Must reference Cloud Run's PORT env var.
+  assert.ok(out.includes('${PORT:-8080}'), 'must reference $PORT with sensible default');
+  // sed replaces literal `listen 80;` with the dynamic listen directive.
+  assert.ok(out.includes('listen 80;'), 'default config must contain literal `listen 80;`');
+  assert.ok(/sed.*listen 80/.test(out), 'sed must rewrite listen 80 to ${PORT}');
+});
+
+test('R59: Vite generator does NOT use generic `node dist/index.js` (the bug)', () => {
+  // Regression guard against the bid-ops-frontend canonical failure mode.
+  // Vite outputs static files only — there is no `dist/index.js` server entry.
+  const out = generateDockerfile(baseDetection({ framework: 'vite-static' }));
+  assert.equal(
+    out.includes('CMD ["node", "dist/index.js"]'),
+    false,
+    'Vite must not be deployed with Node SSR template',
+  );
+  assert.equal(
+    out.includes('node dist/index.js'),
+    false,
+    'Vite static must not invoke node on dist/',
+  );
+});
+
+test('R59: Vite generator handles npm/pnpm/yarn/bun lockfile patterns', () => {
+  for (const pm of ['npm', 'pnpm', 'yarn', 'bun'] as const) {
+    const out = generateDockerfile(
+      baseDetection({ framework: 'vite-static', packageManager: pm }),
+    );
+    // Each PM should appear in the COPY lockfile pattern OR base image (for bun).
+    if (pm === 'bun') {
+      assert.ok(out.includes('oven/bun'), `Vite + bun should use oven/bun base image`);
+      assert.ok(out.includes('bun install'), `Vite + bun should run bun install`);
+    } else if (pm === 'pnpm') {
+      assert.ok(
+        out.includes('pnpm-lock.yaml*'),
+        `Vite + pnpm must COPY pnpm-lock.yaml* lockfile pattern`,
+      );
+      assert.ok(out.includes('pnpm install'), `Vite + pnpm should run pnpm install`);
+    } else if (pm === 'yarn') {
+      assert.ok(out.includes('yarn.lock*'), `Vite + yarn must COPY yarn.lock* lockfile pattern`);
+      assert.ok(out.includes('yarn install'), `Vite + yarn should run yarn install`);
+    } else {
+      assert.ok(
+        out.includes('package-lock.json*'),
+        `Vite + npm must COPY package-lock.json* lockfile pattern`,
+      );
+    }
+  }
+});
+
+test('R59: Vite generator emits valid nginx config with gzip', () => {
+  const out = generateDockerfile(baseDetection({ framework: 'vite-static' }));
+  // nginx config served from /tmp/nginx.conf.template
+  assert.ok(
+    out.includes('/tmp/nginx.conf.template'),
+    'should write nginx config template to /tmp',
+  );
+  // gzip section present
+  assert.ok(out.includes('gzip on'), 'gzip should be enabled for asset compression');
+});
+
+test('R59: Vite EXPOSE matches Cloud Run default port (8080)', () => {
+  const out = generateDockerfile(baseDetection({ framework: 'vite-static' }));
+  assert.ok(out.includes('ENV PORT=8080'), 'should default PORT to 8080 (Cloud Run convention)');
+  assert.ok(out.includes('EXPOSE 8080'), 'should EXPOSE 8080');
+});
+
 // ─── done ──────────────────────────────────────────────────
 
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);

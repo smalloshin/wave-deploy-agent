@@ -63,6 +63,17 @@ function generateNodeDockerfile(d: DetectionResult): string {
     ? 'RUN DATABASE_URL="file:/tmp/prisma-build-placeholder.db" npx prisma generate\n'
     : '';
 
+  // R59 (2026-05-07): Vite static SPA. Generic Node SSR template (`node
+  // dist/index.js`) DOES NOT WORK because Vite outputs static assets to
+  // `dist/` with no server entry — Cloud Run health check timed out at 4
+  // minutes (bid-ops-frontend canonical). Use multi-stage build → nginx
+  // serving static `dist/` with envsubst so it listens on Cloud Run's
+  // injected PORT. SPA fallback (`try_files`) handled in default.conf
+  // template; user-supplied `nginx.conf` (when present) is preferred.
+  if (d.framework === 'vite-static') {
+    return generateViteStaticDockerfile(d, baseImage, installCmd, pm);
+  }
+
   if (d.framework === 'nextjs') {
     return `# Multi-stage build for Next.js
 FROM ${baseImage} AS deps
@@ -103,6 +114,82 @@ RUN npm run build 2>/dev/null || true
 ENV PORT=${safePort}
 EXPOSE ${safePort}
 CMD ["node", "${safeEntrypoint}"]
+`;
+}
+
+/**
+ * R59 (2026-05-07): Vite static SPA Dockerfile generator.
+ *
+ * Vite produces a static asset bundle in `dist/`, NOT a Node server entry.
+ * Generic Node SSR template (`node dist/index.js`) caused the bid-ops-frontend
+ * canonical failure: container started but never listened on PORT, Cloud Run
+ * health check timed out at 4 minutes.
+ *
+ * Strategy: multi-stage build → nginx:alpine runtime serving the static
+ * `dist/`. nginx config replaces `listen 80;` with `listen ${PORT:-8080};`
+ * via sed at startup so Cloud Run's injected PORT is honored.
+ *
+ * SPA fallback (`try_files $uri $uri/ /index.html;`) is required for
+ * client-side routing (React Router, Vue Router). We embed a default config
+ * inline; user-supplied `nginx.conf` at the source root is COPYed and
+ * preferred over the embedded default.
+ */
+function generateViteStaticDockerfile(
+  d: DetectionResult,
+  baseImage: string,
+  installCmd: string,
+  pm: string,
+): string {
+  // Use the same lockfile pattern as Next.js generator for consistency.
+  const lockfilePattern =
+    pm === 'bun'
+      ? 'bun.lock*'
+      : pm === 'pnpm'
+      ? 'pnpm-lock.yaml* pnpm-workspace.yaml* pnpm-workspace.yml*'
+      : pm === 'yarn'
+      ? 'yarn.lock*'
+      : 'package-lock.json*';
+
+  // Default nginx config: SPA fallback (try_files → index.html) so React
+  // Router / Vue Router don't 404 on deep links. Gzip enabled for typical
+  // text MIME types. `listen 80;` is the literal sed targets at startup.
+  // Use $${PORT} so Vite/Bun template substitution (if any) doesn't try to
+  // resolve PORT at build time — the variable is read at container startup.
+  const defaultNginxConf = [
+    'server {',
+    '    listen 80;',
+    '    root /usr/share/nginx/html;',
+    '    index index.html;',
+    '    location / { try_files $uri $uri/ /index.html; }',
+    '    gzip on;',
+    '    gzip_types text/plain text/css application/json application/javascript text/xml application/xml text/javascript;',
+    '}',
+  ];
+  const heredoc = defaultNginxConf
+    .map((line) => ` && echo '${line}' >> /tmp/nginx.conf.template`)
+    .join(' \\\n')
+    .replace(' && ', '');
+
+  return `# R59: Multi-stage Vite static SPA build with nginx runtime.
+# Cloud Run injects PORT; nginx replaces \`listen 80;\` with \`listen \${PORT};\`
+# at startup via sed so the runtime listens on the right port.
+FROM ${baseImage} AS build
+WORKDIR /app
+COPY package*.json ${lockfilePattern} ./
+RUN ${installCmd}
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+# Default nginx config with SPA fallback (try_files → index.html) so client-
+# side routing works for deep links. Users who need custom nginx config can
+# provide their own Dockerfile (R44h: we don't override user Dockerfiles).
+RUN : > /tmp/nginx.conf.template ${heredoc}
+COPY --from=build /app/dist /usr/share/nginx/html
+ENV PORT=8080
+EXPOSE 8080
+# sed replaces \`listen 80;\` literal with the Cloud-Run-injected PORT.
+CMD ["sh", "-c", "sed \\"s/listen 80;/listen \${PORT:-8080};/\\" /tmp/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
 `;
 }
 
