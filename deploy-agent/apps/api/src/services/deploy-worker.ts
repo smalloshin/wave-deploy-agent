@@ -789,6 +789,10 @@ export async function runDeployPipeline(
       envVars: finalEnvVars,
       port,
       preflight,
+      // R60: honest-monorepo passes a non-default Dockerfile path so the
+      // Cloud Build step emits `-f <path>` while keeping the build context
+      // at root.
+      dockerfilePath: project.config?.dockerfilePath as string | undefined,
     }, gcsSourceUri, {
       onBuildStarted: ({ buildId, bucket }) => {
         // Record build_id on the active build stage so timeline metadata

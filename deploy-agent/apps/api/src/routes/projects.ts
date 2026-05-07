@@ -655,16 +655,41 @@ export async function projectRoutes(app: FastifyInstance) {
 
     const userEnvVars = parseEnvVarsText(body.envVars || '');
 
-    // ── Monorepo detection (same logic as upload route) ──
+    // ── Monorepo detection via R60 decider (replaces eager descend) ──
+    // R60 (2026-05-07): the previous logic ate `frontend/` siblings when only
+    // `backend/` had a Dockerfile (rfp-agent canonical). Now the decider keeps
+    // root as build context and stores `dockerfilePath` for Cloud Build `-f`.
     const { readFileSync: rfs } = await import('node:fs');
-    const monorepoSubdirs = readdirSync(projectDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !d.name.startsWith('.') && d.name !== 'node_modules')
-      .map(d => d.name);
-    const servicesWithDockerfile = monorepoSubdirs.filter(d => existsSync(join(projectDir, d, 'Dockerfile')));
+    const { selectMonorepoStrategy } = await import('../services/monorepo-strategy');
+    const rootEntries = readdirSync(projectDir, { withFileTypes: true })
+      .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules')
+      .map((e) => ({
+        name: e.name,
+        isDir: e.isDirectory(),
+        hasDockerfile:
+          e.isDirectory() && existsSync(join(projectDir, e.name, 'Dockerfile')),
+      }));
     const rootHasDockerfile = existsSync(join(projectDir, 'Dockerfile'));
-    const isMonorepo = servicesWithDockerfile.length >= 2 && !rootHasDockerfile;
+    const strategy = selectMonorepoStrategy({
+      hasDockerfile: rootHasDockerfile,
+      hasPackageJson: existsSync(join(projectDir, 'package.json')),
+      entries: rootEntries,
+    });
 
-    console.log(`[GCS Submit] projectDir: ${projectDir}, isMonorepo: ${isMonorepo}, services: [${servicesWithDockerfile.join(', ')}]`);
+    // Backwards-compat fields for the rest of the route below.
+    const monorepoSubdirs = rootEntries.filter((e) => e.isDir).map((e) => e.name);
+    const servicesWithDockerfile =
+      strategy.kind === 'multi-service' ? strategy.servicesWithDockerfile : [];
+    const isMonorepo = strategy.kind === 'multi-service';
+
+    console.log(
+      `[GCS Submit] projectDir: ${projectDir}, strategy: ${strategy.kind}` +
+        (strategy.kind === 'multi-service'
+          ? `, services: [${strategy.servicesWithDockerfile.join(', ')}]`
+          : strategy.kind === 'honest-monorepo'
+          ? `, dockerfilePath: ${strategy.dockerfilePath}`
+          : ''),
+    );
 
     if (isMonorepo) {
       // ── Monorepo: create one project per service ──
@@ -781,13 +806,18 @@ export async function projectRoutes(app: FastifyInstance) {
       }
     } else {
       // ── Single service ──
-      // If root has no Dockerfile/package.json, check subdirectories
-      if (!rootHasDockerfile && !existsSync(join(projectDir, 'package.json'))) {
-        const subWithDockerfile = monorepoSubdirs.find(d => existsSync(join(projectDir, d, 'Dockerfile')));
-        if (subWithDockerfile) {
-          console.log(`[GCS Submit] Dockerfile found in subdirectory: ${subWithDockerfile}, adjusting projectDir`);
-          projectDir = join(projectDir, subWithDockerfile);
-        }
+      // R60: never descend into a subdir-with-Dockerfile any more; instead the
+      // decider returns `honest-monorepo` and we record `dockerfilePath` for
+      // Cloud Build to use with `-f`. Build context stays as root so user code
+      // that references siblings (FastAPI StaticFiles ../frontend, etc) still
+      // resolves at runtime.
+      const dockerfilePath =
+        strategy.kind === 'honest-monorepo' ? strategy.dockerfilePath : 'Dockerfile';
+      if (strategy.kind === 'honest-monorepo') {
+        console.log(
+          `[GCS Submit] honest-monorepo: build context = ${projectDir}, ` +
+            `dockerfilePath = ${dockerfilePath} (sibling dirs preserved)`,
+        );
       }
 
       const project = await createProject({
@@ -803,6 +833,9 @@ export async function projectRoutes(app: FastifyInstance) {
           envVars: Object.keys(userEnvVars).length > 0 ? userEnvVars : undefined,
           gcsDbDumpUri: body.dbDumpGcsUri,
           dbDumpFileName: body.dbDumpFileName,
+          // R60: dockerfilePath relative to build context (defaults to 'Dockerfile').
+          // Cloud Build adds `-f ${dockerfilePath}` when not 'Dockerfile'.
+          dockerfilePath: dockerfilePath !== 'Dockerfile' ? dockerfilePath : undefined,
         },
         // RBAC Phase 1: stamp owner from auth context (single-service path).
         ownerId: request.auth.user?.id ?? null,

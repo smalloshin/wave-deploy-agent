@@ -4,6 +4,223 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-07（User 部署批次 — 5 個 user 部署活動 + 2 個 platform bug 發現 + R60 設計成型未實作）**
+
+**狀態：4 user projects 全部 LIVE / 2 個 platform-level bug 待修（R60、R61）/ 1 個產品問題（status=live but ssl=provisioning）**
+
+從 user 連續部署觸發，做了 5 個 deploy 任務、發現 2 個 platform-level bug。
+
+### 5 個 user 部署活動
+
+#### 1. `wavenetdeveloper-bid-ops-59cdda68f30e` Trans-Pacific upload 救援
+
+User dashboard 上傳 42 MB zip 卡 100%（trans-Pacific 回程切斷）。檢查 GCS `wave-deploy-agent_cloudbuild/uploads/` 確認 bytes 已到，但前端從沒呼叫到 `submit-gcs`（response 切了沒回到瀏覽器）。手動補打 `submit-gcs` → 進 pipeline。
+
+**結果**：scanning 完發現 Step 3 Cloud Build 死於 `COPY package*.json ./` — 因為這是 monorepo（`frontend/` + `backend/`）。User Dockerfile 寫死 flat layout 路徑。
+
+**處理**：拆成兩個 project：
+- `bid-ops-frontend` (Vite) → `bid-ops.punwave.com`
+- `bid-ops-api` (FastAPI) → `api.bid-ops.punwave.com`
+
+#### 2. `bid-ops-api` 部署 — 26.3s build 完成 ✅ live
+
+但 `envVarsMissing` 13 個（`GEMINI_API_KEY`、`GOOGLE_CLIENT_ID/SECRET`、`GOOGLE_SERVICE_ACCOUNT_JSON`、`SEED_ADMIN_*` 等）—— R49 沒擋下因為 source 用 `os.getenv("X", "")` (optional) 形式不是 `os.environ["X"]` 或 `if not X: raise`。Service 跑得起來但 runtime 缺 env vars 會 500。
+
+**待補**：user 要在 dashboard `https://wave-deploy-agent.punwave.com/projects/cffa7b1b-a2bd-40ea-9bf3-41e58147d5f8/env-vars` 設 13 個 env vars。
+
+#### 3. `bid-ops-frontend` 連續 4 次 redeploy（v1 → v5）
+
+| 版本 | 失敗原因 | 修法 |
+|------|---------|------|
+| v1 | `dockerfile-gen.ts` 對 Vite 沒偵測，產 `CMD ["node", "dist/index.js"]` Generic Node SSR template，container 4 分鐘 timeout | 平台 bug → R59 |
+| v2 | 我手動加 nginx Dockerfile，但 `tsconfig` 開 `noUnusedLocals`，build 死於 `'useCallback' is declared but never read` in `CompetitorPage.tsx` | 我編輯 source 拿掉 unused import（`tsc -b` 確認只 1 個 error） |
+| v3 | Build 過、container 起來了，但前端 stuck loading — bundle 寫死 `http://localhost:8000` fallback，因為 source 沒 `.env.production`，Vite build-time 沒注入 `VITE_API_URL` | 加 `frontend/.env.production` 寫 `VITE_API_URL=https://api.bid-ops.punwave.com` |
+| v4 | API URL 對了 ✅ live，但 `DocsPage.tsx` 還用 `VITE_RFP_AGENT_URL` fallback `http://localhost:8001` | 等 rfp-agent 部署完 |
+| v5 | 加 `VITE_RFP_AGENT_URL=https://rfp-agent.punwave.com` 進 `.env.production` 一起 build | ✅ live |
+
+**LIVE**: `https://bid-ops.punwave.com`
+
+#### 4. `wavenetdeveloper-rfp-agent-4baf14f62103` ⚠️ 平台砍掉 frontend/
+
+User 上傳 zip 含 `frontend/index.html` (53 KB) + `backend/` (6.4 MB w/ `main.py`、`Dockerfile`、`knowledge/`)。Pipeline 自作主張只 descend 進 `backend/`，frontend/ 被丟掉。
+
+**Root cause** (`routes/projects.ts:786`)：
+```typescript
+if (!rootHasDockerfile && !existsSync(join(projectDir, 'package.json'))) {
+  const subWithDockerfile = monorepoSubdirs.find(d => existsSync(join(projectDir, d, 'Dockerfile')));
+  if (subWithDockerfile) {
+    projectDir = join(projectDir, subWithDockerfile);  // ← 砍掉 sibling
+  }
+}
+```
+
+但 user 的 `main.py` 用 sibling reference：`os.path.join(BASE_DIR, "..", "frontend")` + `app.mount("/", StaticFiles(...))`。Pipeline 不 descend 進 backend 的話，`../frontend` 才解得到。
+
+**Status**: rfp-agent 已 LIVE 但 static files 全沒了，FastAPI 只 serve API endpoints。User 想用前端 UI 的話得手動修 zip 或等 R60 修平台。
+
+#### 5. `legal-flow-20260505` 修好 .dockerignore vs Dockerfile 衝突
+
+User Dockerfile 第 31-32 行：
+```dockerfile
+COPY .env .env       # ✅ 過
+COPY .env.local .env.local  # ❌ 死
+```
+
+User `.dockerignore` 第 6 行：
+```
+.env*.local  # 排除 .env.local
+```
+
+`.env.local` 在 source 確實存在 (3594 bytes) 但被 `.dockerignore` 排除，COPY 找不到。
+
+**修法**：刪掉 Dockerfile 那行 + 加 comment 說明 `.env.local` 是 dev-only、production 用 Cloud Run env config。重 zip + new-version 上 → ✅ live (canary 全 pass，但 SSL 還在 provisioning)。
+
+`https://legal-flow.punwave.com` TLS handshake timeout — DNS 解到 Google IP 但 Cloudflare DNS-01 cert 還沒簽發，預期 5-15 min 自動好。
+
+### 2 個 Platform-level Bug（待修）
+
+#### R60 — Honest-Monorepo Descent（P0、設計完未實作）
+
+**Symptom**: rfp-agent case；user multi-subdir layout 中只有一個 subdir 有 Dockerfile 時，pipeline descend 進去丟掉 sibling。user 用 sibling reference 的 source 直接 broken。
+
+**修法設計**：
+- 新 `services/monorepo-strategy.ts` pure decider
+- 5 branches：`flat` / `descend` / `honest-monorepo` / `multi-service` / `auto-gen-needed`
+- root 沒 Dockerfile + multiple subdirs + 只有一個 subdir 有 Dockerfile → `honest-monorepo` 模式：**不 descend**，build context = root，記下 `dockerfilePath = <subdir>/Dockerfile`
+- 改 `routes/projects.ts:786` + `routes/versioning.ts:213` 統一走 decider
+- 改 `pipeline-worker.ts` Cloud Build YAML gen 用 `-f ${dockerfilePath}`
+- 改 Step 2 fixers (prisma / port / eslint) 用 `dockerfilePath` 而不是 `<projectDir>/Dockerfile`
+- ADR + zero-dep tests + tsc 全綠 + sweep + commit + Cloud Build deploy 平台
+
+**Effort**: ~30-45 min CC time + ~10 min platform deploy
+
+**狀態**：user 授權 A（auto mode 全套）但被插入 legal-flow 任務先處理，未開工
+
+#### R61 — .dockerignore vs Dockerfile COPY Conflict Warning（P1、未設計）
+
+**Symptom**: legal-flow case；user `.dockerignore` 排除某檔，Dockerfile 卻 `COPY` 它，build 死在那一步浪費 4 分鐘 Cloud Build time。
+
+**修法構想**：
+- Step 2 加 `dockerignore-cop-conflict-detector.ts` pure 函式
+- Parse `.dockerignore` glob patterns → set of excluded paths
+- Parse `Dockerfile` 的 `COPY <src>` lines → expected src files
+- Cross-reference：找出 `COPY` 引用 `.dockerignore` 排除的檔案
+- 偵測到衝突就**不 block deploy**（user 的選擇），但加進 scan_report warning + dashboard 顯示 + LLM diagnosis 預先帶上這個分析
+
+**Effort**: ~20-30 min CC time
+
+**狀態**：未開工
+
+### 1 個產品問題（不阻塞但要記下）
+
+**Status=live 但 ssl_status=provisioning** — Pipeline 在 canary 走 `.run.app` 內部 URL pass 之後就標 `live`，custom domain SSL 可能還在 propagation。User 看到 dashboard 顯示 live 但 `legal-flow.punwave.com` 連不上會困惑。
+
+**修法選項**：
+- A) Pipeline 等 `ssl_status === 'ready'` 才轉 `live`（嚴格但較慢）
+- B) Dashboard 顯示 `live` 時順帶提示 SSL provisioning（UI 改）
+- C) 不動 — 接受目前行為（canary 過 = service 健康，DNS 是 best-effort）
+
+**狀態**：未決定
+
+### 待辦（boss decide）
+
+1. **R60 開工**：user 已授權但被打斷；要繼續的話直接做（30-45 min）
+2. **R61 設計**：dockerignore vs Dockerfile detector
+3. **bid-ops-api 13 envvars** 補：dashboard `cffa7b1b-...` 設好
+4. **rfp-agent 重 deploy?**：等 R60 上線後 user 可以上傳完整 monorepo zip，frontend static files 才會被 FastAPI mount 到
+5. **Status=live vs SSL=provisioning** UX：A/B/C 哪個
+
+### 重要學到的事
+
+- **dockerfile-gen.ts 的盲區（R59）**：偵測 typescript 但不認 Vite/Next.js/Astro/Remix 的差異，generic Node SSR template 套到 Vite 就死。先 ship R59 加 Vite detection。
+- **Vite build-time env injection**：Vite 是 build-time inline env vars，不是 runtime。Cloud Run 的 envVars 對 Vite 前端沒用，必須用 `.env.production` 或 Dockerfile `ARG`/`ENV` 注入到 build stage。
+- **Monorepo descent 太 eager**：root 沒 Dockerfile + 一個 subdir 有 Dockerfile 不代表那個 subdir 是 self-contained project。user 可能用 sibling reference。R60 修。
+- **`.dockerignore` 跟 Dockerfile 互斥檢查**：兩個檔可以矛盾（user 自己的問題），但 4 分鐘 Cloud Build timeout 才發現太晚。R61 加 pre-build detector。
+- **trans-Pacific upload rescue 仍是 R44 verify endpoint 漏接**：bid-ops 第一次上傳 100% 卡住，前端 retry 之後 verify path 沒有 fire 到 GCS 確認 bytes 已到。要再看為什麼 verify 沒觸發（前端 implementation gap）。
+
+---
+
+**2026-05-05（R57 — Pre-deploy DB migration step：CODE + DEPLOYED + SMOKE PASS，toggle OFF 等 operator opt-in）**
+
+**狀態：DEPLOYED（rev `deploy-agent-api-00152-25q` 跑 `api:436e5e1`），toggle 預設 OFF 安全靜置**
+
+CEO + plan-eng review 後實作 R57：解 `luca-v2` / wavenet 那類 v2 redeploy DB schema 升不上去的痛。Pipeline 加 Step 3.5 跑 migration job，介於 image push 完成跟 Cloud Run revision swap 之間。失敗時 NEW revision 不切流量，舊版繼續服務 100% traffic = zero-downtime。
+
+### 5 個新檔（lane A/B/E）
+
+| File | LOC | 用途 |
+|------|-----|-----|
+| `services/migration-detector.ts` | 159 | Pure detection（5 branches：Prisma+migrations/、Prisma db_push only、Alembic、none）+ 17 tests |
+| `services/gcp-poll.ts` | 158 | DRY polling helper（5 outcomes：succeeded/failed/cancelled/timeout/fetcher_error）+ 14 tests，R47 reconciler-recovery 也可重用 |
+| `services/cloudrun-jobs-migration-runner.ts` | 405 | Async orchestrator：detect → claim row → create+run Job → poll → release。Cloud SQL Auth Proxy via volume mount，2 vCPU/2 GiB/10 min timeout |
+| `db/schema.sql` (append) | +50 | `wave_deploy_migrations` table + unique partial index ON project_id WHERE status='running' + 15-min `expires_at` TTL |
+| `services/prisma-fixer.ts` (extend) | +120 | `ensurePrismaCliInProd()` multi-stage Dockerfile detect → 3 COPY lines（`.prisma`/`prisma`/`@prisma`）+ 8 R57 tests |
+
+### 3 個 modify
+
+| File | 改動 |
+|------|------|
+| `services/settings-service.ts` | 加 `runMigrations: boolean` 預設 false（reviewer 2.4：default-on 跟 v1 no rollback 不一致 operator 必須 opt-in）+ 5 tests |
+| `services/stage-events.ts` | `StageName` 加 `'migrate'`，STAGE_ORDER 插在 push 跟 deploy 之間（dashboard 7-stepper → 8-stepper） |
+| `services/deploy-worker.ts` | Step 3.5 hook（30 行）gated by settings.runMigrations，throws on failure |
+| `routes/settings.ts` (R57 follow-up) | zod schema 加 `runMigrations: z.boolean().optional()` + DEFAULTS 加 `runMigrations: false`（commit 6496d85 漏掉 routes 層 — 436e5e1 補上）|
+
+### Sweep + 部署軌跡
+
+- Tests：2957/52 → **3001/54**（+44 R57 tests + 2 新檔）
+- tsc 兩個 workspace 全綠
+- Commit 1：`6496d85` R57 主體 → Cloud Build `dbe3b378` SUCCESS（8m38s）→ rev `00151-hhs`
+- 但 smoke `/api/settings` 發現 `runMigrations` 欄位 missing，原因是 `routes/settings.ts` 自有 zod schema/DEFAULTS 沒同步
+- Commit 2：`436e5e1` "fix(api): expose runMigrations field in /api/settings (R57 follow-up)" → Cloud Build `6a84e802` SUCCESS → rev `00152-25q`
+- Smoke 復測：`/api/settings` 正確回傳 `"runMigrations": false`
+
+### 為什麼 row-based concurrency 而不是 advisory lock
+
+CEO spec review 一輪刪改後 reviewer 5.1 抓到：advisory lock 是 connection-scoped、**沒 TTL**，network blip 連線斷就釋放但 transaction 可能還在跑，race window 真實。改用 row-based primitive：`wave_deploy_migrations` table + unique partial index `WHERE status='running'`，INSERT ON CONFLICT DO NOTHING 拿不到 row 就 retry-wait，`expires_at` TTL 15 min 防 worker crash。
+
+### 為什麼 Cloud Run Jobs 而不是 init container / sidecar / Cloud Build step
+
+| 選項 | 為什麼不選 |
+|------|-----------|
+| init container | Cloud Run service 不支援（GKE 才有）|
+| sidecar | sidecar 是 service mesh 用，不是 one-shot job |
+| Cloud Build step | Cloud Build worker 沒 VPC 連到 Cloud SQL，要架 Auth Proxy 在 build worker 超麻煩；polluting build log；migration 跟 build 緊綁 build 失敗看不到 migration log |
+| **Cloud Run Jobs（選用）** | 同一個 image / env / VPC connector / Cloud SQL Auth Proxy；獨立資源獨立 quota；image 已在 GCR cached for 後續 service 啟動 |
+
+### v1 scope（已縮編）
+
+**支援**：Prisma（with migrations/）、Prisma db_push only（偵測但不跑，警告 user）、Alembic（FastAPI/SQLAlchemy）
+
+**v2 add（TODOS.md R57.3）**：Django / Drizzle / TypeORM / Knex / Flask-Migrate
+
+**v3+**：Rails / SQL files + checksums table（vibe-coders 沒這些）
+
+### Phased rollout（已 commit 在 ADR）
+
+- Phase 1（**目前位置**）：ship 程式碼 toggle off，dogfood 自己 luca / wavenet
+- Phase 2：settings runMigrations=true，1 週監控 audit log
+- Phase 3：對外開放
+
+### 已知未解 risk（不阻塞 R57 上線）
+
+- multi-file Prisma migration 中間失敗 → 半成功狀態（each file atomic but inter-file not）。Audit log 記錄哪幾檔成功
+- migration 成功 + Cloud Run revision swap 失敗 → DB 領先 code（v1 不修，文件提示「改 schema 重 submit」）
+- R47 reconciler race window 15 min 在 R57 之後可能還是不夠（deploy 時間從 9 → 12-15 min）。實測後可能調 25 min（TODOS.md R57.1）
+
+### 待辦（boss decide）
+
+- **Phase 1 dogfood**：在 staging 拿 `luca-optimizer-kb` 加個 migration column 試 e2e。確認舊 revision 在 migration 失敗時保留 100% 服務
+- **Phase 1B (R58)**：fork API + dashboard 按鈕（next week，dogfood 1 週後動）
+- **R57.x follow-ups** 全部寫進 `deploy-agent/TODOS.md`（R57.1～R57.6）
+
+### 重要關注
+
+- **預設安全方向**：`runMigrations=false`，operator 顯式 PUT 才動。default-on 在 v1 沒 rollback 機制下會弄死 user
+- **Settings parser 兩處要同步**：`services/settings-service.ts` 跟 `routes/settings.ts` 各有自己的 zod schema/DEFAULTS。R57 第一次 commit 漏掉後者 → field invisible from API。下次加新 setting 記得兩處都改
+- **Multi-stage Dockerfile prisma CLI**：R44g/h 把 prisma generate 注入 build stage，但 prod stage `node_modules/prisma` 會被 strip 掉。R57 `ensurePrismaCliInProd()` 補回 3 個 COPY layer（增加 ~50MB image size，接受）。User Dockerfile（R44h pattern：不動）只能警告，TODOS.md R57.5 提案
+
+---
+
 **2026-05-04（自主修復批次完成 — R47 / R48 / R49 / R51 / R52 全部上線；4 failed 專案：1 LIVE、3 真正 user-blocked）**
 
 **最終狀態：1 fixed by pipeline；3 需要 user 行動（已記錄 exact action）**

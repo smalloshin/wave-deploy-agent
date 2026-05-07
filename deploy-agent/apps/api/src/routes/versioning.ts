@@ -207,7 +207,10 @@ export async function versioningRoutes(app: FastifyInstance) {
         await mkdir(sourceDir, { recursive: true });
         await execFileAsync('tar', ['xzf', tarballPath, '-C', sourceDir]);
 
-        // Find actual project root (may be nested)
+        // Find actual project root (may be nested in a single wrapper dir).
+        // Legacy R44f-style single-wrapper descent: when the archive root is
+        // exactly one directory (e.g. GitHub zip with `repo-main/` wrapper)
+        // AND the root has neither Dockerfile nor package.json, descend.
         const entries = readdirSync(sourceDir, { withFileTypes: true });
         const dirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.'));
         if (dirs.length === 1 && !existsSync(join(sourceDir, 'Dockerfile')) && !existsSync(join(sourceDir, 'package.json'))) {
@@ -216,11 +219,47 @@ export async function versioningRoutes(app: FastifyInstance) {
           projectDir = sourceDir;
         }
 
-        // For monorepo services, narrow down to service subdirectory
+        // For multi-service monorepo (existing behavior pre-R60), narrow to
+        // the service's own subdir as recorded at submit time.
         if (project.config?.serviceDirName) {
           const svcDir = join(projectDir, project.config.serviceDirName as string);
           if (existsSync(svcDir)) {
             projectDir = svcDir;
+          }
+        }
+
+        // R60 (2026-05-07): re-evaluate monorepo strategy on the new tarball.
+        // If the user reorganized into a flat layout, drop the stored
+        // `dockerfilePath`. If they kept the same honest-monorepo layout,
+        // refresh the path. Skip when serviceDirName is set — that path
+        // belongs to the multi-service split, where each service builds
+        // its own subdir as its own context.
+        if (!project.config?.serviceDirName) {
+          const { selectMonorepoStrategy } = await import('../services/monorepo-strategy');
+          const rootEntries = readdirSync(projectDir, { withFileTypes: true })
+            .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules')
+            .map((e) => ({
+              name: e.name,
+              isDir: e.isDirectory(),
+              hasDockerfile:
+                e.isDirectory() && existsSync(join(projectDir, e.name, 'Dockerfile')),
+            }));
+          const strategy = selectMonorepoStrategy({
+            hasDockerfile: existsSync(join(projectDir, 'Dockerfile')),
+            hasPackageJson: existsSync(join(projectDir, 'package.json')),
+            entries: rootEntries,
+          });
+          if (strategy.kind === 'honest-monorepo') {
+            if (project.config) project.config.dockerfilePath = strategy.dockerfilePath;
+            console.log(
+              `[NewVersion] honest-monorepo: dockerfilePath = ${strategy.dockerfilePath}`,
+            );
+          } else if (project.config?.dockerfilePath) {
+            // User flattened — clear stale dockerfilePath.
+            project.config.dockerfilePath = undefined;
+            console.log(
+              `[NewVersion] strategy ${strategy.kind} — cleared stale dockerfilePath`,
+            );
           }
         }
       } catch (err) {

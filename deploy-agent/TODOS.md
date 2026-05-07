@@ -109,6 +109,140 @@
 
 ---
 
+## R60 — Honest-Monorepo Descent
+
+**Priority**: P0（user 已撞到 rfp-agent case，frontend static files 全沒了）
+**When**: ASAP（user 授權 auto mode 但被插單打斷）
+**What**:
+- 改 pipeline 不要自作主張 descend 進 multi-subdir-with-only-one-Dockerfile 的 case
+- 新 `services/monorepo-strategy.ts` pure decider，5 branches：`flat` / `descend` / `honest-monorepo` / `multi-service` / `auto-gen-needed`
+- 新 `services/monorepo-strategy.test.ts` zero-dep wire-contract 鎖死
+
+**Why**:
+- 2026-05-07 `wavenetdeveloper-rfp-agent` user `main.py` 用 `os.path.join(BASE_DIR, "..", "frontend")` sibling reference + `app.mount("/", StaticFiles(...))`
+- Pipeline `routes/projects.ts:786` 看到 root 沒 Dockerfile 且 `backend/` 有就 descend 進去
+- Container 裡只剩 backend/，sibling `../frontend/` 解不到，static mount fail
+- 這個 case 要 keep root 當 build context，記 `dockerfilePath = backend/Dockerfile` 給 Cloud Build `-f` flag
+
+**Where to start**:
+- `apps/api/src/services/monorepo-strategy.ts`（新檔）
+- `apps/api/src/routes/projects.ts:660-790` 改成走 decider
+- `apps/api/src/routes/versioning.ts:210-220` 同樣
+- `apps/api/src/services/pipeline-worker.ts` Cloud Build YAML gen 用 `-f ${dockerfilePath}`
+- Step 2 fixers (`prisma-fixer`、`dockerfile-port-fixer`、next-config) 接受 `dockerfilePath` 而不是 `<projectDir>/Dockerfile`
+
+**Decider 5 branches**:
+| 條件 | Strategy | dockerfilePath | descendInto |
+|------|---------|----------------|-------------|
+| root 有 Dockerfile OR package.json | `flat` | `Dockerfile` | (root) |
+| 1 subdir + root 沒 markers | `descend` (legacy single-wrapper, e.g. GitHub zip) | `<sub>/Dockerfile` | `<sub>` |
+| ≥2 subdirs + 只 1 個有 Dockerfile | `honest-monorepo` | `<sub>/Dockerfile` | (root) |
+| ≥2 subdirs + ≥2 有 Dockerfile | `multi-service` | (per-service) | (per-service) |
+| 都沒 Dockerfile | `auto-gen-needed` | (auto-gen 寫到 root) | (root) |
+
+**Effort**: ~30-45 min CC time + ~10 min platform deploy
+
+**Depends on**: 無
+
+**Context**:
+- 平台 deploy 後重新 submit `wavenetdeveloper-rfp-agent` 驗 e2e
+- 寫進 ADR `2026-05-07-honest-monorepo-descent.md`
+- spec update `openspec/specs/project-detection/spec.md` 加 honest-monorepo case
+- spec update `openspec/specs/deployment-pipeline/spec.md` 加 `dockerfilePath` config field
+
+---
+
+## R61 — Dockerfile COPY vs .dockerignore 衝突 detector
+
+**Priority**: P1（user 撞過一次 legal-flow case）
+**When**: 下個 batch
+**What**:
+- Step 2 加 `services/dockerignore-conflict-detector.ts` pure helper
+- Parse `.dockerignore` glob patterns → set of excluded paths
+- Parse `Dockerfile` 的 `COPY <src>` lines → expected src files
+- Cross-reference：找出 `COPY` 引用 `.dockerignore` 排除的檔案
+- 偵測到衝突**不 block deploy**（user 的選擇），但加進 scan_report warning + dashboard 顯示 + LLM diagnosis 預先帶這個分析
+
+**Why**:
+- 2026-05-07 `legal-flow-20260505`: `.dockerignore` 第 6 行 `.env*.local` 排除 `.env.local`，Dockerfile 第 32 行 `COPY .env.local .env.local`，矛盾。Cloud Build 跑 4 分鐘到 Step 22/27 才死。
+- pre-build detector 可以在 scanning 階段（10 秒內）就警告
+
+**Where to start**:
+- `apps/api/src/services/dockerignore-conflict-detector.ts`（新檔）
+- `apps/api/src/services/pipeline-worker.ts` Step 2 加 hook
+- 不 mutate user files — 只 emit warning
+
+**Effort**: ~20-30 min CC time
+
+**Context**:
+- LLM diagnosis 已經能在 build 失敗後抓到這個（gpt provider 的 `.env.local` not in build context root cause 抓得很準），但事前警告比事後便宜 3-5 分鐘 Cloud Build time
+
+---
+
+## Status=live vs SSL=provisioning UX 問題
+
+**Priority**: P2（不阻塞 deploy 流程，但 user 看到 dashboard 顯示 live 然後連不上會困惑）
+**When**: 累積 user 抱怨後再動
+**Symptom**:
+- Pipeline canary 走 `.run.app` 內部 URL pass 就標 `live`
+- 但 custom domain SSL 可能還在 provisioning（Cloudflare DNS-01 簽發 cert 5-15 min）
+- User 看到 dashboard `live` 但 `https://<domain>` TLS handshake timeout
+
+**Decision needed**:
+- A) Pipeline 等 `ssl_status === 'ready'` 才轉 `live`（嚴格但較慢，user 等更久）
+- B) Dashboard 顯示 `live` 時順帶提示 SSL provisioning（UI 改）
+- C) 不動 — 接受目前行為（canary 過 = service 健康，DNS 是 best-effort）
+
+**Where to discuss**: 累積案例後再決定
+
+---
+
+## R59 — Vite static-app detection in dockerfile-gen
+
+**Priority**: P1（已撞到，bid-ops-frontend 案例）
+**When**: 下次能動的時候（platform bug, user 撞到就會抱怨）
+**What**:
+- `project-detector.ts` 加偵測：`vite.config.{ts,js}` 存在 OR `vite` 在 deps → `framework: 'vite-static'`
+- `dockerfile-gen.ts` 對 `vite-static` 用 nginx 或 `serve` template，CMD 走 `serve -s dist -l ${PORT}` 或 nginx + envsubst
+- **不**用 generic Node SSR template（`node dist/index.js`）— Vite 不產 server entry，會 4 分鐘 Cloud Run timeout
+
+**Why**:
+- 2026-05-07 `bid-ops-frontend` 部署失敗 root cause：`detectedLanguage=typescript`、`detectedFramework=null`，auto-gen 用 Node SSR Dockerfile，container 啟動 timeout
+- LLM 診斷正確抓到根因（gpt provider）但平台沒有 deterministic 修法 → 必須 user 自己加 Dockerfile
+- workaround: 我們手動加了 nginx Dockerfile + redeploy，但這應該是 platform 自動處理的
+
+**Where to start**:
+- `apps/api/src/services/project-detector.ts` 加 `detectVite()` helper
+- `apps/api/src/services/dockerfile-gen.ts` 加 `generateViteStaticDockerfile()`
+- 仿 R44g/R44h pattern：純函式 + 大量 zero-dep tests
+
+**Suggested Dockerfile template** (已驗 bid-ops-frontend e2e)：
+```dockerfile
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /tmp/nginx.conf
+ENV PORT=8080
+CMD ["sh", "-c", "sed \"s/listen 80;/listen ${PORT:-8080};/\" /tmp/nginx.conf > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+```
+
+**Edge cases**:
+- 沒有 `nginx.conf`？→ 生 default 的（SPA fallback to index.html + gzip）
+- 不是 SPA 的 Vite（library mode、SSR mode）？→ 看 `vite.config.ts` 的 `build.lib` / `ssr` 欄位
+- Next.js 不是 Vite — 已經有獨立 path 不要混
+
+**Depends on**: 無
+
+**Context**: 屬於 R44g/R44h/R46 那條「Step 2 deterministic fixers」線。修完寫進 ADR `2026-05-XX-vite-static-detection.md`，spec update `openspec/specs/dockerfile-auto-fix/spec.md`
+
+---
+
 ## R57 follow-ups（不阻塞 R57 上線）
 
 ### R57.1 — R47 race window 從 15→25 min

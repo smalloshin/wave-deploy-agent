@@ -32,6 +32,14 @@ export interface DeployConfig {
     packageManager: 'npm' | 'yarn' | 'pnpm' | 'bun';
     hasTypescript: boolean;
   };
+  /**
+   * R60 (2026-05-07): Dockerfile path RELATIVE to build context.
+   * Default 'Dockerfile' (root) — Cloud Build's default, no `-f` flag emitted.
+   * For honest-monorepo (e.g. rfp-agent: backend/Dockerfile + frontend/index.html),
+   * caller sets this to 'backend/Dockerfile' so `docker build -f backend/Dockerfile .`
+   * runs with build context = root and sibling `frontend/` survives into the image.
+   */
+  dockerfilePath?: string;
 }
 
 export interface DeployResult {
@@ -139,6 +147,12 @@ export async function buildAndPushImage(
             ...Object.entries(config.envVars)
               .filter(([k]) => k.startsWith('VITE_') || k.startsWith('NEXT_PUBLIC_') || k.startsWith('REACT_APP_'))
               .flatMap(([k, v]) => ['--build-arg', `${k}=${v}`]),
+            // R60: emit `-f <path>` only when honest-monorepo set a non-default
+            // Dockerfile path. Build context stays as `.` (root) so siblings
+            // referenced by user code (../frontend, etc.) are present.
+            ...(config.dockerfilePath && config.dockerfilePath !== 'Dockerfile'
+              ? ['-f', config.dockerfilePath]
+              : []),
             '-t', imageUri, '.',
           ],
         },

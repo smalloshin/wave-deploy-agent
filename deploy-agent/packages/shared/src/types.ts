@@ -121,6 +121,14 @@ export interface ProjectConfig {
   domainErrorAt?: string;
   // Versioning: deploy lock prevents auto-publish of new versions
   deployLocked?: boolean;
+  // R60 (2026-05-07): Honest-monorepo support. When set, points to a
+  // Dockerfile path RELATIVE to the build context root (e.g.
+  // "backend/Dockerfile"). Cloud Build emits `-f <path>` while keeping the
+  // build context at root, so user code that references siblings (FastAPI
+  // StaticFiles ../frontend, etc) still resolves at runtime. When unset
+  // (the common flat case), Cloud Build uses its default `Dockerfile` and
+  // omits the `-f` flag.
+  dockerfilePath?: string;
 }
 
 // ─── Project Group (aggregated view of related services + resources) ───

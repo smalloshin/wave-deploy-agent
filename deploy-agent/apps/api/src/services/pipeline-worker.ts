@@ -180,13 +180,28 @@ export async function runPipeline(
       [detection.language, detection.framework, JSON.stringify({ detectedPort: detection.port }), projectId]
     );
 
+    // R60 (2026-05-07): resolve the Dockerfile location for honest-monorepo.
+    // Default 'Dockerfile' (build context root). For honest-monorepo, the
+    // submit/new-version routes set `config.dockerfilePath = '<sub>/Dockerfile'`
+    // so all Step 2 fixers operate on that path while the build context stays
+    // at root (siblings preserved).
+    const projectForDfPath = await getProject(projectId);
+    const dockerfileRelPath =
+      (projectForDfPath?.config?.dockerfilePath as string | undefined) ?? 'Dockerfile';
+    const dockerfileAbsPath = join(projectDir, dockerfileRelPath);
+    if (dockerfileRelPath !== 'Dockerfile') {
+      console.log(
+        `[Pipeline] R60 honest-monorepo: dockerfile at ${dockerfileRelPath} (build context = root)`,
+      );
+    }
+
     // ─── Step 2: Dockerfile Generation (if missing) ───
     currentStep = 'Step 2: Dockerfile Generation';
     console.log(`[Pipeline] ${currentStep}...`);
     if (!detection.hasDockerfile) {
       const dockerfile = generateDockerfile(detection);
       const { writeFileSync: wfs } = await import('node:fs');
-      wfs(join(projectDir, 'Dockerfile'), dockerfile);
+      wfs(dockerfileAbsPath, dockerfile);
       console.log(
         `[Pipeline]   Generated Dockerfile${detection.hasPrisma ? ' (with prisma generate)' : ''}`,
       );
@@ -196,12 +211,11 @@ export async function runPipeline(
       // User Dockerfiles routinely miss this. Patch in builder stage before build.
       if (detection.hasPrisma) {
         try {
-          const dockerfilePath = join(projectDir, 'Dockerfile');
-          const original = readFileSync(dockerfilePath, 'utf-8');
+          const original = readFileSync(dockerfileAbsPath, 'utf-8');
           const result = patchDockerfileForPrisma(original);
           if (result.changed) {
             const { writeFileSync: wfs } = await import('node:fs');
-            wfs(dockerfilePath, result.next);
+            wfs(dockerfileAbsPath, result.next);
             console.log(`[Pipeline]   R44g: patched user Dockerfile — ${result.reason}`);
           } else {
             console.log(`[Pipeline]   R44g: Prisma detected, skipped patch — ${result.reason}`);
@@ -222,12 +236,11 @@ export async function runPipeline(
     // case (luca-optimizer-kb) hardcoded uvicorn --port 8080 against
     // Cloud Run PORT=8000. Idempotent: skips lines already in `sh -c` form.
     try {
-      const dockerfilePath = join(projectDir, 'Dockerfile');
-      if (existsSync(dockerfilePath)) {
-        const original = readFileSync(dockerfilePath, 'utf-8');
+      if (existsSync(dockerfileAbsPath)) {
+        const original = readFileSync(dockerfileAbsPath, 'utf-8');
         const result = fixDockerfilePorts(original);
         if (result.changed) {
-          writeFileSync(dockerfilePath, result.next);
+          writeFileSync(dockerfileAbsPath, result.next);
           console.log(`[Pipeline]   R46: ${result.reason}`);
         }
       }
