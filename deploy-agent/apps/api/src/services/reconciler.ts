@@ -46,8 +46,16 @@ const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 // How often the periodic reconciler runs.
 const RECONCILE_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 
+// R57.2 (2026-05-07): how often the wave_deploy_migrations cleanup pass runs.
+// Once per hour = every 30 reconciler ticks. Cleanup is light (two SQL
+// statements) but we don't need it more frequently — TTL is 15 min so
+// even a 60-min cadence keeps the index slot reclaim within ~1.25h of
+// crash, and audit retention only matters at day-scale.
+const CLEANUP_EVERY_N_TICKS = 30;
+
 let reconcilerTimer: NodeJS.Timeout | null = null;
 let isReconciling = false;
+let tickCount = 0;
 
 export function startReconciler(): void {
   if (reconcilerTimer) return;
@@ -62,9 +70,16 @@ export function startReconciler(): void {
   // Then periodic reconcile.
   reconcilerTimer = setInterval(() => {
     if (isReconciling) return; // skip if previous run still in-flight
+    tickCount++;
     void reconcileStuckProjects().catch((err) => {
       console.error('[Reconciler] periodic run failed:', (err as Error).message);
     });
+    // R57.2: run wave_deploy_migrations cleanup every Nth tick.
+    if (tickCount % CLEANUP_EVERY_N_TICKS === 0) {
+      void runMigrationCleanup().catch((err) => {
+        console.error('[Reconciler] migration cleanup failed:', (err as Error).message);
+      });
+    }
   }, RECONCILE_INTERVAL_MS);
 
   console.log(
@@ -78,6 +93,25 @@ export function stopReconciler(): void {
   if (reconcilerTimer) {
     clearInterval(reconcilerTimer);
     reconcilerTimer = null;
+  }
+}
+
+/**
+ * R57.2 (2026-05-07): periodic cleanup for `wave_deploy_migrations` table.
+ * Sweeps stale `running` rows past their TTL and deletes audit rows older
+ * than 30 days. Runs once per hour via the reconciler tick (see
+ * `CLEANUP_EVERY_N_TICKS`). Best-effort — never throws so a transient DB
+ * issue doesn't kill the reconciler.
+ */
+async function runMigrationCleanup(): Promise<void> {
+  const { cleanupMigrationRows } = await import('./migration-cleanup');
+  const { query } = await import('../db/index');
+  const result = await cleanupMigrationRows(async (text, params) => {
+    const r = await query(text, params);
+    return { rowCount: r.rowCount };
+  });
+  if (result.expiredSweeped + result.rowsDeleted > 0) {
+    console.log(`[Reconciler] migration-cleanup: ${result.summary}`);
   }
 }
 

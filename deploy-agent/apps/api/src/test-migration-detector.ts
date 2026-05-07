@@ -216,9 +216,159 @@ test('Both Prisma AND Alembic markers → Prisma wins (Node ecosystem dominant)'
   assert.equal(r.tool, 'prisma');
 });
 
+// ─── R57.3 Django ───
+
+test('R57.3 Django: manage.py + django in requirements.txt → tool=django', () => {
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'manage.py'), '#!/usr/bin/env python\nimport django');
+  writeFileSync(join(dir, 'requirements.txt'), 'Django==4.2\nrequests==2.31');
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'django');
+  assert.equal(v.command, 'python manage.py migrate --noinput');
+});
+
+test('R57.3 Django: manage.py without django dep → falls through (probably template)', () => {
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'manage.py'), '');
+  writeFileSync(join(dir, 'requirements.txt'), 'requests==2.31\n');
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'none');
+});
+
+test('R57.3 Django: django dep in pyproject.toml [tool.poetry.dependencies] → tool=django', () => {
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'manage.py'), '');
+  writeFileSync(
+    join(dir, 'pyproject.toml'),
+    '[tool.poetry.dependencies]\npython = "^3.11"\ndjango = "^4.2"\n',
+  );
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'django');
+});
+
+test('R57.3 Django regression: django-rest-framework alone (no django) → no false positive', () => {
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'manage.py'), '');
+  writeFileSync(join(dir, 'requirements.txt'), 'django-rest-framework==3.14\n');
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'none', 'name pattern must not match django-rest-framework as django');
+});
+
+// ─── R57.3 Flask-Migrate ───
+
+test('R57.3 Flask-Migrate: explicit Flask-Migrate dep → tool=flask_migrate', () => {
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'requirements.txt'), 'Flask==3.0\nFlask-Migrate==4.0\n');
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'flask_migrate');
+  assert.equal(v.command, 'flask db upgrade');
+});
+
+test('R57.3 Flask-Migrate: alembic.ini outside migrations/ + Flask only → no flask-migrate verdict', () => {
+  // Plain Alembic detection wins because alembic.ini at root resolves first.
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'alembic.ini'), '[alembic]');
+  mkdirSync(join(dir, 'alembic'));
+  mkdirSync(join(dir, 'alembic/versions'));
+  writeFileSync(join(dir, 'alembic/versions/abc123_init.py'), '# revision');
+  writeFileSync(join(dir, 'requirements.txt'), 'Flask==3.0\n');
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'alembic', 'alembic at root takes precedence over flask_migrate fallback');
+});
+
+// ─── R57.3 Drizzle ───
+
+test('R57.3 Drizzle: drizzle.config.ts + drizzle-kit dep → tool=drizzle', () => {
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'drizzle.config.ts'), 'export default {}');
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ devDependencies: { 'drizzle-kit': '^0.20', 'drizzle-orm': '^0.30' } }),
+  );
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'drizzle');
+  assert.equal(v.command, 'npx drizzle-kit migrate');
+});
+
+test('R57.3 Drizzle: drizzle config without drizzle-kit dep → no false positive', () => {
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'drizzle.config.js'), '');
+  writeFileSync(join(dir, 'package.json'), '{}');
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'none');
+});
+
+// ─── R57.3 Knex ───
+
+test('R57.3 Knex: knexfile.ts + knex dep → tool=knex', () => {
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'knexfile.ts'), 'export default {}');
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ dependencies: { knex: '^3.0' } }),
+  );
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'knex');
+  assert.equal(v.command, 'npx knex migrate:latest');
+});
+
+test('R57.3 Knex: knexfile.js + knex in devDependencies → tool=knex', () => {
+  const dir = makeTempProject();
+  writeFileSync(join(dir, 'knexfile.js'), '');
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ devDependencies: { knex: '^3.0' } }),
+  );
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'knex');
+});
+
+// ─── R57.3 TypeORM ───
+
+test('R57.3 TypeORM: typeorm dep + data-source.ts → typeorm_manual with warning', () => {
+  const dir = makeTempProject();
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ dependencies: { typeorm: '^0.3', 'pg': '^8' } }),
+  );
+  writeFileSync(join(dir, 'data-source.ts'), 'export const AppDataSource = ...');
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'typeorm_manual');
+  assert.equal(v.command, null);
+  assert.ok(v.warnings.length >= 1, 'must include warning about manual command');
+  assert.match(v.warnings[0] ?? '', /TypeORM/);
+});
+
+test('R57.3 TypeORM: typeorm dep WITHOUT data-source file → tool=none', () => {
+  const dir = makeTempProject();
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ dependencies: { typeorm: '^0.3' } }),
+  );
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'none');
+});
+
+// ─── Priority: Prisma > Alembic > Django > Flask-Migrate > Drizzle > Knex > TypeORM ───
+
+test('R57.3 priority: Prisma + Django markers → Prisma wins', () => {
+  // A monorepo or hybrid project might have both. Prisma should win because
+  // it's the more common Node-side workflow + appears first in detector.
+  const dir = makeTempProject();
+  mkdirSync(join(dir, 'prisma'));
+  writeFileSync(join(dir, 'prisma/schema.prisma'), '');
+  mkdirSync(join(dir, 'prisma/migrations'));
+  mkdirSync(join(dir, 'prisma/migrations/20260101_init'));
+  writeFileSync(join(dir, 'prisma/migrations/20260101_init/migration.sql'), '');
+  writeFileSync(join(dir, 'manage.py'), '');
+  writeFileSync(join(dir, 'requirements.txt'), 'Django==4.2\n');
+  const v = detectMigrationTool(dir);
+  assert.equal(v.tool, 'prisma');
+});
+
 // ─── describeMigrationTool ───
 
-test('describeMigrationTool: covers all 4 tool variants', () => {
+test('describeMigrationTool: covers all 9 tool variants (R57 + R57.3)', () => {
   assert.match(
     describeMigrationTool({ tool: 'prisma', command: 'npx prisma migrate deploy', warnings: [] }),
     /Prisma migrate deploy/,
@@ -230,6 +380,26 @@ test('describeMigrationTool: covers all 4 tool variants', () => {
   assert.match(
     describeMigrationTool({ tool: 'alembic', command: 'alembic upgrade head', warnings: [] }),
     /Alembic/,
+  );
+  assert.match(
+    describeMigrationTool({ tool: 'django', command: 'python manage.py migrate --noinput', warnings: [] }),
+    /Django/,
+  );
+  assert.match(
+    describeMigrationTool({ tool: 'flask_migrate', command: 'flask db upgrade', warnings: [] }),
+    /Flask-Migrate/,
+  );
+  assert.match(
+    describeMigrationTool({ tool: 'drizzle', command: 'npx drizzle-kit migrate', warnings: [] }),
+    /Drizzle/,
+  );
+  assert.match(
+    describeMigrationTool({ tool: 'knex', command: 'npx knex migrate:latest', warnings: [] }),
+    /Knex/,
+  );
+  assert.match(
+    describeMigrationTool({ tool: 'typeorm_manual', command: null, warnings: [] }),
+    /TypeORM/,
   );
   assert.match(
     describeMigrationTool({ tool: 'none', command: null, warnings: [] }),

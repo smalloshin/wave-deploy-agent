@@ -66,8 +66,8 @@ function deployment(overrides: Partial<ReconcilerDeploymentInput> = {}): Reconci
     cloudRunUrl: null,
     cloudRunService: 'svc-test',
     revisionName: 'svc-test-00001-abc',
-    // default: created 20 minutes ago — well past race window (15 min after R51)
-    createdAt: new Date(NOW - 20 * 60 * 1000).toISOString(),
+    // default: created 30 minutes ago — well past race window (25 min after R57.1)
+    createdAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
     ...overrides,
   };
 }
@@ -97,7 +97,7 @@ test('race window: deployment created 1 minute ago → skip', () => {
   assert.match((v as { kind: 'skip'; reason: string }).reason, /too young/);
 });
 
-test('race window: deployment created 14 minutes ago (still inside 15min window after R51) → skip', () => {
+test('race window: deployment created 14 minutes ago (still inside 25min window after R57.1) → skip', () => {
   const v = decideReconcilerAction(
     deployment({ createdAt: new Date(NOW - 14 * 60 * 1000).toISOString() }),
     truth(),
@@ -106,7 +106,19 @@ test('race window: deployment created 14 minutes ago (still inside 15min window 
   assert.equal(v.kind, 'skip');
 });
 
-test('race window: deployment exactly at boundary (createdAt = now - 15min) → NOT skip', () => {
+test('race window: deployment created 24 minutes ago (still inside 25min window after R57.1) → skip', () => {
+  // Regression guard for R57.1: bump from 15min → 25min must keep the boundary
+  // semantics. This test was added to verify the new value is honored, not just
+  // the constant comparison.
+  const v = decideReconcilerAction(
+    deployment({ createdAt: new Date(NOW - 24 * 60 * 1000).toISOString() }),
+    truth(),
+    NOW,
+  );
+  assert.equal(v.kind, 'skip');
+});
+
+test('race window: deployment exactly at boundary (createdAt = now - RECONCILER_RACE_WINDOW_MS) → NOT skip', () => {
   // age === RECONCILER_RACE_WINDOW_MS, the check is `<` so this should pass
   const v = decideReconcilerAction(
     deployment({ createdAt: new Date(NOW - RECONCILER_RACE_WINDOW_MS).toISOString() }),

@@ -78,8 +78,11 @@ export async function runMigration(input: MigrationRunInput): Promise<MigrationR
   const verdict = detectMigrationTool(input.projectDir);
   const warnings: string[] = [...verdict.warnings];
 
-  if (verdict.tool === 'none' || verdict.tool === 'prisma_db_push_only') {
-    // Skip — log warnings via stage event but don't run anything
+  // R57.3 (2026-05-07): skip when verdict has command=null. This covers:
+  //   - 'none' (no DB markers)
+  //   - 'prisma_db_push_only' (destructive in prod, R57)
+  //   - 'typeorm_manual' (data-source path varies, user must run manually)
+  if (verdict.command === null) {
     void recordStageEvent(input.deploymentId, 'migrate', 'skipped', {
       tool: verdict.tool,
       reason: describeMigrationTool(verdict),
@@ -98,8 +101,9 @@ export async function runMigration(input: MigrationRunInput): Promise<MigrationR
     };
   }
 
-  // From here, verdict.tool is 'prisma' or 'alembic' and command is set
-  const command = verdict.command!;
+  // From here, verdict.tool is one of the runnable variants
+  // (prisma, alembic, django, flask_migrate, drizzle, knex) and command is set.
+  const command = verdict.command;
   const startMs = Date.now();
   void recordStageEvent(input.deploymentId, 'migrate', 'started', {
     tool: verdict.tool,

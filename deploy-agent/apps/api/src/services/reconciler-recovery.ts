@@ -53,15 +53,23 @@ export type ReconcilerVerdict =
   | { kind: 'fast-forward' }
   | { kind: 'skip'; reason: string };
 
-// 15 分鐘 race 窗（R51 升級，原 6 分鐘）：
-// 原本 6 分鐘的設計只算了 deploy-worker 自己的 retry + captureDeployedSource。
-// 實測 wavenet-ai-gateway-frontend (Next.js + 大 npm install) Cloud Build 部分
-// 就花了 7+ 分鐘，加上 Cloud Run revision 啟動 + IAM + tag + capture，整條 deploy
-// 路徑要跑到 9 分鐘左右。reconciler 在第 7 分鐘就誤判「卡死」、提早 mark failed。
-// 真實的 Next.js 大型專案 Cloud Build 可能 10+ 分鐘，15 分鐘給足空間。
-// 真的卡死的 deploy（沒有 Cloud Run service materialize）等 15 分鐘才介入也合理 —
-// 反正 Cloud Run 沒啟動 = 沒 user impact，多等 9 分鐘換取 false-positive 為 0。
-export const RECONCILER_RACE_WINDOW_MS = 15 * 60 * 1000;
+// 25 分鐘 race 窗（R57.1 升級，原 R51 的 15 分鐘）：
+//
+// R51 把 6 分鐘升到 15 分鐘，因為 Next.js + 大 npm install Cloud Build 7+ 分鐘，
+// 加 Cloud Run revision swap / IAM / tag / capture 整條 9 分鐘，15 分鐘給空間。
+//
+// R57 加了 Step 3.5 pre-deploy migration（Prisma + Alembic via Cloud Run Jobs），
+// migration job 本身有 cold start ~30-90s + 實際跑 schema migration 可能 1-3 min。
+// 整條 deploy 從 9 min 漲到 12-15 min，剛好踩在 R51 race window 邊緣，臨界值會出
+// false-positive。
+//
+// R57.1 升 15 → 25 min：
+//   - 大型 Next.js + Prisma migration + 大 schema = 12-15 min 主流
+//   - 真卡死的 deploy（沒 Cloud Run service materialize）多等 10 分鐘介入，
+//     反正 Cloud Run 沒啟動 = 沒 user impact，false-positive=0 換 10 min wait
+//   - reconciler tick 是 2 min 一次，所以 25 min race window = 12-13 個 tick
+//     會跳過該 deployment，沒額外負擔
+export const RECONCILER_RACE_WINDOW_MS = 25 * 60 * 1000;
 
 function toMs(t: string | Date): number {
   if (t instanceof Date) return t.getTime();

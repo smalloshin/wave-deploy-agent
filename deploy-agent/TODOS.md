@@ -267,21 +267,30 @@ CMD ["sh", "-c", "sed \"s/listen 80;/listen ${PORT:-8080};/\" /tmp/nginx.conf > 
 
 ## R57 follow-ups（不阻塞 R57 上線）
 
-### R57.1 — R47 race window 從 15→25 min
+### R57.1 — R47 race window 從 15→25 min ✅ SHIPPED 2026-05-07
+（in ADR `2026-05-07-r57-followups.md`）
+
+### R57.1 — R47 race window 從 15→25 min (original spec, kept for context)
 
 **Priority**: P1（看 R57 e2e 真實 timing 決定）
 **Why**: R57 加 migration step 後 deploy 整體時間從 9 分鐘可能變 12-15 分鐘。R47 race window 15 min 可能還是不夠
 **Where to start**: `apps/api/src/services/reconciler-recovery.ts` 的 `RECONCILER_RACE_WINDOW_MS`
 **Context**: REG-1 from eng review。需要先寫 regression test：「deploying + 在 migrate sub-stage + age >15 min → 不該誤殺」。看 luca 重 deploy 真實 timing 後再調
 
-### R57.2 — `cleanup_old_migrations()` cron
+### R57.2 — `cleanup_old_migrations()` cron ✅ SHIPPED 2026-05-07
+（in ADR `2026-05-07-r57-followups.md`）
+
+### R57.2 — `cleanup_old_migrations()` cron (original spec, kept for context)
 
 **Priority**: P2
 **Why**: `wave_deploy_migrations` table 每次 deploy +1 row，無 GC
 **Where to start**: 加進 reconciler tick（每 2 min 順帶）or 寫獨立 cron
 **Context**: 30 天前 row 可刪。每 deploy 1 row × 100 project × 30 天 = 3000 row → 還好，但久了會漲
 
-### R57.3 — Django / Drizzle / TypeORM / Knex / Flask-Migrate detector
+### R57.3 — Django / Drizzle / TypeORM / Knex / Flask-Migrate detector ✅ SHIPPED 2026-05-07
+（in ADR `2026-05-07-r57-followups.md`）
+
+### R57.3 — Django / Drizzle / TypeORM / Knex / Flask-Migrate detector (original spec, kept for context)
 
 **Priority**: P2
 **Why**: v1 R57 只支援 Prisma + Alembic，但很多 vibe-coded 專案用其他工具

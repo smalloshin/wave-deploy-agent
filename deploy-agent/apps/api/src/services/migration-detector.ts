@@ -28,6 +28,11 @@ export type MigrationDetectionResult =
   | { tool: 'prisma'; command: string; warnings: string[] }
   | { tool: 'prisma_db_push_only'; command: null; warnings: string[] } // 偵測到但拒絕跑（destructive in prod）
   | { tool: 'alembic'; command: string; warnings: string[] }
+  | { tool: 'django'; command: string; warnings: string[] }            // R57.3
+  | { tool: 'flask_migrate'; command: string; warnings: string[] }     // R57.3
+  | { tool: 'drizzle'; command: string; warnings: string[] }           // R57.3
+  | { tool: 'knex'; command: string; warnings: string[] }              // R57.3
+  | { tool: 'typeorm_manual'; command: null; warnings: string[] }      // R57.3 — detected but command varies, ask user
   | { tool: 'none'; command: null; warnings: string[] };
 
 /**
@@ -106,6 +111,83 @@ export function detectMigrationTool(projectDir: string): MigrationDetectionResul
     };
   }
 
+  // ─── R57.3 Django (Python) ───
+  // manage.py + Django imported anywhere → use Django's built-in migrate.
+  // We check requirements.txt + pyproject.toml because Django is usually in
+  // one of those. If user has manage.py but no Django dep, it's probably a
+  // template/skeleton — skip.
+  // Negative-lookahead `(?![A-Za-z0-9_-])` so the pattern matches `django`,
+  // `Django==4.2`, `django>=3` etc. but NOT `django-rest-framework` (the
+  // hyphen continues the package name).
+  if (safeIsFile(path.join(projectDir, 'manage.py')) && hasPythonDep(projectDir, /^django(?![A-Za-z0-9_-])/i)) {
+    return {
+      tool: 'django',
+      command: 'python manage.py migrate --noinput',
+      warnings: [],
+    };
+  }
+
+  // ─── R57.3 Flask-Migrate (Python) ───
+  // Uses Alembic underneath but exposed through `flask db` CLI.
+  // Detect Flask-Migrate dep specifically — alembic alone is handled above.
+  if (
+    hasPythonDep(projectDir, /^flask[-_]migrate(?![A-Za-z0-9_-])/i) ||
+    (hasPythonDep(projectDir, /^flask(?![A-Za-z0-9_-])/i) &&
+      safeIsFile(path.join(projectDir, 'migrations', 'env.py')))
+  ) {
+    return {
+      tool: 'flask_migrate',
+      command: 'flask db upgrade',
+      warnings: [],
+    };
+  }
+
+  // ─── R57.3 Drizzle (TypeScript / Node) ───
+  // drizzle.config.{ts,js,mjs} present + drizzle-kit in deps → drizzle-kit migrate.
+  // We check the config file because some projects pull drizzle as a transitive dep.
+  const drizzleConfig = ['drizzle.config.ts', 'drizzle.config.js', 'drizzle.config.mjs', 'drizzle.config.json']
+    .map((n) => path.join(projectDir, n))
+    .find(safeIsFile);
+  if (drizzleConfig && hasNodeDep(projectDir, 'drizzle-kit')) {
+    return {
+      tool: 'drizzle',
+      command: 'npx drizzle-kit migrate',
+      warnings: [],
+    };
+  }
+
+  // ─── R57.3 Knex (TypeScript / Node) ───
+  // knexfile.{js,ts,cjs,mjs} + knex in deps → knex migrate:latest.
+  const knexfile = ['knexfile.js', 'knexfile.ts', 'knexfile.cjs', 'knexfile.mjs']
+    .map((n) => path.join(projectDir, n))
+    .find(safeIsFile);
+  if (knexfile && hasNodeDep(projectDir, 'knex')) {
+    return {
+      tool: 'knex',
+      command: 'npx knex migrate:latest',
+      warnings: [],
+    };
+  }
+
+  // ─── R57.3 TypeORM (TypeScript / Node) ───
+  // TypeORM migrations require knowing the data-source path which varies per
+  // project. We detect but emit a warning + skip — user can run manually or
+  // override via project.config.migrationCommand (future work).
+  // Detection: typeorm in deps + data-source file present.
+  if (hasNodeDep(projectDir, 'typeorm')) {
+    const hasDataSource = ['data-source.ts', 'data-source.js', 'src/data-source.ts', 'src/db/data-source.ts']
+      .some((rel) => safeIsFile(path.join(projectDir, rel)));
+    if (hasDataSource) {
+      return {
+        tool: 'typeorm_manual',
+        command: null,
+        warnings: [
+          `偵測到 TypeORM 但 data-source 路徑因專案而異 — 自動 migration 暫不支援。請在 Dockerfile build stage 跑一次 \`typeorm migration:run -d <your-data-source>\` 並 commit migrations，或等 R57.3.x 加 project-config 覆寫支援。略過 migration step。`,
+        ],
+      };
+    }
+  }
+
   // ─── No DB markers found ───
   return { tool: 'none', command: null, warnings: [] };
 }
@@ -119,6 +201,11 @@ export function describeMigrationTool(verdict: MigrationDetectionResult): string
     case 'prisma': return 'Prisma migrate deploy';
     case 'prisma_db_push_only': return 'Prisma (db push only, skipped)';
     case 'alembic': return 'Alembic upgrade head';
+    case 'django': return 'Django manage.py migrate';
+    case 'flask_migrate': return 'Flask-Migrate db upgrade';
+    case 'drizzle': return 'Drizzle Kit migrate';
+    case 'knex': return 'Knex migrate:latest';
+    case 'typeorm_manual': return 'TypeORM (detected, manual command required)';
     case 'none': return 'no migration tool detected';
   }
 }
@@ -160,4 +247,71 @@ function hasAnyAlembicVersion(versionsDir: string): boolean {
   let entries: string[];
   try { entries = fs.readdirSync(versionsDir); } catch { return false; }
   return entries.some((e) => e.endsWith('.py') && e !== '__init__.py' && !e.startsWith('.'));
+}
+
+/**
+ * R57.3: check if a Python project has a given dep declared.
+ *
+ * Reads `requirements.txt` (line-by-line) and `pyproject.toml` (loose grep
+ * for `name = "<dep>"`). The pattern is matched against each requirement
+ * line — pass `/^django\b/i` to match `django`, `Django==4.2`, `django>=3`,
+ * etc. while NOT matching `django-rest-framework`.
+ */
+function hasPythonDep(projectDir: string, namePattern: RegExp): boolean {
+  // requirements.txt
+  const reqPath = path.join(projectDir, 'requirements.txt');
+  try {
+    const text = fs.readFileSync(reqPath, 'utf-8');
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (line === '' || line.startsWith('#')) continue;
+      // Strip inline comments + extras spec.
+      const head = line.split(/[#;]/)[0]?.trim() ?? '';
+      if (namePattern.test(head)) return true;
+    }
+  } catch {
+    /* file missing or unreadable */
+  }
+
+  // pyproject.toml — loose grep, no real TOML parser. Catches both
+  // [tool.poetry.dependencies] django = "^4" and [project.dependencies]
+  // entries.
+  const pyproject = path.join(projectDir, 'pyproject.toml');
+  try {
+    const text = fs.readFileSync(pyproject, 'utf-8');
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (line === '' || line.startsWith('#')) continue;
+      // poetry style: `django = "^4.2"` — extract bare name.
+      const poetryMatch = /^([A-Za-z0-9._-]+)\s*=/.exec(line);
+      if (poetryMatch && namePattern.test(poetryMatch[1] ?? '')) return true;
+      // PEP 621 style: `"django>=4.2"`,
+      const pep621Match = /"([A-Za-z0-9._-]+)/.exec(line);
+      if (pep621Match && namePattern.test(pep621Match[1] ?? '')) return true;
+    }
+  } catch {
+    /* file missing or unreadable */
+  }
+
+  return false;
+}
+
+/**
+ * R57.3: check if a Node project has a given dep declared in package.json.
+ * Looks at both `dependencies` and `devDependencies`. Match is exact-name.
+ */
+function hasNodeDep(projectDir: string, depName: string): boolean {
+  const pkgPath = path.join(projectDir, 'package.json');
+  try {
+    const text = fs.readFileSync(pkgPath, 'utf-8');
+    const pkg = JSON.parse(text) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    if (pkg.dependencies?.[depName] !== undefined) return true;
+    if (pkg.devDependencies?.[depName] !== undefined) return true;
+  } catch {
+    /* file missing, unreadable, or invalid JSON */
+  }
+  return false;
 }
