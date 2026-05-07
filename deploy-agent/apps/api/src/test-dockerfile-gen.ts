@@ -272,6 +272,51 @@ test('generateDockerfile static: exactly 1 CMD line', () => {
   assert.equal(countLines(out, 'CMD '), 1);
 });
 
+// ─── R59.1: static Dockerfile must honor Cloud Run injected PORT ─────
+
+test('R59.1: static Dockerfile uses sh -c form for $PORT expansion', () => {
+  const out = generateDockerfile(baseDetection({ language: 'static' }));
+  // Without sh -c, nginx ignores Cloud Run's PORT and listens on 80,
+  // health check times out at 4 minutes (rfp-agent-frontend canonical).
+  assert.ok(/CMD \["sh", "-c"/.test(out), 'static CMD must use sh -c for PORT expansion');
+  assert.ok(out.includes('${PORT'), 'static CMD must reference Cloud Run PORT');
+});
+
+test('R59.1: static Dockerfile sed-replaces literal listen 80 with $PORT', () => {
+  const out = generateDockerfile(baseDetection({ language: 'static' }));
+  // Default config contains `listen 80;` literal so sed has something to replace.
+  assert.ok(out.includes('listen 80;'), 'embedded nginx config must contain literal `listen 80;`');
+  // sed swaps `listen 80;` for `listen ${PORT...};`
+  assert.ok(/sed.*listen 80/.test(out), 'CMD must sed-replace listen directive');
+});
+
+test('R59.1: static Dockerfile does NOT use bare `nginx -g daemon off;` without PORT bridge (regression)', () => {
+  // Pre-R59.1 the Dockerfile was just `CMD ["nginx", "-g", "daemon off;"]`
+  // which ignores Cloud Run PORT. Regression guard.
+  const out = generateDockerfile(baseDetection({ language: 'static' }));
+  // The sh -c form replaces the bare exec form.
+  assert.equal(
+    out.includes('CMD ["nginx", "-g", "daemon off;"]'),
+    false,
+    'must not use bare nginx exec form (ignores Cloud Run PORT)',
+  );
+});
+
+test('R59.1: static Dockerfile includes SPA fallback (try_files → index.html)', () => {
+  const out = generateDockerfile(baseDetection({ language: 'static' }));
+  assert.ok(
+    out.includes("try_files $uri $uri/ /index.html"),
+    'static SPA fallback required for client-side routing on multi-page sites',
+  );
+});
+
+test('R59.1: static Dockerfile EXPOSE matches Cloud Run default port', () => {
+  const out = generateDockerfile(baseDetection({ language: 'static' }));
+  // safePort default in baseDetection is 8080.
+  assert.ok(/EXPOSE 8080/.test(out), 'should EXPOSE 8080 (Cloud Run convention)');
+  assert.ok(/ENV PORT=8080/.test(out), 'should default ENV PORT=8080');
+});
+
 // ─── generateDockerfile SECURITY: malicious entrypoint rejected ───
 
 test('SECURITY: entrypoint with newline does NOT inject extra Dockerfile lines', () => {

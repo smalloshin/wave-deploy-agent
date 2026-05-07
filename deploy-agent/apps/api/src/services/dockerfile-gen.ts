@@ -252,10 +252,26 @@ CMD ["/server"]
 }
 
 function generateStaticDockerfile(d: DetectionResult): string {
+  // R59.1 (2026-05-07): nginx:alpine default listens on 80; Cloud Run
+  // injects PORT=8080 expecting the container to listen on PORT. Without
+  // sed-replace at startup, the container ignores PORT, health check times
+  // out at 4 minutes (rfp-agent-frontend canonical). Same fix as R59 Vite.
   const safePort = sanitizePort(d.port);
-  return `FROM nginx:alpine
+  return `# R59.1: static SPA / single-file site served by nginx with PORT-aware listen.
+FROM nginx:alpine
+# Default nginx config: listen on 80 here, sed-replace at startup with $PORT.
+RUN : > /tmp/nginx.conf.template \\
+ && echo 'server {' >> /tmp/nginx.conf.template \\
+ && echo '    listen 80;' >> /tmp/nginx.conf.template \\
+ && echo '    root /usr/share/nginx/html;' >> /tmp/nginx.conf.template \\
+ && echo '    index index.html;' >> /tmp/nginx.conf.template \\
+ && echo '    location / { try_files $uri $uri/ /index.html; }' >> /tmp/nginx.conf.template \\
+ && echo '    gzip on;' >> /tmp/nginx.conf.template \\
+ && echo '    gzip_types text/plain text/css application/json application/javascript text/xml application/xml text/javascript;' >> /tmp/nginx.conf.template \\
+ && echo '}' >> /tmp/nginx.conf.template
 COPY . /usr/share/nginx/html
+ENV PORT=${safePort}
 EXPOSE ${safePort}
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["sh", "-c", "sed \\"s/listen 80;/listen \${PORT:-${safePort}};/\\" /tmp/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
 `;
 }
