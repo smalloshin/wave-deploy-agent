@@ -279,6 +279,72 @@ export async function runPipeline(
       );
     }
 
+    // R61 (2026-05-07): warn (don't block) when user's Dockerfile has
+    // `COPY <src>` references that .dockerignore excludes. legal-flow-20260505
+    // canonical: `.dockerignore` had `.env*.local` AND Dockerfile had
+    // `COPY .env.local .env.local`. Cloud Build wasted 4 minutes reaching
+    // Step 22/27 to discover the conflict; pre-build catch saves ~4 min and
+    // gives the dashboard a precise warning message.
+    try {
+      if (existsSync(dockerfileAbsPath)) {
+        // Look up `.dockerignore` next to the Dockerfile (build-context root).
+        // For honest-monorepo (R60), build context is still root, so
+        // `.dockerignore` is at projectDir, NOT at the subdir holding the
+        // Dockerfile.
+        const dockerignorePath = join(projectDir, '.dockerignore');
+        if (existsSync(dockerignorePath)) {
+          const { detectDockerignoreConflicts } = await import(
+            './dockerignore-conflict-detector'
+          );
+          const dfText = readFileSync(dockerfileAbsPath, 'utf-8');
+          const diText = readFileSync(dockerignorePath, 'utf-8');
+          const conflicts = detectDockerignoreConflicts({
+            dockerfile: dfText,
+            dockerignore: diText,
+          });
+          if (conflicts.length > 0) {
+            console.warn(
+              `[Pipeline]   R61: ${conflicts.length} .dockerignore vs COPY conflict(s) detected:`,
+            );
+            for (const c of conflicts) {
+              console.warn(
+                `[Pipeline]     line ${c.lineNumber}: COPY "${c.copySource}" — excluded by .dockerignore pattern "${c.excludingPattern}"`,
+              );
+            }
+            // Write to scan_report so the dashboard surfaces this BEFORE
+            // Cloud Build runs. Best-effort; don't block on persist failure.
+            try {
+              const { dbQuery: dq2 } = await import('../db/index').then((m) => ({
+                dbQuery: m.query,
+              }));
+              await dq2(
+                `UPDATE projects SET config = config || $1::jsonb, updated_at = NOW() WHERE id = $2`,
+                [
+                  JSON.stringify({
+                    dockerignoreConflicts: conflicts.map((c) => ({
+                      lineNumber: c.lineNumber,
+                      copySource: c.copySource,
+                      excludingPattern: c.excludingPattern,
+                      hint: `Either remove the COPY ${c.copySource} line from your Dockerfile, or remove the "${c.excludingPattern}" pattern from .dockerignore. (.env.local-style files should generally NOT be in the production image — use Cloud Run env vars instead.)`,
+                    })),
+                  }),
+                  projectId,
+                ],
+              );
+            } catch (persistErr) {
+              console.warn(
+                `[Pipeline]   R61: persist warning failed (non-fatal): ${(persistErr as Error).message}`,
+              );
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline]   R61: dockerignore-conflict scan failed (non-fatal): ${(err as Error).message}`,
+      );
+    }
+
     // ─── Step 2.7: Required env-var gate (R49) ───
     // luca-optimizer-kb / wavenet-ai-gateway-backend each burned a 4-min
     // Cloud Run health-check window because their Python source had

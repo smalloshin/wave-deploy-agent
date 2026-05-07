@@ -162,7 +162,13 @@ TS: api + web 全綠
 
 ---
 
-## R61 — Dockerfile COPY vs .dockerignore 衝突 detector
+## R61 — Dockerfile COPY vs .dockerignore 衝突 detector ✅ SHIPPED 2026-05-07
+
+**Status**: ADR `2026-05-07-dockerignore-copy-conflict.md`、+21 tests（3025 → 3046），等 commit + push + Cloud Build。
+
+---
+
+## R61 — Dockerfile COPY vs .dockerignore 衝突 detector (original spec, kept for context)
 
 **Priority**: P1（user 撞過一次 legal-flow case）
 **When**: 下個 batch
