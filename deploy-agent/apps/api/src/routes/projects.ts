@@ -2190,6 +2190,78 @@ export async function projectRoutes(app: FastifyInstance) {
     }
   });
 
+  // R63 (2026-05-08): attach a single-service project to an existing
+  // project group. Originally project groups were only created via the
+  // monorepo split path in submit-gcs (line ~669), so projects submitted
+  // independently (e.g. rfp-agent's separate FE + BE submission) ended
+  // up in singleton groups. This endpoint lets owners reorganize them
+  // post-hoc by setting `config.projectGroup` (and optionally
+  // `config.groupName`).
+  //
+  // Pure config write — no Cloud Run / DB schema changes. The project
+  // group is metadata used by `/api/project-groups` for dashboard
+  // grouping; mutating it has no runtime effect on the deployed service.
+  app.patch<{ Params: { id: string } }>(
+    '/api/projects/:id/group',
+    async (request, reply) => {
+      const project = await getProject(request.params.id);
+      if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+      // RBAC: group-attach can move a project's dashboard placement and
+      // affect bulk actions on the target group (stop/delete-all). Owner
+      // or admin only.
+      const owner = await requireOwnerOrAdmin(request, reply, project, 'group_attach');
+      if (!owner.ok) return;
+
+      const body = request.body as {
+        projectGroup?: string;
+        groupName?: string;
+      };
+
+      if (!body.projectGroup || typeof body.projectGroup !== 'string') {
+        return reply.status(400).send({
+          error: 'Request body must include `projectGroup` (string).',
+        });
+      }
+      // Defensive length cap to keep JSONB cells small + avoid pathological
+      // input. Group IDs in this codebase are UUIDs (36 chars) or
+      // `group-<timestamp>` (≤24); 100 chars is generous.
+      if (body.projectGroup.length > 100) {
+        return reply.status(400).send({
+          error: '`projectGroup` must be 100 characters or fewer.',
+        });
+      }
+      if (body.groupName !== undefined) {
+        if (typeof body.groupName !== 'string') {
+          return reply.status(400).send({
+            error: '`groupName` must be a string when provided.',
+          });
+        }
+        if (body.groupName.length > 200) {
+          return reply.status(400).send({
+            error: '`groupName` must be 200 characters or fewer.',
+          });
+        }
+      }
+
+      // Merge into existing config (preserves all other fields). Only
+      // overwrite `groupName` when explicitly provided.
+      const nextConfig = {
+        ...(project.config ?? {}),
+        projectGroup: body.projectGroup,
+        ...(body.groupName !== undefined ? { groupName: body.groupName } : {}),
+      };
+      await updateProjectConfig(project.id, nextConfig);
+
+      return {
+        success: true,
+        projectId: project.id,
+        projectGroup: body.projectGroup,
+        groupName: nextConfig.groupName ?? null,
+      };
+    },
+  );
+
   // Stop a single project's Cloud Run service (delete service, keep image)
   app.post<{ Params: { id: string } }>('/api/projects/:id/stop', async (request, reply) => {
     const project = await getProject(request.params.id);
