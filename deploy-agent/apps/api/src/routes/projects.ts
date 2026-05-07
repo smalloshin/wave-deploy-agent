@@ -584,37 +584,35 @@ export async function projectRoutes(app: FastifyInstance) {
     const archivePath = join(uploadDir, body.fileName);
     await writeFile(archivePath, fileBuffer);
 
-    // Extract
-    const lowerName = body.fileName.toLowerCase();
-    try {
-      if (lowerName.endsWith('.zip')) {
-        await execFileAsync('unzip', ['-q', '-o', archivePath, '-d', extractDir], { timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: ARCHIVE_MAX_BUFFER });
-      } else if (lowerName.endsWith('.tar.gz') || lowerName.endsWith('.tgz')) {
-        await execFileAsync('tar', ['-xzf', archivePath, '-C', extractDir], { timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: ARCHIVE_MAX_BUFFER });
-      } else if (lowerName.endsWith('.tar')) {
-        await execFileAsync('tar', ['-xf', archivePath, '-C', extractDir], { timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: ARCHIVE_MAX_BUFFER });
-      } else {
-        const ext = lowerName.includes('.') ? lowerName.slice(lowerName.lastIndexOf('.')) : 'unknown';
+    // Extract — R62 (2026-05-07): shared helper, supports .zip / .tar.gz /
+    // .tgz / .tar. Used by both submit-gcs and new-version (formerly only
+    // submit-gcs handled .zip; new-version was tar.gz only).
+    const { extractArchive } = await import('../services/archive-extractor');
+    const extractResult = await extractArchive(archivePath, extractDir, body.fileName);
+    if (!extractResult.ok) {
+      if (extractResult.code === 'unsupported_format') {
         return reply.status(400).send(
           uploadError('extract', 'file_extension_invalid', 'Unsupported file type', {
-            detail: { ext, fileName: body.fileName },
+            detail: { ext: extractResult.extension, fileName: body.fileName },
             retryable: false,
             legacyError: 'Unsupported file type',
           }),
         );
       }
-    } catch (err) {
-      const msg = (err as Error).message;
-      const isBufferOverflow = msg.toLowerCase().includes('maxbuffer');
       return reply.status(400).send(
         uploadError(
           'extract',
-          isBufferOverflow ? 'extract_buffer_overflow' : 'extract_failed',
-          `Extract failed: ${msg}`,
+          extractResult.code === 'extract_buffer_overflow'
+            ? 'extract_buffer_overflow'
+            : 'extract_failed',
+          `Extract failed: ${extractResult.error}`,
           {
-            detail: { fileName: body.fileName, errorSnippet: msg.slice(0, 300) },
+            detail: {
+              fileName: body.fileName,
+              errorSnippet: extractResult.error.slice(0, 300),
+            },
             retryable: false,
-            legacyError: `Extract failed: ${msg}`,
+            legacyError: `Extract failed: ${extractResult.error}`,
           },
         ),
       );

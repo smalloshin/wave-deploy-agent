@@ -202,10 +202,24 @@ export async function versioningRoutes(app: FastifyInstance) {
         const buffer = Buffer.from(await resp.arrayBuffer());
         writeFileSync(tarballPath, buffer);
 
-        // Extract
+        // Extract — R62 (2026-05-07): support .zip / .tar.gz / .tgz / .tar
+        // (was tar.gz only pre-R62, which broke wavenetdeveloper-rfp-agent v2
+        // resubmit because the user uploaded a .zip).
         const sourceDir = join(uploadDir, 'source');
         await mkdir(sourceDir, { recursive: true });
-        await execFileAsync('tar', ['xzf', tarballPath, '-C', sourceDir]);
+        const { extractArchive } = await import('../services/archive-extractor');
+        const fileName = body.fileName ?? 'source.tgz';
+        const extractResult = await extractArchive(tarballPath, sourceDir, fileName);
+        if (!extractResult.ok) {
+          if (extractResult.code === 'unsupported_format') {
+            return reply.status(400).send({
+              error: `不支援的檔案格式 "${extractResult.extension}"。請上傳 .zip / .tar.gz / .tgz / .tar 之一。`,
+            });
+          }
+          return reply.status(500).send({
+            error: `原始碼解壓失敗: ${extractResult.error}`,
+          });
+        }
 
         // Find actual project root (may be nested in a single wrapper dir).
         // Legacy R44f-style single-wrapper descent: when the archive root is
