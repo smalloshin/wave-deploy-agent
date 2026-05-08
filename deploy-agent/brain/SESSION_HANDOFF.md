@@ -4,6 +4,100 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-08（昨日 R60+R59 follow-through 批次 ship + rfp-agent monorepo 重構 + R63 group-attach endpoint）**
+
+**狀態：9 個 platform round 全部 LIVE + 5 個 user services 全 LIVE + 2 個 service group attach 完成 / 剩 P3 跟 user-side env vars**
+
+接續 2026-05-07 留下的設計：R60 honest-monorepo descent / R61 dockerignore conflict / R57.x follow-ups 一次全 ship + e2e 撞到的 follow-up bug 順手修。
+
+### 9 個 platform round（按 ship 順序）
+
+| Round | 標題 | Tests Δ | Commit | Cloud Run rev | ADR |
+|-------|------|---------|--------|----------------|-----|
+| R60 | Honest-monorepo descent | +17 | `bb1d63f` | `00153-cs4` | `2026-05-07-honest-monorepo-descent` |
+| R59 | Vite static-app detection | +7 | `0fcc994` | `00154-r6p` | `2026-05-07-vite-static-detection` |
+| R61 | Dockerignore vs COPY conflict detector | +21 | `a00ba47` | `00155-...` | `2026-05-07-dockerignore-copy-conflict` |
+| R57.1 | Reconciler race window 15→25 min | +1 | `5bcc6a6` | `00156-...` | `2026-05-07-r57-followups` |
+| R57.2 | wave_deploy_migrations cleanup cron | +11 | 同上 | 同上 | 同上 |
+| R57.3 | Django/Drizzle/TypeORM/Knex/Flask-Migrate detector | +13 | 同上 | 同上 | 同上 |
+| R62 | Shared archive-extractor (zip+tar.gz+tgz+tar) | +14 | `df485c7` | `00157-...` | `2026-05-07-archive-extractor-shared` |
+| R59.1 | Static SPA Dockerfile honors Cloud Run PORT | +5 | `34e9742` | `00158-m78` | (none, R59 follow-up) |
+| R63 | `PATCH /api/projects/:id/group` endpoint | 0 | `8116edf` | `00159-w49` | `2026-05-08-project-group-attach-endpoint` |
+
+**Sweep 從 3001/0 → 3090/0 across 58 files（+89 zero-dep tests over 9 rounds）**
+
+### Canonical user case 解了什麼
+
+#### `wavenetdeveloper-rfp-agent-4baf14f62103` 改造
+
+User 原本 zip = `frontend/index.html` + `backend/{Dockerfile,main.py,...}`，pre-R60 pipeline 自動 descend 進 `backend/`，frontend 被砍。改成兩個獨立 service：
+
+- **`rfp-agent`** (FastAPI API) → `rfp-agent.punwave.com`
+  - main.py 的 `app.mount("/", StaticFiles("../frontend"))` comment 掉（rfp-agent 不再 serve 前端）
+  - 加 `@app.get("/")` root handler 回傳 `{"service": "rfp-agent", "status": "ok", "docs": "/docs", "health": "/health"}` 解 dead 404
+  - 重 zip 成 backend-only flat layout，pipeline 走 `flat` strategy build OK
+- **`rfp-agent-frontend`** (static SPA) → `rfp-frontend.punwave.com`
+  - 53 KB index.html 上傳
+  - v1 fail（`generateStaticDockerfile` 沒 honor Cloud Run PORT — 觸發 R59.1）
+  - v2 hot-fix：手動加正確 nginx Dockerfile（sed 替換 listen 80），LIVE
+
+#### `bid-ops-frontend` 兩次更新
+
+- v6：`VITE_RFP_AGENT_URL` 從 `https://rfp-agent.punwave.com`（FastAPI API，DocsPage iframe 進來只看到 API JSON）改成 `https://rfp-frontend.punwave.com`（實際 UI），bundle 驗證 +iframe 來源正確
+- 沒動 BE wiring，bid-ops-api 還缺 13 env vars 待 user 補
+
+#### `legal-flow-20260505` 也順便 LIVE
+
+`.dockerignore` 跟 Dockerfile `COPY .env.local` 衝突的 case，2026-05-07 已修，跨日 carry-over LIVE。R61 的 detector 之後遇到同 pattern 會 pre-build warn，不再 4 分鐘 Cloud Build 後爆。
+
+#### Group attach via R63
+
+rfp-agent + rfp-agent-frontend 兩個 service attach 進同 group `7e32ad3c-...`：
+```bash
+PATCH /api/projects/11754286-.../group
+  {"projectGroup": "7e32ad3c-...", "groupName": "wavenetdeveloper-rfp-agent-4baf14f62103"}
+→ HTTP 200, dashboard /api/project-groups/7e32ad3c-... 顯示 serviceCount=2 liveCount=2
+```
+
+### 5 個 user services 全 LIVE（最終狀態）
+
+| Service | URL | Stack | 備註 |
+|---------|-----|-------|------|
+| `bid-ops-frontend` v6 | `bid-ops.punwave.com` | Vite SPA | wired 到 api+rfp-frontend |
+| `bid-ops-api` | `api.bid-ops.punwave.com` | FastAPI | ⚠️ 缺 13 env vars |
+| `rfp-agent` | `rfp-agent.punwave.com` | FastAPI API | API-only，root `/` 回 service info |
+| `rfp-agent-frontend` v2 | `rfp-frontend.punwave.com` | static SPA | 在同 group with rfp-agent |
+| `legal-flow-20260505` | `legal-flow.punwave.com` | Next.js | 跨日 carry-over LIVE |
+
+### 待辦（boss decide）
+
+| 項目 | Priority | Effort | 備註 |
+|------|---------|--------|------|
+| **bid-ops-api 13 env vars** | P1 | 5 min user-side | dashboard `cffa7b1b-...` 設好 GEMINI_API_KEY / GOOGLE_CLIENT_ID/SECRET 等 |
+| **R58 fork API + dashboard 按鈕** | P1 | ~7-9 days human / 30-45 min CC | 等 R57 dogfood 1 週後動 |
+| **R57.4 reconciler 撈 Job logs** | P3 | 30 min | observ symmetry |
+| **R57.5 user Dockerfile 警告 missing prisma CLI** | P3 | 30 min | scan_report warning |
+| **R57.6 Cloud SQL pool size 文件** | P3 | 5 min | 加進 R57 ADR |
+| **Status=live vs SSL=provisioning UX** | P2 | TBD | 累積 user 抱怨後決 A/B/C |
+| **Cloud Build SHORT_SHA substitution 統一** | P3 | 5 min | 我今天 R59.1/R63 用了字串標 `R59.1`/`R63`，下次該用 git SHA |
+
+### 重要關注
+
+- **`generateStaticDockerfile` 跟 `generateViteStaticDockerfile` 是兩條獨立的 path**：R59 修了 Vite，generic static 還是壞的。**R59.1 才補上**。下次再加新 framework 別忘了同步檢查 sibling generators 有沒有同樣的 PORT bug。
+- **submit-gcs / new-version archive format 要同步**：R62 抽 shared helper 後加新 format（xz / zstd 等）只動一個檔。**直接在 route 內寫 if-else 是 trap**。
+- **Project group 連結只能 monorepo split**（pre-R63）：未來分次 submit 的 sibling 一定要 R63 endpoint 才能 attach。Future R58 fork API 要記得自動帶 group。
+- **rfp-agent canonical 暴露 R60 不夠**：R60 keep build context = root，但 user Dockerfile 也要對應改 paths（`COPY backend/requirements.txt .`）才會 work。**R60 alone 對 sibling-aware Dockerfile 還是不夠** — 之後可能要加 R60.1 偵測這個衝突 + warn。
+- **Cloud SQL Auth Proxy direct DB write 被 sandbox 擋（合理）**：今天試了 attach 用 SQL UPDATE → blocked。改走 R63 endpoint 是對的，永久解 + auth-gated。
+
+### Phased rollout 進度
+
+R57 phased rollout（pre-deploy migration toggle）：
+- ✅ Phase 1 ship 程式碼 toggle off（昨日上線）
+- ⏳ Phase 2 staging 測試 + settings runMigrations=true（等下次手動測 luca-optimizer-kb）
+- ⏳ Phase 3 對外開放（1 週後）
+
+---
+
 **2026-05-07（User 部署批次 — 5 個 user 部署活動 + 2 個 platform bug 發現 + R60 設計成型未實作）**
 
 **狀態：4 user projects 全部 LIVE / 2 個 platform-level bug 待修（R60、R61）/ 1 個產品問題（status=live but ssl=provisioning）**
