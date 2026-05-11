@@ -4,6 +4,108 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-10～12（user 部署批次 + R64 ship + 多服務迭代 8 次到 live）**
+
+**狀態：4 user deploys live / 1 platform ship (R64) / 6 個重要 learning**
+
+跨日 user 部署活動，平台修 1 個（R64 user-facing secret detection），R57 phased rollout 維持 Phase 1。
+
+### Platform ship: R64
+
+| Round | 標題 | Tests Δ | Commit | Cloud Run rev |
+|-------|------|---------|--------|----------------|
+| R64 | User-facing weak-secret detection + reveal endpoint | +39 | `ae1921c` | `00160-gnj` |
+
+**Sweep 3090 → 3129/0 across 59 files**。ADR `2026-05-11-user-facing-secret-detection.md`。
+
+**Trigger case**：`legal-flow-20260505` user 寫 `SYSTEM_PASSWORD="admin123"` 在 `.env`，pipeline 偵測 weak silent auto-gen 強隨機字串。User 打 admin123 → 401，user 不知為何。
+
+**設計**：
+- 既有 `isUserCredentialVar` strict (`AUTH_PASSWORD` 等) → keep verbatim 不動
+- 新 `isUserFacingCredential` broader → SYSTEM/LOGIN/APP/MASTER/ROOT/SHARED/GUEST/DEMO/TEST/USER/SUPER/ACCOUNT × _PASSWORD/_USERNAME/_USER/_EMAIL/_PIN/_PASSPHRASE = 12 prefix × 6 suffix + `*_PIN`/`*_PASSPHRASE` generic suffix
+- 新 warning `user_facing_weak_replaced` + `severity='p0_user_action_needed'`，scan_report 立刻 P0 提醒
+- 新 endpoint `GET /api/projects/:id/env-vars/reveal` (`requireOwnerOrAdmin`, 寫 `auth_audit_log`, source=cloud_run|db, 可選 `?keys=` 窄化)
+- Audit log `action='env_vars_reveal'` 每次 reveal 記 IP + keys + source
+
+### User deploys
+
+#### 1. `legal-flow-20260505` 登入 (5/10)
+
+- Browser 實測 admin123 → 401 確認
+- 列 Cloud Run env keys：`SYSTEM_PASSWORD` 存在但值 != admin123 (sandbox 擋我讀值)
+- **Root cause**: pipeline auto-gen 強隨機 SYSTEM_PASSWORD（admin123 被偵測為 weak）
+- **Fix**: PATCH `/api/projects/.../env-vars { SYSTEM_PASSWORD: admin123 }` 強制重設
+- Browser e2e 驗：`/api/auth/login` 200，cookie 寫，dashboard 完整載入合約列表（W250056/057/058、4 統計卡：審閱中=0/已回覆=98/待用印=1/已歸檔=60）
+- 觸發了 R64 platform fix
+
+#### 2. `luca-v2-backup_0510-luca-web-v2` 第一次部署 (5/10)
+
+- User Dockerfile 沒問題，但 `npm run build` 跑 `tsc -b` 撞 8 個 error：4 unused imports + 4 type incompat（Variant secondary, CampaignMetric.id/name, NavPage platforms 缺）
+- 全部 fix + repackage + redeploy → ✅ live `luca-v2.punwave.com`
+
+#### 3. `luca-v2-backup_0510-*` v2 (5/11 user 新 zip "luca-v2-deploy-20260511-2205")
+
+User 上傳新 monorepo zip 期待替換 v1 deploy。**兩個 service 都失敗**，迭代 8 次到 live：
+
+**WEB (3628e774) v1→v4**：
+| Iter | Failure | Fix |
+|------|---------|-----|
+| v1 | npm ci peer-dep 衝突 (`typescript@6` vs `openapi-typescript@^5`) | 加 `.npmrc legacy-peer-deps=true` |
+| v2 | 上面 fix 沒生效（`.npmrc` 沒 COPY 進 build context — user Dockerfile `COPY package*.json ./` 不含 `.npmrc`） | 改 Dockerfile `npm ci --legacy-peer-deps` |
+| v3 | TS build error 5 個（同 5/10 那批的 fix 沒在 user 新 zip 裡 — user 從原 dev codebase 出 zip 沒帶我前面的 patch） | sed 重 apply 5 fix（4 unused + ghost variant + CampaignMetric rename） |
+| v4 | ✅ live | 本地 `tsc -b` + `vite build` 6.73s pass |
+
+**KB (638f4947) v1→v4**：
+| Iter | Failure | Fix |
+|------|---------|-----|
+| v1 | `ModuleNotFoundError: openpyxl` (main.py 第 5 行 `import openpyxl` 但 requirements.txt 沒列) | `echo openpyxl >> requirements.txt` |
+| v2 | container start 但不 listen PORT — 真實 root cause `RuntimeError: LUCA_JWT_SECRET (or JWT_SECRET) must be set in production`（envVarsSet 報 21 keys 但 cloud_run 實際 0 keys，propagation 漏） | new-version body 加 `envVars: {JWT_SECRET, LUCA_JWT_SECRET, JWT_REFRESH_SECRET}` 三個強隨機 hex |
+| v3 | `IndexError: 4` at `agent_engine.py:525` — `Path(__file__).resolve().parents[4]` 在 container `/app/app/...` 路徑只有 3 層 parents（user local dev 路徑深一截，N=4 work） | source try/except 包 `parents[4]` + envVars 加 `ADSREPORT_ROOT=/tmp/adsreport` 雙保險 |
+| v4 | ✅ live | |
+
+### 待辦（boss decide）
+
+| 項目 | Priority | 備註 |
+|------|---------|------|
+| bid-ops-api 13 env vars (carry-over from 5/8) | P1 | dashboard `cffa7b1b-...` 還沒補 GEMINI/GOOGLE_CLIENT/SEED_ADMIN 等 |
+| **R65 — pre-build scan for cross-platform path traversals**（`parents[N>2]`、hardcoded `/Users/...` paths） | P2 | KB v3 撞到 — scan_report warning 即可 |
+| **R66 — pipeline env propagation bug**（deploy-worker `envVarsSet` 報 21 但 Cloud Run 0） | P0 | 嚴重，下次 user 撞到 service 起不來找不到原因 |
+| **R67 — auto-gen Dockerfile 對 `.npmrc` 自動 COPY**（或 R44h-extend 警告 user Dockerfile 沒 COPY .npmrc 但有檔） | P2 | luca v2/v3 共耗了 ~6 min 才知道 .npmrc 沒進 build context |
+| R58 fork API + dashboard 按鈕 | P1 | 等 R57 dogfood 1 週後動 |
+| R57.4/.5/.6 (reconciler 撈 Job logs / Dockerfile 警告 missing prisma CLI / Cloud SQL pool size 文件) | P3 | 累積撞到 |
+| Status=live vs SSL=provisioning UX | P2 | TBD |
+| R64.1 dashboard UI for `user_facing_weak_replaced` warnings | P2 | scan_report 已 ready，UI 需開 red badge + reveal button |
+
+### 重要關注（記下下次省力）
+
+1. **`.npmrc` build-context trap**：user Dockerfile `COPY package*.json ./` 不會自動包含 `.npmrc`。要修 npm ci peer-dep 衝突的話**永遠改 Dockerfile flag**，不要寫 `.npmrc` 期待生效
+2. **`Path(__file__).parents[N>2]` 跨平台 fragile**：local dev path 深，container `/app/...` 淺，N=4 在 container 必 IndexError
+3. **PATCH /env-vars 對 broken container chicken-egg**：container 沒 env 起不來，env update 卻要 healthy 才能 apply。Workaround：`new-version` body 帶 `envVars` 在 pipeline deploy 前 merge
+4. **deploy-worker `envVarsSet` 不等於 Cloud Run 實際 env**：v2 那次 envVarsSet 報 21 keys 但 Cloud Run live 是 0 keys。Pipeline propagation 有 bug，要 R66 修
+5. **FastAPI 32-router top-level import**：任何一個 router import 時的 side effect（env check、parents[N]、DB connection）crash → 整個 app 起不來。User 通常以為「app/main.py 沒事」就好，實際 import chain 才是 startup 真正執行的 code
+6. **R64 auto-gen 強密碼 vs user 預期 admin123**：legal-flow case 揭示 platform 在「替 user 加強 security」跟「user 知道要 type 什麼」之間有 gap。R64 加 reveal endpoint + P0 warning 解 chronic 問題
+
+### Phased rollout 進度
+
+R57 phased rollout（pre-deploy migration toggle）：
+- ✅ Phase 1 ship 程式碼 toggle off
+- ⏳ Phase 2 staging 測試（luca-v2 KB 有 alembic 但 `script_location` warning，需要 fix `alembic.ini` 才能真用 R57）
+- ⏳ Phase 3 對外開放
+
+### 5 個 user services 最終狀態
+
+| Service | URL | Status |
+|---------|-----|--------|
+| `bid-ops-frontend` v6 | `bid-ops.punwave.com` | ✅ live |
+| `bid-ops-api` | `api.bid-ops.punwave.com` | ✅ live, ⚠️ 缺 13 env vars |
+| `rfp-agent` (API) | `rfp-agent.punwave.com` | ✅ live, API-only |
+| `rfp-agent-frontend` v2 | `rfp-frontend.punwave.com` | ✅ live, 跟 rfp-agent 同 group via R63 |
+| `legal-flow-20260505` | `legal-flow.punwave.com` | ✅ live, admin123 可登入 |
+| `luca-v2-backup_0510-luca-web-v2` v4 | `luca-v2.punwave.com` | ✅ live |
+| `luca-v2-backup_0510-luca-optimizer-kb` v4 | `luca-optimizer-kb.punwave.com`(?) | ✅ live, JWT/LUCA_JWT/REFRESH/ADSREPORT_ROOT 都已 set，DB 空（沒 user）|
+
+---
+
 **2026-05-08（昨日 R60+R59 follow-through 批次 ship + rfp-agent monorepo 重構 + R63 group-attach endpoint）**
 
 **狀態：9 個 platform round 全部 LIVE + 5 個 user services 全 LIVE + 2 個 service group attach 完成 / 剩 P3 跟 user-side env vars**
