@@ -15,12 +15,72 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export interface EnvWarning {
-  type: 'weak_fallback' | 'hardcoded_secret' | 'hardcoded_credential';
+  type:
+    | 'weak_fallback'
+    | 'hardcoded_secret'
+    | 'hardcoded_credential'
+    | 'user_facing_weak_replaced'; // R64
   file: string;
   line: number;
   variable: string;
   fallbackValue: string;
   recommendation: string;
+  /**
+   * R64 (2026-05-11): severity for dashboard prioritization.
+   * 'p0_user_action_needed' = user-facing password got auto-genned; deployer
+   * MUST reveal or override before users can login. Default 'info' for
+   * existing warning types (backwards compat).
+   */
+  severity?: 'info' | 'p1' | 'p0_user_action_needed';
+}
+
+/**
+ * R64 (2026-05-11): broader user-facing credential pattern than the
+ * existing `isUserCredentialVar`. Catches any variable that a real human
+ * would type at a login prompt — SYSTEM_PASSWORD, LOGIN_PASSWORD,
+ * APP_PASSWORD, MASTER_PASSWORD, ROOT_PASSWORD, etc.
+ *
+ * Separate from `isUserCredentialVar` (which is strict: `^AUTH_PASSWORD$`,
+ * `^ADMIN_PASSWORD$`, bare `PASSWORD`) because the strict pattern is also
+ * used in `classifyEnvValue` to BYPASS weak-secret detection entirely
+ * (user-credential gets kept verbatim). For the broader pattern we want
+ * different behavior: auto-gen + P0 warning + reveal endpoint so deployer
+ * decides.
+ *
+ * Exported as a pure function so it's testable in isolation.
+ */
+export function isUserFacingCredential(name: string): boolean {
+  const upper = name.toUpperCase();
+  // Existing strict patterns (keep matching)
+  if (/^(AUTH|ADMIN)_(USERNAME|PASSWORD|USER|EMAIL)$/.test(upper)) return true;
+  if (upper === 'USERNAME' || upper === 'PASSWORD') return true;
+  // R64 expanded patterns: <PREFIX>_PASSWORD where prefix is a known
+  // "user-facing role/scope" word.
+  const userFacingPrefixes = [
+    'SYSTEM',
+    'LOGIN',
+    'APP',
+    'MASTER',
+    'ROOT',
+    'SHARED',
+    'GUEST',
+    'DEMO',
+    'TEST',
+    'USER',
+    'SUPER',
+    'ACCOUNT',
+  ];
+  for (const prefix of userFacingPrefixes) {
+    if (upper === `${prefix}_PASSWORD`) return true;
+    if (upper === `${prefix}_USERNAME`) return true;
+    if (upper === `${prefix}_USER`) return true;
+    if (upper === `${prefix}_EMAIL`) return true;
+    if (upper === `${prefix}_PIN`) return true;
+    if (upper === `${prefix}_PASSPHRASE`) return true;
+  }
+  // Generic suffixes: anything ending in _PIN or _PASSPHRASE is human-typed
+  if (/_PIN$/.test(upper) || /_PASSPHRASE$/.test(upper)) return true;
+  return false;
 }
 
 export interface EnvDetectionResult {
@@ -92,16 +152,42 @@ export function detectEnvVars(ctx: DetectionContext): EnvDetectionResult {
           notes.push(`.env replace: ${key} — "${val}" is dev/local, will auto-generate`);
         }
       } else if (classification === 'weak') {
-        // Will be handled by framework rules with strong auto-generated value
-        notes.push(`.env weak: ${key} — secret too weak, will auto-generate`);
-        warnings.push({
-          type: 'weak_fallback',
-          file: '.env',
-          line: 0,
-          variable: key,
-          fallbackValue: val,
-          recommendation: `Value from .env is too weak for production — auto-generating strong replacement`,
-        });
+        // R64 split: user-facing weak (e.g. SYSTEM_PASSWORD="admin123") gets
+        // a different warning + auto-gen here so the deployer sees a P0
+        // pointer to /env-vars/reveal — users CANNOT type the placeholder
+        // value to login (legal-flow-20260505 canonical).
+        if (isUserFacingCredential(key)) {
+          detected[key] = generateStrongValue(key);
+          notes.push(
+            `.env user-facing weak: ${key}="${val}" → auto-generated strong replacement (deployer must reveal/override before users can login)`,
+          );
+          warnings.push({
+            type: 'user_facing_weak_replaced',
+            file: '.env',
+            line: 0,
+            variable: key,
+            fallbackValue: val,
+            severity: 'p0_user_action_needed',
+            recommendation:
+              `User-facing password "${key}" was set to weak value "${val}" in .env. ` +
+              `Pipeline auto-generated a strong replacement so the placeholder isn't deployed. ` +
+              `Users CANNOT type "${val}" to login. Choose one: ` +
+              `(1) GET /api/projects/:id/env-vars/reveal to see the auto-gen value, share securely with users; ` +
+              `(2) PATCH /api/projects/:id/env-vars to set a deployer-chosen strong password users can remember.`,
+          });
+        } else {
+          // Will be handled by framework rules with strong auto-generated value
+          notes.push(`.env weak: ${key} — secret too weak, will auto-generate`);
+          warnings.push({
+            type: 'weak_fallback',
+            file: '.env',
+            line: 0,
+            variable: key,
+            fallbackValue: val,
+            severity: 'info',
+            recommendation: `Value from .env is too weak for production — auto-generating strong replacement`,
+          });
+        }
       }
     }
   }

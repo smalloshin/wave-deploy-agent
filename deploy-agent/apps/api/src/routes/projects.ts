@@ -2051,6 +2051,113 @@ export async function projectRoutes(app: FastifyInstance) {
     return { projectId: project.id, envVars: maskedVars };
   });
 
+  // R64 (2026-05-11): reveal RAW env var values for owner/admin.
+  //
+  // Companion to user_facing_weak_replaced warnings — when the pipeline
+  // auto-genned a strong password for SYSTEM_PASSWORD-style vars, the
+  // deployer needs to read the actual value to share with users (or to
+  // decide they want to PATCH it to something memorable).
+  //
+  // Defaults to revealing ALL keys. Optional ?keys=KEY1,KEY2 narrows scope.
+  // Auth: owner/admin (same as PATCH env-vars — if you can write you can read).
+  // Audit-logged so we can trace every reveal in case of credential leak.
+  //
+  // Source of truth: live Cloud Run service first (current actual values),
+  // DB fallback when service doesn't exist or fetch fails.
+  app.get<{ Params: { id: string }; Querystring: { keys?: string } }>(
+    '/api/projects/:id/env-vars/reveal',
+    async (request, reply) => {
+      const project = await getProject(request.params.id);
+      if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+      const owner = await requireOwnerOrAdmin(request, reply, project, 'reveal_env_vars');
+      if (!owner.ok) return;
+
+      // Try live Cloud Run first, fall back to DB.
+      const deployments = await getDeploymentsByProject(project.id);
+      const activeDeployment = deployments.find((d) => d.cloudRunService);
+      let envVars: Record<string, string> = {};
+      let source: 'cloud_run' | 'db' = 'db';
+
+      if (activeDeployment?.cloudRunService) {
+        const gcpProjectId =
+          (project.config?.gcpProject as string) || process.env.GCP_PROJECT || '';
+        const gcpRegionId =
+          (project.config?.gcpRegion as string) || process.env.GCP_REGION || 'asia-east1';
+        if (gcpProjectId) {
+          try {
+            envVars = await getServiceEnvVars(
+              gcpProjectId,
+              gcpRegionId,
+              activeDeployment.cloudRunService,
+            );
+            source = 'cloud_run';
+          } catch {
+            envVars = (project.config?.envVars as Record<string, string>) ?? {};
+          }
+        }
+      } else {
+        envVars = (project.config?.envVars as Record<string, string>) ?? {};
+      }
+
+      // Optional ?keys=A,B,C narrows the reveal set. Useful for the
+      // "show me just this one auto-gen password" UI flow.
+      const keysParam = request.query.keys;
+      let filteredKeys: string[] | null = null;
+      if (typeof keysParam === 'string' && keysParam.trim() !== '') {
+        filteredKeys = keysParam
+          .split(',')
+          .map((k) => k.trim())
+          .filter((k) => k.length > 0);
+      }
+
+      const revealed: Record<string, string> = {};
+      const allKeys = Object.keys(envVars);
+      const targetKeys = filteredKeys ?? allKeys;
+      for (const k of targetKeys) {
+        if (k in envVars) {
+          revealed[k] = envVars[k] ?? '';
+        }
+      }
+
+      // Audit log: every reveal is recorded so credential leaks are
+      // traceable. Best-effort — never block the response on log failure.
+      // Uses the existing `auth_audit_log` table (schema.sql:200).
+      try {
+        const { query: dbQuery } = await import('../db/index');
+        await dbQuery(
+          `INSERT INTO auth_audit_log (user_id, action, resource, ip_address, metadata, created_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, NOW())`,
+          [
+            request.auth.user?.id ?? null,
+            'env_vars_reveal',
+            `project:${project.id}`,
+            request.ip ?? null,
+            JSON.stringify({
+              source,
+              keys_requested: filteredKeys,
+              keys_revealed: Object.keys(revealed),
+              all_keys_count: allKeys.length,
+            }),
+          ],
+        );
+      } catch (auditErr) {
+        request.log.warn(
+          { err: (auditErr as Error).message },
+          '[env-vars-reveal] audit-log write failed (non-fatal)',
+        );
+      }
+
+      return {
+        projectId: project.id,
+        source,
+        envVars: revealed,
+        warning:
+          'These are raw secret values. Do not paste into chat, public docs, or unencrypted notes. Use a password manager.',
+      };
+    },
+  );
+
   // Update environment variables for a deployed project (no rebuild)
   app.patch<{ Params: { id: string } }>('/api/projects/:id/env-vars', async (request, reply) => {
     const project = await getProject(request.params.id);
