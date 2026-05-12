@@ -4,6 +4,73 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-12～13（luca-v2 KB DB-less → Cloud SQL provision + 3 platform bug 揭露：R71 traffic-shift / R71b annotation-wipe / R72 DB-stack-detect）**
+
+**狀態：luca-v2 KB v7 LIVE w/ Cloud SQL + real DB auth / 3 platform P0 bug 記錄待修**
+
+### Trigger
+
+User 部署 luca-v2 new monorepo zip。8 次 iteration 之後（KB v1→v7、WEB v1→v5），KB 終於用 real Cloud SQL DB 跑起來。揭露 3 個平台 bug。
+
+### Cloud SQL provision (A2a 路徑)
+
+新建 `wave-deploy-agent:asia-east1:luca-v2-kb-db`（db-f1-micro / POSTGRES_16 / 10GB HDD / ENTERPRISE edition，$10/月）。`db-f1-micro` tier 必須帶 `--edition=ENTERPRISE` 否則 default ENTERPRISE_PLUS 拒絕該 tier — 第一次撞到。
+
+config flow:
+- 創 database `luca`
+- 創 user `luca` + 24-byte base64 random password (atomic transfer 不進 transcript)
+- `gcloud run services update --add-cloudsql-instances=...` 加 Cloud SQL Auth Proxy sidecar
+- PATCH KB envs: `PG_HOST=/cloudsql/<conn>` (Unix socket 走 sidecar) + `POSTGRES_USER=luca` + `POSTGRES_PASSWORD=...` + `POSTGRES_DB=luca`
+- Container 啟動 → `_bootstrap_admin.seed_initial_admin_if_empty()` 跑 → `seed_admin_created email=admin@wavenet.com.tw`（看 cloud-logging structured log）
+
+### 3 個 Platform P0 bug 揭露
+
+#### R71a — wave-deploy-agent gcloud run deploy 不切 traffic
+KB v3→v6 deploy 全部「status=live」但 100% traffic 還停在舊 rev `00007-4qj`。新 rev `00008/00009/00010/00011` 上線了卻 0% traffic，所有 fix（bootstrap seed / JWT envs / ALLOWED_ORIGINS / CORS / emergency bypass）等於沒有上。手動 `gcloud run services update-traffic --to-latest` 才切。User 完全沒法從 dashboard 看出來。
+
+#### R71b — wave-deploy-agent deploy 洗掉 Cloud Run service annotations
+KB v7 deploy 把我之前手動 `--add-cloudsql-instances` 設的 service annotation 洗掉了（rev `00015-gpx` 沒有 Cloud SQL attached）→ container 開不了 Unix socket → 全部 DB call 500 → login 又壞掉。手動 `gcloud run services update --add-cloudsql-instances` 才補回（rev `00016-g9p`）。意思是：wave-deploy-agent 每次 new-version 都洗掉 service-level config。User 即使 attach 過 Cloud SQL，下次更新就斷。
+
+#### R72 — DB stack detection 太窄
+Pipeline 只認 `DATABASE_URL` 觸發 Cloud SQL auto-provision。User app 用 `POSTGRES_PASSWORD`+`PG_HOST`+`POSTGRES_USER`+`POSTGRES_DB` 拆四個 env → pipeline 完全 miss → 不 auto-provision → 部署起來但 DB 不通。
+
+#### R73 — new-version envVars drop
+KB v1 deploy-worker log 報 `envVarsSet: 21 keys`（含 DATABASE_URL/POSTGRES_*）但 `/api/projects/.../env-vars` query Cloud Run live 只有 0 keys。Pipeline 報告的「set」跟實際 Cloud Run 注入的「set」不一致。下次 new-version 也 inherit 不到舊環境變數。
+
+### KB 8-step deploy log
+
+| Step | Action | Result |
+|------|--------|--------|
+| 1 | `gcloud sql instances create luca-v2-kb-db --tier=db-f1-micro --edition=ENTERPRISE` | RUNNABLE in 8 min |
+| 2 | `gcloud sql databases create luca` | ✅ |
+| 3 | `gcloud sql users create luca` w/ 24-byte random pw | ✅ |
+| 5 | `gcloud run services update --add-cloudsql-instances` | rev `00012-xbc` 100% traffic, Cloud SQL sidecar |
+| 6 | atomic PATCH PG_HOST/POSTGRES_USER/PASSWORD/DB | ✅ (`changed: ['PG_HOST','POSTGRES_PASSWORD']`) |
+| 7 | bootstrap_admin runs | `seed_admin_created email=admin@wavenet.com.tw` ✅ |
+| 8 | verify | login `user_id=1 name=Initial Admin role=admin` ✅ / `/notifications/summary` 200 / `/agent/chat` 200 in 3.4s |
+| 9 | remove auth.py emergency bypass + KB v7 redeploy | bypass code removed ✅，但 R71b 洗掉 Cloud SQL annotation → 手動 re-attach (rev `00016-g9p`) → final verify all 200 |
+
+### 待辦（boss decide）
+
+| 項目 | Priority | 備註 |
+|------|---------|------|
+| **R71a — Cloud Run deploy 不切 traffic** | P0 | 5 個連續 deploy 都中標！deploy-engine.ts 要研究 `gcloud run deploy` 後是否要 `--update-traffic=LATEST` |
+| **R71b — Cloud Run service annotations 被 deploy 洗掉** | P0 | wave-deploy-agent `gcloud run deploy` 應該 preserve `run.googleapis.com/cloudsql-instances`、`vpc-connector`、`startup-cpu-boost` 等 service-level annotations |
+| **R72 — DB stack detection broader** | P1 | `services/db-detector.ts` 新檔，偵測 POSTGRES_* / MYSQL_* / MONGO_* / psycopg2/sqlalchemy/mongoose deps；config mode = `database_url` vs `split_vars` vs `orm` |
+| **R73 — new-version envVars inheritance contract** | P1 | deploy-worker 完成後寫 `project.config.envVarsSnapshot`；下次 new-version 開始 diff，cleared >10% fail-block |
+| `/agent/chat` GEMINI/OPENAI API key | user-side | `PATCH /env-vars` 設好 user 自己的 LLM API key |
+| 之前累積 carry-over P3/P2 | | 略 |
+
+### 重要關注
+
+- **`db-f1-micro` 預設不能在 ENTERPRISE_PLUS edition 用**：`gcloud sql instances create --tier=db-f1-micro` 要明確帶 `--edition=ENTERPRISE`，否則 default 走 ENTERPRISE_PLUS edition 拒絕該 tier。第一次撞才知道
+- **Cloud Run unix socket Cloud SQL**：`PG_HOST=/cloudsql/<conn>` 走 sidecar 由 Cloud Run 自動 inject。必須先 `--add-cloudsql-instances`，否則 socket 不存在
+- **wave-deploy-agent deploy 不 preserve service-level annotations**：每次 new-version 完全 reset，user manual 設的 Cloud SQL attach / VPC connector 都會掉。這是 R71b — 重大設計缺陷
+- **atomic credential transfer**：DB password 從 .env → Python script → API PATCH，全程 stdin/network，**不進 transcript**。Sandbox 對 reveal endpoint 也擋。Pattern 正確
+- **Emergency bypass should always be temporary**：R64 user_facing_weak detection + INITIAL_ADMIN_* env-bypass 只是 stop-gap，DB 接好後 cleanup 才是 final state。Code 不要 commit bypass
+
+---
+
 **2026-05-10～12（user 部署批次 + R64 ship + 多服務迭代 8 次到 live）**
 
 **狀態：4 user deploys live / 1 platform ship (R64) / 6 個重要 learning**
