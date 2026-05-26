@@ -4,6 +4,91 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-14～26（3 個 user deploy + 3 個 platform bug：R74 docx-powershell / R75 next-standalone / R76 customDomain-double-append）**
+
+**狀態：legal-flow .docx fix LIVE / wavenet-psvip 新部署 LIVE w/ custom domain / R76 deploy-worker fix 已 patch 等 ship**
+
+### Trigger
+
+3 個 user 動作觸發：
+1. luca-v2 platform 授權失敗（5/14）— 後端缺 `/api/platforms/*` 整個 router；user 補檔中
+2. legal-flow 「合約版本差異比對」上傳 .docx 500（5/14）— powershell Expand-Archive 在 Linux 死
+3. wavenet-psvip 部署單 HTML（5/26）— 揭露 customDomain 雙 append bug
+
+### R74 — legal-flow .docx extraction Linux 不能跑
+
+**位置**：`legal_flow/src/app/api/extract-text/route.ts:22`
+
+**Bug**：`execSync('powershell -Command "Expand-Archive..."')` — Windows dev 寫的，Cloud Run Linux container 沒 powershell → `.docx` 上傳 100% 死，PDF/TXT 不受影響
+
+**修法**：整個 `extractDocx` 換成 `mammoth.extractRawText({buffer})`（純 JS 業界標準 docx 解析器），36 行 → 4 行，移掉整個 `writeFile/mkdir/execSync/rmSync` temp-file dance
+
+**驗證**：自製 minimal .docx → `POST /api/extract-text` → HTTP 200 / 140ms / 文字正確抽出含段落分隔
+
+### R75 — Next.js `output: 'standalone'` 沒設
+
+**位置**：`legal_flow/next.config.ts`
+
+**Bug**：wave-deploy-agent auto-Dockerfile 用 `COPY --from=builder /app/.next/standalone ./` 但 user 的 next.config.ts 沒設 `output: 'standalone'` → build Step 17 `COPY failed: file does not exist`
+
+**奇怪點**：上次 deploy 同樣 config 卻 status=live，可能過去某次 auto-fix 注入過 standalone 後來移除。**Platform 應該在 nextjs framework 偵測階段 auto-fix 注入這行**，user 完全無法從 dashboard debug 出來
+
+**修法**：next.config.ts 加 `output: 'standalone'`，redeploy 通過
+
+### R76 — wave-deploy-agent customDomain 雙 append `.punwave.com`
+
+**位置**：`apps/api/src/services/deploy-worker.ts:288-291`
+
+**Bug**：
+```typescript
+const customDomainSubdomain = project.config?.customDomain;  // raw 直接吃
+const customDomainFqdn = `${customDomainSubdomain}.${cfZoneName}`;  // 強制 append
+```
+deploy-worker 假設 `project.config.customDomain` 永遠是 subdomain（`wavenet-psvip`）。但 `submit-gcs` route 把 body.customDomain raw 存進 config，user 傳完整 FQDN（`wavenet-psvip.punwave.com`）→ 結果 `wavenet-psvip.punwave.com.punwave.com.punwave.com`
+
+**Workaround for live project**：`POST /api/projects/:id/retry-domain` endpoint 有正確的 `.replace(zone, '')` 邏輯（routes/projects.ts:2458），可清理 + 重建正確 mapping。但 broken Cloud Run domain mapping 需手動 `gcloud beta run domain-mappings delete --domain=...`
+
+**已 patch（等 ship）**：`apps/api/src/services/deploy-worker.ts:285-300` 新增 normalize：
+```typescript
+const rawCustomDomain = project.config?.customDomain;
+const customDomainSubdomain = rawCustomDomain && cfZoneName
+  ? rawCustomDomain.replace(new RegExp(`\\.${cfZoneName.replace(/\./g, '\\.')}$`), '')
+  : rawCustomDomain;
+```
+同 file `line 540` sibling backend URL 構建處 + 同樣的 normalize（monorepo backend 走另一條路徑）
+
+### User deploys 細節
+
+#### legal-flow R74 v4 (live) + R75 v4 (rebuild)
+- mammoth source `tar.gz` 220KB → GCS → submit `/new-version` → HTTP 201
+- v3 failed (R75)，加 `output: 'standalone'` 後 v4 LIVE
+- 後 user 另一次 v5 deploy 缺 `prisma/` → build Step 11 prisma generate 死。production v4 still serving，v5 只是 build 階段死，沒覆蓋 Cloud Run revision
+
+#### wavenet-psvip 單 HTML 部署 (live with custom domain)
+- 1.5MB HTML → rename `index.html` → tar.gz 1MB → submit-gcs HTTP 201
+- Project id `51a1ba87-6f1e-41e1-9e4e-921dc32fc4de`，service `da-wavenet-psvip`
+- 觸發 R76 bug → 手動修：`retry-domain` 建正確 mapping + `gcloud run domain-mappings delete` 清掉雙 append 的
+- Cloudflare CNAME `wavenet-psvip → ghs.googlehosted.com` ✅，SSL provisioning 中
+
+### 待辦
+
+| 項目 | Priority | 備註 |
+|------|---------|------|
+| **R76 — deploy-worker 已 patch，要 ship** | P1 | 改動：`apps/api/src/services/deploy-worker.ts:285-300, 540-548`，typecheck 0 errors |
+| **R75 — Next.js standalone auto-fix** | P2 | nextjs framework detection 時偵測缺 `output: 'standalone'` → auto-fix 注入（user 看不出來這個問題） |
+| **R74 — 已修並 ship 完** | done | mammoth fix in `legal_flow/`（user side fix，wave-deploy-agent 無關） |
+| **luca-v2 `/api/platforms/*` router 缺檔** | user-side | 等 user 補 `platforms_engine.py` |
+| **R71a/b R72/R73 累積** | P0/P1 | 從上次 handoff carry-over，未動 |
+
+### 重要關注
+
+- **`submit-gcs` body.customDomain 沒 normalize**：route 直接 `body.customDomain?.trim()` 存進 config（routes/projects.ts:827）。理想是 submit 階段就 normalize 成 subdomain，避免「下游每個讀取者各自 normalize」的 inconsistency。R76 fix 只補 deploy-worker；submit-gcs 端也該補
+- **wavenet-psvip 是 single-static-html 用例**：wave-deploy-agent 對「裸 index.html」自動偵測為 static SPA 並 build nginx Dockerfile（auto-Dockerfile 機制 OK）。validation：1.5MB HTML 完整 serve、200 OK 1.3s
+- **`retry-domain` endpoint 萬能解**：任何 customDomain 出狀況都可以 `POST /api/projects/:id/retry-domain` body=`{}` 重建。它的 `.replace(zone)` 邏輯比 deploy-worker 正確
+- **Cloud Run domain mapping 刪除指令**：`gcloud beta run domain-mappings delete --domain=<fqdn> --region=asia-east1 --platform=managed --project=wave-deploy-agent`。注意 `--domain=` flag 不能用 positional argument
+
+---
+
 **2026-05-12～13（luca-v2 KB DB-less → Cloud SQL provision + 3 platform bug 揭露：R71 traffic-shift / R71b annotation-wipe / R72 DB-stack-detect）**
 
 **狀態：luca-v2 KB v7 LIVE w/ Cloud SQL + real DB auth / 3 platform P0 bug 記錄待修**

@@ -285,8 +285,16 @@ export async function runDeployPipeline(
     }
 
     // Compute custom domain FQDN for env detection
-    const customDomainSubdomain = project.config?.customDomain;
+    // R76 (2026-05-26): normalize subdomain in case caller passed full FQDN
+    // (e.g. submit-gcs/upload route stores body.customDomain raw — user may
+    // give "wavenet-psvip.punwave.com" or just "wavenet-psvip"). Without
+    // normalization we'd produce "wavenet-psvip.punwave.com.punwave.com".
+    // Matches retry-domain handler (routes/projects.ts:2458).
     const cfZoneName = process.env.CLOUDFLARE_ZONE_NAME || '';
+    const rawCustomDomain = project.config?.customDomain;
+    const customDomainSubdomain = rawCustomDomain && cfZoneName
+      ? rawCustomDomain.replace(new RegExp(`\\.${cfZoneName.replace(/\./g, '\\.')}$`), '')
+      : rawCustomDomain;
     const customDomainFqdn = customDomainSubdomain && cfZoneName
       ? `${customDomainSubdomain}.${cfZoneName}`
       : undefined;
@@ -529,7 +537,11 @@ export async function runDeployPipeline(
             (p.config?.serviceRole as string) === 'backend'
           );
           if (backendSibling) {
-            const siblingCustomDomain = backendSibling.config?.customDomain as string | undefined;
+            const rawSiblingDomain = backendSibling.config?.customDomain as string | undefined;
+            // R76: normalize to subdomain before appending zone — see deploy-worker.ts:288
+            const siblingCustomDomain = rawSiblingDomain && cfZoneName
+              ? rawSiblingDomain.replace(new RegExp(`\\.${cfZoneName.replace(/\./g, '\\.')}$`), '')
+              : rawSiblingDomain;
             if (siblingCustomDomain && cfZoneName) {
               backendUrl = `https://${siblingCustomDomain}.${cfZoneName}`;
             }
