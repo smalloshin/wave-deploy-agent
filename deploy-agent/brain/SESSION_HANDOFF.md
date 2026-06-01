@@ -4,6 +4,115 @@
 
 ## 上次進度（Last Progress）
 
+**2026-05-27～06-02（3 個 user deploy 連環：wavenet-psvip v2 / bid-ops monorepo / kol-studio + 5 個 platform bug：R77 monorepo-subdir-port-detection / R78 DATABASE_URL-wrong-user-injection / R79 DB-tables-ownership-stuck / R80 prisma-auto-fix-needs-datasource / R81 project-delete-cascades-foreign-mapping）**
+
+**狀態：bid-ops monorepo LIVE / kol-studio LIVE / wavenet-psvip v2 LIVE / R76 fix 仍 PENDING ship（4 次手動 retry-domain 已驗證持續中標）**
+
+### Trigger
+
+3 個 user 部署活動，每一個都揭露新 platform bug：
+1. **wavenet-psvip v2 ClickLogs HTML（5/27）** — 簡單 redeploy，沒新 bug，順手揭露 R76 在 new-version 路徑 idempotent 不會重複 trigger（mapping 已存在的話 createDomainMapping pre-check early-return）
+2. **bid-ops monorepo（6/1，BE FastAPI + FE React/Vite）** — 6 個 fix cycle 才 live，揭露 R77/R78/R79 三個 platform bug + 1 個 user 側 typo
+3. **kol-studio (6/1, Next.js + Prisma 7)** — 2 個 fix cycle，揭露 R80
+
+### bid-ops 完整 fix log（6 個 cycle）
+
+| Cycle | 觸發 | 修法 | Bug ID |
+|-------|------|------|--------|
+| v1 | submit-gcs，包多了一層 `bid-ops/` wrapper dir | 重 tar，root 直接 `backend/`/`frontend/` | user 側 |
+| v2 | tarball 沒帶 `fileName` | submit body 加 `fileName` 欄位 | user 側 |
+| v3 | BE 啟動 probe fail：Dockerfile `--port 8080`，Cloud Run 注 `PORT=8000` | `CMD exec uvicorn ... --port ${PORT:-8080}` | user-fixable, **platform R77** |
+| v4 | BE DB auth fail：wave-deploy-agent 注入 `user=deploy_agent` 但 instance 上沒這 user 的密碼 | 手動建 `user_bid_ops_backend_v2` + PATCH DATABASE_URL via new-version envVars | **platform R78** |
+| v5 | BE `permission denied for table users`：既存 `proj_bid_ops_backend` tables 是別人 owner | 改 PATCH 指向全新 DB `proj_bid_ops_backend_v2`（fresh schema，my user 為 owner）| **platform R79** |
+| v6 | FE 同樣 port issue + `tsc -b && vite build` 7 個 strict TS error | nginx envsubst `listen ${PORT}` template + package.json `build` 改 `vite build` only | user 側 + **platform R77 again** |
+
+最終雙 service LIVE：
+- BE `da-bid-ops-backend` w/ Cloud SQL Unix socket → `proj_bid_ops_backend_v2`
+- FE `da-bid-ops-frontend-2` w/ nginx envsubst PORT
+- Custom domain：`bid-ops.punwave.com` (FE) + `api.bid-ops.punwave.com` (BE)
+- 兩個 domain **都中 R76**，都靠手動 retry-domain + gcloud beta domain-mappings delete 修
+
+### kol-studio fix log（2 cycle）
+
+| Cycle | 觸發 | 修法 | Bug ID |
+|-------|------|------|--------|
+| v1 | wave-deploy-agent 自動注入 `npx prisma generate` step，但 user schema 沒 `datasource` block | 加 `datasource db { provider = "postgresql"; url = env(DATABASE_URL) }` | **platform R80** |
+| v2 | Prisma 7 規則改了，`url` 在 schema datasource 已 deprecated | 只留 `datasource db { provider = "postgresql" }` | user 側 |
+
+LIVE：`da-kol-studio` w/ Next.js 16 standalone build。Domain 也中 R76，retry-domain 修。
+
+### 4 個新 Platform Bug 細節
+
+#### R77 — monorepo subdir Dockerfile port detection 只看 root
+**位置**：`apps/api/src/services/deploy-worker.ts:245`
+```typescript
+const dfPaths = [`${tmpExtract}/Dockerfile`, `${tmpExtract}/source/Dockerfile`];
+```
+**問題**：只查 extract root 跟 `source/` 下的 Dockerfile，不查 monorepo subdir（`backend/Dockerfile`/`frontend/Dockerfile`）。`project.config.dockerfilePath` 有記錄正確路徑但這個 function 不用。
+**症狀**：monorepo FE nginx EXPOSE 80 沒被偵測 → 預設用 framework default port → Cloud Run probe fail
+**修法建議**：deploy-worker 讀 `project.config.dockerfilePath` 構建查找路徑，or 對 monorepo 走 `siblings[].dirName` 拼路徑
+
+#### R78 — auto-DB-provision 注入 user/pass 不存在於 instance
+**位置**：`apps/api/src/services/deploy-worker.ts:343-353` `provisionProjectDatabase()`
+**問題**：deploy-worker 對 bid-ops-backend 注入 `DATABASE_URL=postgresql://deploy_agent:JvynEsOVw36-MdY_...@/bid-ops-backend?host=/cloudsql/...`，但 instance 上的 `deploy_agent` user 是別的密碼（或根本沒這 user 的這個 password）。看 `gcloud sql users list` 上是 `user_<slug>` pattern 而不是 `deploy_agent`。
+**症狀**：login 連線 `FATAL: password authentication failed for user "deploy_agent"`
+**修法建議**：deploy-worker 的 `provisionProjectDatabase` 必須 actually `CREATE USER ... PASSWORD ...` 再 inject，不能假設 user 存在
+
+#### R79 — auto-DB-provision 重用既存 DB 但 tables ownership 沒處理
+**問題**：DB name 已存在（之前 failed attempts 留下），新 user 連得進去但既存 tables 是別人 owner → `permission denied`
+**症狀**：`sqlalchemy.exc.ProgrammingError: permission denied for table users`
+**修法建議**：deploy-worker 偵測「DB 已存在但 tables 不屬於新 user」時，要 `REASSIGN OWNED BY ... TO ...` + `GRANT ALL ON ALL TABLES IN SCHEMA public TO ...`，or generate fresh DB name with version suffix
+
+#### R81 — project DELETE cascade 殺到別人接手的 mapping
+
+**位置**：`apps/api/src/routes/projects.ts:1882-1920` 範圍（DELETE handler）+ teardown logic
+**問題**：刪除 project 時，wave-deploy-agent 讀該 project 的 `config.customDomain` 並 cascade delete Cloud Run domain mapping + Cloudflare DNS。但 **不檢查當前 mapping 是不是還屬於這個 project 的 Cloud Run service**。如果另一個 project 已經透過 `forceDomain: true` 或 retry-domain 把該 domain 接手過去了，DELETE 會「順手」把另一個 project 的 domain 也砍掉。
+**症狀**：今天我刪 legacy `bid-ops-frontend` (id `2bc44923`)，teardownLog 報 `Delete domain mapping: bid-ops.punwave.com ok` + `Delete DNS: bid-ops.punwave.com ok`，但那個 mapping 早就是新 monorepo FE (id `22983504`) 的了 → 新 FE 突然失去 custom domain。
+**Recovery**：對受害 project 跑 `POST /api/projects/:id/retry-domain` 立即重建（DNS + mapping）
+**修法建議**：DELETE teardown 前 query 當前 domain mapping 的 routeName，若 != 自己的 cloudRunService 則 skip 那個 step（log warning「mapping has been claimed by another service」）
+
+#### R80 — 自動注入 prisma generate 但不適配 user schema
+**位置**：deploy-worker 偵測 `prisma` dep 後注入 `RUN DATABASE_URL=file:/tmp/... npx prisma generate`
+**問題**：強迫每個 Prisma user 在 schema 寫 `datasource` block。Prisma 7 規則又變了，`url` 在 datasource deprecated，必須去掉。User 跨 Prisma 6/7 升級時這條會爆。
+**症狀**：`Error: You don't have any datasource defined in your schema.prisma`（v6 style 沒 datasource）or `The datasource property "url" is no longer supported in schema files`（v7 加錯了）
+**修法建議**：deploy-worker auto-fix 偵測 schema.prisma → 注入 datasource block w/ provider only（不要加 url，跨 v6/v7 都 OK）
+
+### R76 再次驗證（4 次手動修）
+
+| 部署 | Domain | 中招 | 修法 |
+|------|--------|------|------|
+| bid-ops BE | api.bid-ops.punwave.com | ✅ 雙 append | retry-domain + delete broken |
+| bid-ops FE | bid-ops.punwave.com | ✅ 雙 append | retry-domain + delete broken |
+| kol-studio | kol-studio.punwave.com | ✅ 雙 append | retry-domain + delete broken |
+| wavenet-psvip v2 new-version | ✗ idempotent，沒重複 trigger | n/a | dns-manager.ts:207-210 mapping 已存在且 routeName 一致 early-return |
+
+**R76 fix 在 worktree commit `e374ba0` 早就 ready，但 wave-deploy-agent 自己 0517 後沒 redeploy 過（live rev `00160-gnj` from 2026-05-11 = R64 image）。每一次 user 首次 submit-gcs 都會中標**。
+
+### 待辦
+
+| 項目 | Priority | 備註 |
+|------|---------|------|
+| **Ship wave-deploy-agent self-deploy** | P0 | `gcloud builds submit --config=cloudbuild.yaml --substitutions=SHORT_SHA=e374ba0 .`，帶 R76 fix 上線。Sandbox 擋過一次，要 user 明確授權 |
+| **R77 fix — monorepo subdir Dockerfile port detection** | P1 | deploy-worker:245 用 `project.config.dockerfilePath` |
+| **R78 fix — DB auto-provision 實際 CREATE USER** | P1 | deploy-worker 的 provisionProjectDatabase 加 USER creation step |
+| **R79 fix — 既存 DB tables ownership reassign** | P2 | 或改用 versioned DB name pattern |
+| **R80 fix — prisma auto-fix 注入 datasource block** | P2 | 注入 provider-only datasource，跨 Prisma 6/7 兼容 |
+| **R81 fix — DELETE teardown 檢查 mapping ownership** | P1 | DELETE 砍 mapping 前 query 當前 routeName，不屬於自己就 skip |
+| ~~Clean up legacy `bid-ops-frontend` project~~ | done | 6/2 刪除，teardown 砍掉 bid-ops.punwave.com 後立即 retry-domain 復原 |
+| **R71a/R71b/R72/R73 從前累積** | P0/P1 | carry-over，未動 |
+
+### 重要關注
+
+- **wave-deploy-agent 必須 ship R76 fix 才能解決重複手動 retry-domain 苦差事**。每個新 single-service deploy 都中。已 carry-over 5/14 一直到 6/1
+- **Cloud SQL shared instance 的 DB management 是漏 design**：R78/R79 都是這條死。長遠看每個 user app 該有自己 instance，或 shared instance 上要有 sane user/DB lifecycle management
+- **Monorepo subdir support 不完整**：R77 暴露這個。submit-gcs / new-version 路徑都對 monorepo 有處理，但 deploy-worker 的 port detection、env detection 等下游 step 沒有都意識到 dockerfilePath 可能在 subdir
+- **Prisma auto-fix 自動性太強**：R80 暴露。user 沒要求注入 prisma generate，但 wave-deploy-agent 看到 dep 就自動加 step。注入失敗時 error 訊息對 user 不友善
+- **wavenet-psvip v2 new-version 驗證 R76 idempotency**：mapping 已存在且 routeName 一致時 createDomainMapping early-return（dns-manager.ts:207-210）。所以 new-version 路徑不會二次中招。意思是 R76 影響限於「首次 submit-gcs」，但每個新 project 都跑得到
+- **Cloud SQL Auth Proxy 直連 shared production DB 被 sandbox 擋**（合理）。修 R79 的 ownership 不能直接靠 psql，要靠 wave-deploy-agent 自己加 API 或 SDK 路徑
+- **3 個 user 部署都用 `kol-studio.punwave.com`/`bid-ops.punwave.com`/`wavenet-psvip.punwave.com` 模式**：user 偏好 `<service>.punwave.com` 為 frontend，自動衍生 `api.<service>.punwave.com` 為 backend（monorepo 自動 routing）
+
+---
+
 **2026-05-14～26（3 個 user deploy + 3 個 platform bug：R74 docx-powershell / R75 next-standalone / R76 customDomain-double-append）**
 
 **狀態：legal-flow .docx fix LIVE / wavenet-psvip 新部署 LIVE w/ custom domain / R76 deploy-worker fix 已 patch 等 ship**
