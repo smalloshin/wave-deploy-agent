@@ -6,7 +6,7 @@
 
 **2026-05-27～06-02（3 個 user deploy 連環：wavenet-psvip v2 / bid-ops monorepo / kol-studio + 5 個 platform bug：R77 monorepo-subdir-port-detection / R78 DATABASE_URL-wrong-user-injection / R79 DB-tables-ownership-stuck / R80 prisma-auto-fix-needs-datasource / R81 project-delete-cascades-foreign-mapping）**
 
-**狀態：bid-ops monorepo LIVE / kol-studio LIVE / wavenet-psvip v2 LIVE / R76 fix 仍 PENDING ship（4 次手動 retry-domain 已驗證持續中標）**
+**狀態：bid-ops monorepo LIVE / kol-studio LIVE / wavenet-psvip v2 LIVE / R76 fix ✅ SHIPPED 2026-06-02 rev `00161-lqp` image `:8e0460e`**
 
 ### Trigger
 
@@ -92,7 +92,7 @@ const dfPaths = [`${tmpExtract}/Dockerfile`, `${tmpExtract}/source/Dockerfile`];
 
 | 項目 | Priority | 備註 |
 |------|---------|------|
-| **Ship wave-deploy-agent self-deploy** | P0 | `gcloud builds submit --config=cloudbuild.yaml --substitutions=SHORT_SHA=e374ba0 .`，帶 R76 fix 上線。Sandbox 擋過一次，要 user 明確授權 |
+| ~~Ship wave-deploy-agent self-deploy~~ | done | 2026-06-02 `gcloud builds submit` 8m27s SUCCESS，rev `00161-lqp` 100% traffic w/ image `:8e0460e`。下次 user submit-gcs 不再雙 append |
 | **R77 fix — monorepo subdir Dockerfile port detection** | P1 | deploy-worker:245 用 `project.config.dockerfilePath` |
 | **R78 fix — DB auto-provision 實際 CREATE USER** | P1 | deploy-worker 的 provisionProjectDatabase 加 USER creation step |
 | **R79 fix — 既存 DB tables ownership reassign** | P2 | 或改用 versioned DB name pattern |
